@@ -2186,7 +2186,11 @@ class Engine:
             stat = await git("diff", "--stat", EMPTY_TREE, head)
             log = await git("log", "--oneline", head)
         origin = ""
-        if base_ref:
+        if base_ref and own_build:
+            # the app's own build: it made the source itself, from its copy of the official one (CARRY), and
+            # its build has made that folder again since, a clone of the app's copy (CHECK_BUILD): nothing to read
+            origin = str(args.get("_upstream") or "")
+        elif base_ref:
             # a setting of the agent's repository: only a name, which the checks below hold to the official one
             rc, out = await podman.exec_agent(box, ["git", "-C", source, "config", "--get", "remote.origin.url"], timeout=60)
             origin = out.strip().splitlines()[-1] if rc == 0 and out.strip() else ""

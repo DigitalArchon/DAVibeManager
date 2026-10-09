@@ -213,6 +213,8 @@ class FakeSandbox:
             assert repo == "/work/.dvm/snapshot.git" and at(repo).startswith("box:"), "built only from the app's own copy"
             assert at(build_script).startswith("box:"), "with the script copied into the clean container"
             self.built_with.append(self.files[at(build_script)].decode())
+            # as CHECK_BUILD does: $work/src made afresh, a clone of the app's copy (its origin that copy)
+            self.repos[at(f"{work}/src")] = {**self.repos[at(repo)], "remote": repo}
             f = f"{out}/App-x86_64.AppImage"
             self.files[at(f)] = self.rebuilt if self.rebuilt is not None else self.appimage
             return 0, f"@@OUT {f} {hashlib.sha256(self.files[at(f)]).hexdigest()}\n"

@@ -24,6 +24,15 @@ from helpers import wait_for
 pytestmark = [pytest.mark.podman, pytest.mark.skipif(not shutil.which("podman"), reason="needs podman")]
 
 TOOL = "mcp__host__request_host_command"
+# a build script for the app's own builds below: a small real AppImage of the note the change adds (no compiler)
+BUILD = r"""set -eu
+d="$(mktemp -d)/AppDir"; mkdir -p "$d"
+printf '#!/bin/sh\ncat "$APPDIR/note"\n' > "$d/AppRun"; chmod +x "$d/AppRun"
+cp dvm-note.txt "$d/note"
+printf '[Desktop Entry]\nType=Application\nName=hexyl\nExec=hexyl\nIcon=hexyl\nCategories=Utility;\nTerminal=true\n' > "$d/hexyl.desktop"
+python3 -c "import base64,sys; sys.stdout.buffer.write(base64.b64decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=='))" > "$d/hexyl.png"
+ARCH=x86_64 appimagetool --no-appstream --runtime-file /usr/local/share/appimage/runtime-x86_64 "$d" "$DVM_OUT/hexyl-x86_64.AppImage"
+"""
 # Podman keeps its images under XDG_DATA_HOME: it must see the real one, not the test's
 REAL_DATA_HOME = os.environ.get("XDG_DATA_HOME") or os.path.expanduser("~/.local/share")
 REAL_CONFIG_HOME = os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config")
@@ -194,6 +203,25 @@ async def test_the_assistant_in_its_sandbox_asks_and_gets_only_what_the_user_sen
         assert await inside("git -C /work/apps/hexyl-test remote get-url origin") == up
         assert await inside("git -C /work/apps/hexyl-test merge-base --is-ancestor v0.14.0 HEAD && cat /work/apps/hexyl-test/dvm-note.txt") == "note"
         assert await inside("git -C /work/apps/hexyl-test log -1 '--format=%(trailers:key=DVM-Change,valueonly)'") == "note"
+
+        # the app's own builds, for real: an imported app on its own release, then its update to a new one;
+        # each carried over, built and checked in a clean container, and delivered
+        rc, note = await podman.exec_agent("dvm-test-sandbox", ["cat", patch])
+        a = apps.create("hexyl", "appimage", up, base_ref="v0.13.0", split=True,
+                        changes=[{"id": "note", "title": "A note", "added": 0, "patch_ids": []}],
+                        imported={"at": 0, "changes": ["note"], "built": False, "review": {}})
+        for name, text in (("changes/note.patch", note), ("series.patch", note), ("build.sh", BUILD)):
+            apps.write_file(a["id"], name, text)
+        engine.cfg.settings.second_opinion = "off"
+        did = await engine.app_manager.rebuild(a["id"], by_user=False, tag="v0.13.0")
+        a = apps.load(a["id"])
+        assert did and a["builds"] == [did] and a["imported"]["built"] is True, a.get("update")
+        meta = delivery.load(delivery.root_dir() / did)
+        assert meta["upstream"] == up and meta["base_ref"] == "v0.13.0" and meta["port"], meta
+        apps.save({**a, "update": {"status": "available", "latest": "v0.14.0"}})
+        again = await engine.app_manager.rebuild(a["id"], by_user=False)
+        a = apps.load(a["id"])
+        assert again and a["update"]["status"] == "built" and a["base_ref"] == "v0.14.0", a["update"]
 
         engine.send("Which kernel am I on?")
         await wait_for(lambda: engine.requests, "the assistant's request", tries=18000)
