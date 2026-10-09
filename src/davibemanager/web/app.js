@@ -958,7 +958,8 @@ const patchEl = (text) => h("pre", { class: "patch small" }, (text || "").split(
   class: l.startsWith("+") && !l.startsWith("+++") ? "add" : l.startsWith("-") && !l.startsWith("---") ? "del" : l.startsWith("@@") ? "hunk" : "" }, `${l}\n`)));
 const REVIEW_LOOK = { ok: ["ok", "Looks safe"], care: ["warn", "Be careful"], stop: ["danger", "Don't install it"] };
 
-function reviewEl(r, compact) {
+// a reviewer's reading of a shared app's changes (not a command's second opinion: reviewEl)
+function sharedReviewEl(r, compact) {
   if (!r || r.status === "checking") return h("div", { class: "small row" }, h("span", { class: "spinner" }), "A reviewer is reading its changes…");
   if (r.status === "error") return h("div", { class: "warnbox small" }, `Its changes couldn't be reviewed: ${r.error}. Read them yourself before you build it.`);
   const [cls, label] = REVIEW_LOOK[r.level] || ["", r.verdict || "Read by a reviewer"];
@@ -1002,7 +1003,7 @@ function importedEl(a) {
     h("div", {}, h("b", {}, imp.update ? `Updated to the shared version${titles.length ? `: ${titles.join(" · ")}` : ""}.`
       : imp.into ? `Added from a shared app: ${titles.join(" · ")}.` : "Shared with you."),
       ` Not built yet: it's built from the official ${a.base_ref} with ${imp.into ? "all your changes" : "its changes"}.`),
-    reviewEl(imp.review, true),
+    sharedReviewEl(imp.review, true),
     failed ? h("div", { class: "small" }, "Not all of them applied by themselves, so the assistant was asked to finish it in a chat.") : null,
     h("div", { class: "actions" }, h("button", { class: "small primary", onclick: () => guarded(async () => {
       if (imp.review?.level === "stop" && !(await confirmModal("Build it anyway?", "The reviewer said not to install these changes. Building it is safe (it happens in the sandbox), but read what it said before you install it.", "Build it"))) return;
@@ -1040,7 +1041,7 @@ function importView(v) {
   // what a file says of its version is only its word: anyone with an earlier copy could make one
   // that says it's newer, so updating is never chosen for the user
   let pick = {};
-  const reviewBox = h("div", {}, reviewEl(v.review));
+  const reviewBox = h("div", {}, sharedReviewEl(v.review));
   const radio = (checked, onpick, title, desc, extra) => h("label", { class: "radio" },
     h("input", { type: "radio", name: "into", checked, onchange: onpick }),
     h("div", {}, h("div", {}, title), desc ? h("div", { class: "small muted" }, desc) : null, extra || null));
@@ -1081,7 +1082,7 @@ function importView(v) {
     if (!document.body.contains(m.box)) { clearInterval(poll); return; }
     try {
       const now = await api("GET", `/api/share/${v.token}`);
-      if (now.review.status !== "checking") { clearInterval(poll); reviewBox.replaceChildren(reviewEl(now.review)); }
+      if (now.review.status !== "checking") { clearInterval(poll); reviewBox.replaceChildren(sharedReviewEl(now.review)); }
     } catch { clearInterval(poll); }
   }, 2000);
 }
