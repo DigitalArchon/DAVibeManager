@@ -3,6 +3,7 @@ with its notes and patch, the build script), read strictly on import, its change
 anything is built, and then built by the app from the official source: as an app of its own, or
 with its changes joining the user's own copy."""
 
+import asyncio
 import io
 import json
 import zipfile
@@ -14,7 +15,7 @@ from fakesandbox import commit_patch
 from davibemanager import apps, share
 from davibemanager.workspace import scripts
 from helpers import wait_for
-from test_apps import GTHUMB, gthumb  # noqa: F401 - the fixture
+from test_apps import ARGS, GTHUMB, gthumb  # noqa: F401 - the fixture
 
 REVIEW = "It adds a box to zoom with in the viewer, nothing else.\nSUMMARY: A zoom tool, only that.\nCONCERNS: none\nVERDICT: looks safe"
 
@@ -366,3 +367,36 @@ async def test_changes_too_long_to_read_together_are_each_reviewed_on_their_own(
     view = engine.sharing.peek(Path(exported(engine, tmp_path)["path"]))
     await wait_for(lambda: engine.sharing.view(view["token"])["review"]["status"] == "done", "the review")
     assert engine.sharing.view(view["token"])["review"]["partial"] is True and asked[0].endswith("too long to include]")
+
+
+async def test_an_import_the_assistant_finishes_counts_as_built_and_its_chat_can_be_found_again(gthumb, tmp_path, monkeypatch):
+    """Build it, it doesn't build by itself, the assistant finishes it in a chat: that build is the
+    imported app's (not "Not built yet: Build it" again), and the app's card links to that chat."""
+    engine, sb, _, _ = gthumb
+    faked_review(engine)
+    view = engine.sharing.peek(Path(exported(engine, tmp_path)["path"]))
+    await wait_for(lambda: engine.sharing.view(view["token"])["review"]["status"] == "done", "the review")
+    aid = engine.sharing.accept(view["token"], name="gThumb (Sam's)")["app"]
+    sb.fail["build"] = "error: gth-image-viewer.c: missing header"
+    monkeypatch.setattr(engine, "_start_turn", lambda content, note=True: None)
+    assert await engine.app_manager.rebuild(aid, by_user=True, tag="3.12.6") == ""
+    chat = engine.conv.id
+    a = apps.load(aid)
+    assert (engine.conv.mode, engine.conv.app) == ("app", aid)
+    assert a["imported"]["built"] is False and a["update"]["port"]["tag"] == "3.12.6"
+    assert a["chat"]["id"] == chat and a["chat"]["tag"] == "3.12.6"
+    view = next(x for x in engine.app_manager.apps() if x["id"] == aid)
+    assert view["chat"]["id"] == chat
+    # the assistant's build, delivered in that chat as the prompt says (updates=, its own release)
+    del sb.fail["build"]
+    sb.files[f"/work/apps/{aid}/build.sh"] = b"meson setup build && ninja -C build && make-appimage\n"
+    engine.builder = type("Builder", (), {"entry": {"parts": []}, "busy": False, "tasks": {}, "close": lambda self: asyncio.sleep(0)})()
+    await engine.builder_deliver({**ARGS, "name": "gThumb (Sam's)", "repo": f"/work/apps/{aid}", "updates": aid,
+                                  "build_script": f"/work/apps/{aid}/build.sh"})
+    a = apps.load(aid)
+    assert len(a["builds"]) == 1 and a["imported"]["built"] is True and "port" not in a["update"]
+    # a chat that's gone isn't linked to
+    engine.conv.chat.append({"kind": "user", "text": "x"})
+    await engine.new_chat()
+    engine.delete_chats([chat])
+    assert next(x for x in engine.app_manager.apps() if x["id"] == aid)["chat"] is None

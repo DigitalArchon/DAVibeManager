@@ -283,6 +283,13 @@ async def test_an_addon_of_its_own_installs_into_the_apps_folder_keeping_the_use
     assert old["status"] == "replaced" and old["replaced_by"] == "D2"
     assert new["app"] == old["app"] and new["replaces"] == "D1" and new["status"] == "installed"
 
+    # removed from My apps: its file goes, and the user's own comes back (set aside by D1, kept by D2)
+    (scripts / "keep-me.lua").write_text("-- not the add-on's\n")
+    engine.builder = None                                    # the assistant's turn is over
+    assert engine.app_manager.remove(new["app"]) == {"left": ""}
+    assert sorted(p.name for p in scripts.iterdir()) == ["burst-screenshot.lua", "keep-me.lua"]
+    assert (scripts / "burst-screenshot.lua").read_text() == "-- the user's own\n"
+
 
 async def test_a_tampered_or_symlinked_addon_is_not_installed(burst, monkeypatch, tmp_path):
     engine, sb = burst

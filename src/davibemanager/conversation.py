@@ -87,6 +87,10 @@ class Conversation:
         return out
 
     @staticmethod
+    def exists(cid: str, root: Path | None = None) -> bool:
+        return bool(re.fullmatch(r"[\w-]+", cid or "")) and (root_dir(root) / cid / "state.json").is_file()
+
+    @staticmethod
     def delete(cid: str, root: Path | None = None) -> None:
         base = root_dir(root).resolve()
         if not re.fullmatch(r"[\w-]+", cid or ""):

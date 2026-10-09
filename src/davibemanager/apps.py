@@ -24,6 +24,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import time
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -89,6 +90,12 @@ def list_all() -> list[dict]:
             out.append(a)
     out.sort(key=lambda a: a.get("created", 0))
     return out
+
+
+def remove(app_id: str) -> None:
+    d = dir_of(app_id)
+    if d.is_dir() and not d.is_symlink():
+        shutil.rmtree(d)
 
 
 def new_id(name: str) -> str:

@@ -90,6 +90,7 @@ class FakeSandbox:
                           "commits": ["Fix TIFF overflow", "Speed up thumbnails"], "commit_count": 2, "notes": "", "url": ""}
         self.installed_packages: list[list[str]] = []
         self.official: dict[str, str] = {}      # tag -> its commit in the official repository (else as repo() makes it)
+        self.root_calls: list[list[str]] = []     # what the app ran as root in a container
         self.carry_fail: dict[str, str] = {}    # change id -> what git says: it doesn't carry over to a new release
         self.merged: set[str] = set()           # changes the new release has already
         self.mirrored: list[list[str]] = []     # scripts.MIRROR's arguments, each time
@@ -260,6 +261,7 @@ class FakeSandbox:
         return (2, "@@FAILED fetch\n" + self.fail["mirror"]) if "mirror" in self.fail else (0, "")
 
     async def exec_root(self, name, argv, timeout=1800, on_line=None):
+        self.root_calls.append(argv)
         assert argv[:3] != ["sh", "-c", scripts.MIRROR], "mirrors are never fetched as root"
         if argv[:2] == ["sh", "-c"] and "apt-get install" in argv[2]:     # a clean build's packages: "$@"
             self.check_packages.append((name, argv[4:]))

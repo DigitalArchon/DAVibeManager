@@ -334,6 +334,8 @@ def create_app(token: str, make_engine: Callable[[Callable[[dict], None]], Engin
             await m.ask_assistant(app_id, None)
         elif action == "rollback":
             return m.rollback(app_id)
+        elif action == "remove":
+            return m.remove(app_id, keep_installed=bool((body or {}).get("keep_installed")))
         else:
             raise HTTPException(404)
         return {"ok": True}

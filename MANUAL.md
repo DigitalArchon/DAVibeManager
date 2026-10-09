@@ -14,6 +14,7 @@ This is the full guide. For what DA Vibe Manager is and how to install it, see t
 - [What it costs](#what-it-costs)
 - [Which host runs the model](#which-host-runs-the-model)
 - [Keeping your apps up to date](#keeping-your-apps-up-to-date)
+- [Removing an app](#removing-an-app)
 - [Starting an app again, cleanly](#starting-an-app-again-cleanly)
 - [Sharing an app](#sharing-an-app)
 - [Backups](#backups)
@@ -162,6 +163,20 @@ never on battery unless you allow it; an app can also build straight away, or on
 so. **Build it now** is always there. Installing the new build replaces the old one in place,
 and **Go back to …** returns to the one before.
 
+When your changes don't carry over to the new version by themselves (or it doesn't build with the
+saved build script), **Let the assistant do it** opens a chat in which it makes them fit. The build
+it delivers there is the app's new version, as if the app had made it. Until then, **Go to its
+chat** on the app's card takes you back to that chat (it's in Chats too).
+
+## Removing an app
+
+**Remove…** on an app in My apps uninstalls it the way it was installed (from Gear Lever, which puts
+it in the Trash; from Shelly; or our own menu entry), and takes it off My apps with its builds and
+changes. An add-on's files are taken out of the app's folder, and any files of your own it set aside
+are put back. An AppImage you've changed since it was installed is left where it is, and so is a copy
+of source code; the app tells you what stayed. Its chats stay in Chats. To be able to have it back,
+**Share…** it first: the `.vibe` file can be imported again.
+
 ## Starting an app again, cleanly
 
 An app built on a fork, or with code pulled in from other apps' histories, may no longer carry
@@ -196,8 +211,9 @@ their notes say and nothing more, and whether they send anything anywhere, touch
 download and run things. You then import it as an app of its own (with its own name, next to any
 you have), or add its changes to your own copy of that app. Either way it's only built when you
 click **Build it**: from the official source with the changes, in the sandbox. Nobody's built app
-is ever passed along. After that it's yours, kept up to date with the project's releases like your
-other apps.
+is ever passed along. If a change doesn't fit your copy as it is, or it doesn't build here by itself,
+the assistant is asked to finish it in a chat, and **Go to its chat** on the app's card takes you
+back there. After that it's yours, kept up to date with the project's releases like your other apps.
 
 **Versions, across computers.** A shared app knows who it is wherever it goes, and which systems
 each version is known to work on (from **It works**, or **It works here** in My apps). Say you made

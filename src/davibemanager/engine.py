@@ -640,6 +640,23 @@ class Engine:
     def list_chats(self) -> list[dict]:
         return Conversation.list_all()
 
+    def forget_app(self, app_id: str) -> None:
+        """An app the user removed: its chats stay, about it by name only (a build delivered in one
+        later makes it an app again)."""
+        for c in Conversation.list_all():
+            if c["app"] != app_id or (self.conv and self.conv.id == c["id"]):
+                continue
+            try:
+                conv = Conversation.load(c["id"])
+            except FileNotFoundError:
+                continue
+            conv.app, conv.remake = "", False
+            conv.save()
+        if self.conv and self.conv.app == app_id:
+            self.conv.app, self.conv.remake = "", False
+            self._persist()
+            self._changed()
+
     def delete_chats(self, ids: list[str]) -> dict:
         deleted, errors = [], []
         for cid in dict.fromkeys(ids):

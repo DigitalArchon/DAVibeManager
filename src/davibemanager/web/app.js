@@ -910,7 +910,8 @@ function releaseEl(a) {
         ? `${failedChanges(a, port).map((t) => `“${t}”`).join(" and ")} didn't fit the new version as ${failedChanges(a, port).length > 1 ? "they are" : "it is"}. The assistant can make ${failedChanges(a, port).length > 1 ? "them" : "it"} fit; the rest of your changes carried over by themselves.`
         : `Your changes didn't carry over by themselves (${STEP_LABEL[port.step] || port.step} failed). The assistant can finish it.`) : null,
       h("div", { class: "actions" },
-        port ? h("button", { class: "small primary", onclick: () => guarded(async () => { await appAct(a, "assistant"); closePanel(); }) }, "Let the assistant do it")
+        port && a.chat?.tag === u.latest ? chatButton(a, "primary")
+          : port ? h("button", { class: "small primary", onclick: () => guarded(async () => { await appAct(a, "assistant"); closePanel(); }) }, "Let the assistant do it")
           : a.kind === "appimage" ? h("button", { class: "small primary", onclick: () => rebuildApp(a) }, a.schedule?.waiting ? "Build it now" : `Build ${u.latest} with my changes`)
           : h("button", { class: "small primary", onclick: () => guarded(async () => { await appAct(a, "assistant"); closePanel(); }) }, `Update to ${u.latest}`),
         h("button", { class: "small", onclick: () => guarded(() => showChangelog(a)) }, "What's new?"),
@@ -1034,10 +1035,39 @@ function importedEl(a) {
       : imp.into ? `Added from a shared app: ${titles.join(" · ")}.` : "Shared with you."),
       ` Not built yet: it's built from the official ${a.base_ref} with ${imp.into ? "all your changes" : "its changes"}.`),
     sharedReviewEl(imp.review, true),
-    failed ? h("div", { class: "small" }, "Not all of them applied by themselves, so the assistant was asked to finish it in a chat.") : null,
-    h("div", { class: "actions" }, h("button", { class: "small primary", onclick: () => guarded(async () => {
-      if (imp.review?.level === "stop" && !(await confirmModal("Build it anyway?", "The reviewer said not to install these changes. Building it is safe (it happens in the sandbox), but read what it said before you install it.", "Build it"))) return;
-      await appAct(a, "build"); }) }, "Build it")));
+    failed ? h("div", { class: "small" }, `${a.update.port.step === "apply" ? "Not all of them applied by themselves" : "It didn't build by itself"}, so the assistant was asked to finish it in a chat. Its build shows up here when it's done.`) : null,
+    h("div", { class: "actions" },
+      failed && a.chat ? chatButton(a, "primary") : null,
+      h("button", { class: `small ${failed && a.chat ? "ghost" : "primary"}`, onclick: () => guarded(async () => {
+        if (imp.review?.level === "stop" && !(await confirmModal("Build it anyway?", "The reviewer said not to install these changes. Building it is safe (it happens in the sandbox), but read what it said before you install it.", "Build it"))) return;
+        if (failed && !(await confirmModal("Try building it again?", "Last time it couldn't be made by itself, so the same will probably happen again, and a new chat with the assistant starts (which costs money). To carry on with the one already working on it, use “Go to its chat”.", "Try again"))) return;
+        await appAct(a, "build"); }) }, failed ? "Try again" : "Build it")));
+}
+
+// the chat the assistant was asked to build an app in (AppManager.ask_assistant)
+function chatButton(a, kind = "") {
+  return h("button", { class: `small ${kind}`, onclick: () => guarded(async () => {
+    await api("POST", "/api/chats/open", { id: a.chat.id }); closePanel(); }) }, "Go to its chat");
+}
+
+async function removeApp(a) {
+  const inst = a.installed;
+  const ok = await confirmModal(`Remove ${a.name}?`, h("div", {},
+    h("p", {}, inst ? `${a.name} ${inst.version || ""} is uninstalled${HOME_LABEL[inst.via] ? ` from ${HOME_LABEL[inst.via]}` : ""}, and it goes from My apps with its builds and changes.`
+      : `${a.name} goes from My apps, with its builds and changes.`),
+    h("p", { class: "small" }, a.kind === "addon" && inst ? "Its files are taken out of the app's folder, and any of your own it set aside are put back." : a.kind === "source" && inst ? `The copy of its source code (${inst.path || "in your install folder"}) stays.` : ""),
+    h("p", { class: "small muted" }, a.unshareable ? "Its chats stay in Chats." : "Its chats stay in Chats. To keep its changes, Share… it first: the .vibe file can be imported again.")), "Remove", "danger");
+  if (!ok) return;
+  let out;
+  try {
+    out = await appAct(a, "remove");
+  } catch (e) {
+    if (!inst || !/couldn't be uninstalled/.test(e.message)) throw e;
+    if (!(await confirmModal("It couldn't be uninstalled", h("div", {}, h("p", {}, e.message),
+      h("p", { class: "small" }, `Remove ${a.name} from My apps anyway? It stays installed, and you can remove it yourself${HOME_LABEL[inst.via] ? ` in ${HOME_LABEL[inst.via]}` : ""}.`)), "Remove it anyway", "danger"))) return;
+    out = await appAct(a, "remove", { keep_installed: true });
+  }
+  toast(out?.left ? `${a.name} is removed. Left on your computer: ${out.left}` : `${a.name} is removed.`, out?.left ? "info" : "ok");
 }
 
 function importApp() {
@@ -1223,6 +1253,7 @@ function appCard(a) {
   if (!a.unshareable) btns.append(h("button", { class: "small ghost", onclick: () => guarded(() => exportApp(a)) }, "Share…"));
   if (a.export_build) btns.append(h("button", { class: "small ghost", title: "Save a copy of the app to run on another computer",
     onclick: () => guarded(() => exportAppImage(a)) }, "Export AppImage"));
+  if (!a.building) btns.append(h("button", { class: "small ghost danger", onclick: () => guarded(() => removeApp(a)) }, "Remove…"));
   card.append(btns);
   const builds = (a.builds || []).map(deliveryOf).filter(Boolean);
   const older = builds.filter((d) => d.id !== pending?.id && d.id !== inst?.build);

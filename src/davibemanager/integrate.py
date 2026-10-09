@@ -12,10 +12,15 @@ an update replaces the app in place and its menu entry and icon carry on:
   AppImage of the same name in ~/.local/bin, with the same menu entry (Shelly 3.1.6, on CachyOS).
 - Our own: the AppImage in the install folder, and a menu entry and icon from the ones the
   sandbox extracted from it (rebuilt from descriptive keys only: appimage.menu_entry).
+
+Removing an app (the user's click) undoes it the same way: Gear Lever's `--remove <file> -y`
+(which puts the AppImage, its menu entry and icons in the Trash), Shelly's `remove appimage
+<name> -n`, or our own files deleted.
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import shutil
@@ -123,6 +128,14 @@ class GearLever:
             raise IntegrationError(f"Gear Lever added {name} again instead of replacing it: remove the extra copy in Gear Lever")
         return {"via": self.key, "path": mine[0]["path"], "desktop_id": mine[0].get("desktop_id") or ""}
 
+    def uninstall(self, info: dict, app: dict, sha256: str) -> str:
+        cmd = self.command()
+        if not cmd:
+            raise IntegrationError("Gear Lever isn't installed")
+        if Path(info.get("path") or "").is_file():
+            _run([*cmd, "--remove", info["path"], "-y"])
+        return ""
+
 
 class Shelly:
     key, label = "shelly", "Shelly"
@@ -153,6 +166,15 @@ class Shelly:
         except IntegrationError:
             pass
         return {"via": self.key, "path": path, "desktop_id": desktop_id}
+
+    def uninstall(self, info: dict, app: dict, sha256: str) -> str:
+        cmd = self.command()
+        if not cmd:
+            raise IntegrationError("Shelly isn't installed")
+        desktop_id = info.get("desktop_id") or ""
+        name = desktop_id.removesuffix(".desktop") if desktop_id else Path(info.get("path") or stable_name(app)).stem
+        _run([*cmd, "remove", "appimage", name, "-n"])
+        return ""
 
 
 class Menu:
@@ -194,6 +216,40 @@ class Menu:
                 except IntegrationError:
                     pass                        # the entry works without the cache
         return {"via": self.key, "path": str(dest), "desktop_id": desktop_id}
+
+    def uninstall(self, info: dict, app: dict, sha256: str) -> str:
+        """Our own files for the app: its menu entry and icon, and the AppImage if it's still the
+        one installed (a file changed since stays). Returns what was left behind ("" if nothing)."""
+        left = ""
+        path = Path(info.get("path") or "")
+        if path.is_file() and not path.is_symlink():
+            if sha256 and _sha256(path) == sha256:
+                path.unlink()
+            else:
+                left = f"{path} (it has changed since it was installed)"
+        if (info.get("desktop_id") or "") == f"{tag(app)}-{app['id']}.desktop":
+            (self.applications / info["desktop_id"]).unlink(missing_ok=True)
+            if updb := _which("update-desktop-database"):
+                try:
+                    _run([updb, str(self.applications)], timeout=60)
+                except IntegrationError:
+                    pass
+        for icon in self.icons_dir.glob(f"{tag(app)}-{app['id']}.*") if self.icons_dir.is_dir() else []:
+            icon.unlink(missing_ok=True)
+        return left
+
+
+def _sha256(path: Path) -> str:
+    h = hashlib.sha256()
+    with path.open("rb") as f:
+        while chunk := f.read(1 << 20):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def by_key(key: str, install_dir: Path, icons_dir: Path):
+    """The integrator an app was installed with (its record's "via"), to remove it the same way."""
+    return {"gearlever": GearLever(), "shelly": Shelly(), "menu": Menu(install_dir, icons_dir)}.get(key)
 
 
 def choose(setting: str, install_dir: Path, icons_dir: Path):

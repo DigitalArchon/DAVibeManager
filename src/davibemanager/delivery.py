@@ -173,9 +173,61 @@ def safe_name(text: str, fallback: str = "app") -> str:
     return re.sub(r"[^A-Za-z0-9._+-]+", "-", str(text or "")).strip("-.")[:60] or fallback
 
 
+LAST_ID = ".last-id"                    # the highest id given, so a removed delivery's is never given again
+
+
 def next_id(root: Path) -> str:
     nums = [int(m.group(1)) for d in root.iterdir() if (m := re.fullmatch(r"D(\d+)", d.name))] if root.is_dir() else []
+    try:
+        nums.append(int((root / LAST_ID).read_text().strip()))
+    except (OSError, ValueError):
+        pass
     return f"D{max(nums, default=0) + 1}"
+
+
+def remove(root: Path, did: str) -> None:
+    """Delete a delivery (its app was removed). Its id isn't given to another: chats that showed it
+    show nothing in its place, never a different build."""
+    m = re.fullmatch(r"D(\d+)", did or "")
+    d = root / did if m else None
+    if d is None or d.is_symlink() or not d.is_dir():
+        return
+    try:
+        last = int((root / LAST_ID).read_text().strip())
+    except (OSError, ValueError):
+        last = 0
+    if int(m.group(1)) > last:
+        tmp = root / f"{LAST_ID}.tmp"
+        tmp.write_text(m.group(1))
+        tmp.replace(root / LAST_ID)
+    shutil.rmtree(d)
+
+
+def uninstall(meta: dict, backups: list[str] = ()) -> str:
+    """Undo install() for a delivery installed as files: an add-on's files go (only those it put there)
+    and the user's own files set aside for it come back (`backups`: those of the app's earlier
+    deliveries too, which an update kept); an AppImage goes if it's still as installed. A copy of
+    source code is left where it is. Returns what was left behind, in words ("" if nothing)."""
+    if meta.get("kind") == "addon":
+        for f in meta.get("installed_files", []):
+            target = Path(f)
+            if target.is_dir() and not target.is_symlink():
+                shutil.rmtree(target)
+            elif target.exists() or target.is_symlink():
+                target.unlink()
+        for b in dict.fromkeys([*meta.get("backups", []), *backups]):
+            backup = Path(b)
+            original = backup.with_name(re.sub(r"\.before-D\d+$", "", backup.name))
+            if original != backup and backup.exists() and not original.exists():
+                backup.rename(original)
+        return ""
+    path = Path(meta.get("installed_to") or "")
+    if meta.get("kind") == "appimage":
+        if path.is_file() and not path.is_symlink() and sha256_file(path) == meta.get("sha256"):
+            path.unlink()
+            return ""
+        return f"{path} (it has changed since it was installed)" if path.exists() else ""
+    return str(path) if path.exists() else ""
 
 
 def sha256_file(path: Path) -> str:

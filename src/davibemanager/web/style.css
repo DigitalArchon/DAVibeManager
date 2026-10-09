@@ -95,6 +95,7 @@ button.primary:hover:not(:disabled) { background: var(--accent); border-color: v
 button.danger { background: var(--danger-fill); border-color: var(--danger); color: #fff; }
 button.ghost { background: transparent; border-color: transparent; color: var(--muted); }
 button.ghost:hover { color: var(--text); }
+button.ghost.danger { background: transparent; border-color: transparent; color: var(--danger); }
 button.small { padding: 2px 9px; font-size: 13px; }
 input, select, textarea {
   font: inherit; color: var(--text); background: var(--bg); border: 1px solid var(--border);

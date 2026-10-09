@@ -38,7 +38,7 @@ from typing import TYPE_CHECKING
 from . import appimage, apps, integrate, share, versions
 from . import delivery as delivery_mod
 from .config import REBUILD, data_dir
-from .conversation import fence
+from .conversation import Conversation, fence
 from .llm import prompts
 from .models import UserError
 from .netpolicy import InsecureURL, check_url
@@ -138,6 +138,8 @@ class AppManager:
                         "works_on": share.works_on(a) if a.get("share") else [],
                         "works_here": share.this_system() in (share.works_on(a) if a.get("share") else []),
                         "version": share.signature(a) if a.get("share") else "",
+                        # the chat the assistant was asked to build it in, while it's there
+                        "chat": a["chat"] if (a.get("chat") or {}).get("id") and Conversation.exists(a["chat"]["id"]) else None,
                         "schedule": {"check_every": self.check_every(a), "build_when": self.build_when(a),
                                      "own": {"check_every": a.get("check_every", ""), "build_when": a.get("build_when", "")},
                                      "waiting": self.waiting(a)}})
@@ -596,6 +598,11 @@ class AppManager:
             app["update"] = {}                  # what was known of new releases was of the old source
         if port and (app.get("update") or {}).get("latest") == meta.get("base_ref"):
             app["update"] = {**app["update"], "status": "built", "build": meta["id"]}
+        if port and ((app.get("update") or {}).get("port") or {}).get("tag") == meta.get("base_ref"):
+            app["update"] = {k: v for k, v in app["update"].items() if k != "port"}     # what didn't fit, made to fit
+        if (app.get("imported") or {}).get("built") is False:
+            # a build with all its changes (check_branch keeps them), whoever made it
+            app["imported"] = {**app["imported"], "built": True}
         apps.write_file(app["id"], "series.patch", series)
         if build_script:
             apps.write_file(app["id"], "build.sh", build_script)
@@ -966,8 +973,6 @@ class AppManager:
             raise
         self.building.pop(app_id, None)
         a = self.app(app_id)
-        if (a.get("imported") or {}).get("built") is False:
-            apps.save({**a, "imported": {**a["imported"], "built": True}})
         _, meta = self.e._delivery(did)
         same = " The change is identical to the one you have." if meta.get("identical_to") else ""
         self.e.notify(f"{a['name']} {tag} is ready", f"Built with your changes.{same} Open My apps to install it.")
@@ -1020,6 +1025,8 @@ class AppManager:
         await self.e._sandbox_running()
         await self.e.new_chat(mode="app", app=app_id)
         tag = tag or u["latest"]
+        apps.save({**self.app(app_id), "chat": {"id": self.e.conv.id, "tag": tag, "at": time.time()}})
+        self.changed()
         titles = {c["id"]: c["title"] for c in a.get("changes", [])}
         tree = self.tree(a)
         try:
@@ -1114,6 +1121,58 @@ class AppManager:
         self.e.log("installed", delivery=did, app=a["id"], via=info["via"], to=info["path"], sha256=meta.get("sha256"))
         self.changed()
         return meta
+
+    # ---------------------------------------------------------------- removing an app
+
+    def remove(self, app_id: str, keep_installed: bool = False) -> dict:
+        """Take an app off My apps (the user's click): uninstalled the way it was installed (unless
+        `keep_installed`), its builds and record deleted, and its folders in the sandbox. Its chats
+        stay, no longer tied to it. Returns {"left": what stays on the computer, in words}."""
+        a = self.app(app_id)
+        if app_id in self.building:
+            raise UserError(f"{a['name']} is being built: wait for it to finish first.")
+        c = self.e.conv
+        if self.e.busy and c and c.app == app_id:
+            raise UserError(f"The assistant is working on {a['name']}: wait for it to finish (or stop it) first.")
+        left = "" if keep_installed else self._uninstall(a)
+        if keep_installed and (a.get("installed") or {}).get("path"):
+            left = a["installed"]["path"]
+        for m in self.e.deliveries():
+            if m.get("app") == app_id:
+                delivery_mod.remove(delivery_mod.root_dir(), m["id"])
+        apps.remove(app_id)
+        self.e.forget_app(app_id)
+        self.e._spawn(self._clear_sandbox(a))
+        self.e.log("app_removed", app=app_id, kept_installed=keep_installed, left=left)
+        self.changed()
+        return {"left": left}
+
+    def _uninstall(self, a: dict) -> str:
+        """Uninstall the app's installed build, the way it was installed. Raises UserError if it
+        can't be (the window offers to remove it from My apps all the same, leaving it installed)."""
+        inst = a.get("installed") or {}
+        if not inst.get("build"):
+            return ""
+        meta = delivery_mod.load(delivery_mod.root_dir() / inst["build"]) or {}
+        via = inst.get("via") or meta.get("installed_via") or ""
+        s = self.e.cfg.settings
+        integrator = integrate.by_key(via, Path(s.install_dir), data_dir() / "icons") if a.get("kind") == "appimage" else None
+        try:
+            if integrator is not None:
+                return integrator.uninstall(inst, a, meta.get("sha256", ""))
+            kept = [b for m in self.e.deliveries() if m.get("app") == a["id"] for b in m.get("backups", [])]
+            return delivery_mod.uninstall({**meta, "kind": a.get("kind", meta.get("kind"))}, kept) if meta else ""
+        except (integrate.IntegrationError, OSError) as e:
+            raise UserError(f"{a['name']} couldn't be uninstalled: {e}") from None
+
+    async def _clear_sandbox(self, a: dict) -> None:
+        """Its folders in the sandbox (notes and patches, its source trees), so an app made later under
+        the same id starts clean."""
+        try:
+            await podman.exec_root(self.e.sandbox, ["rm", "-rf", "--", f"{APPS_FOLDER}/{a['id']}", self.tree(a),
+                                                     self.remake_tree(a), f"{BUILD_FOLDER}/{a['id']}"], timeout=300)
+        except podman.PodmanError:
+            pass                                # the sandbox isn't up: a later chat's tree is made afresh
 
     # ---------------------------------------------------------------- a copy to run elsewhere
 

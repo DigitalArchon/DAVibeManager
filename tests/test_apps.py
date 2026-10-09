@@ -326,6 +326,12 @@ if sys.argv[1] == "--integrate":
 elif sys.argv[1] == "--list-installed":
     print("Loading...")
     print(json.dumps({"schema_version": 1, "installed": apps}))
+elif sys.argv[1] == "--remove":
+    # without -y it asks first (Gear Lever's Cli.py): nothing answered, nothing removed
+    if "-y" not in sys.argv:
+        sys.exit(1)
+    os.remove(sys.argv[2])
+    json.dump([a for a in apps if a["path"] != sys.argv[2]], open(db, "w"))
 '''
 
 
@@ -359,6 +365,10 @@ if sys.argv[1:3] == ["install", "appimage"]:
     shutil.copy(sys.argv[3], dest)
 elif sys.argv[1:3] == ["list", "appimage"]:
     print(json.dumps([{"Name": "gThumb-dvm", "DesktopName": "gThumb (DVM)", "Path": dest}]))
+elif sys.argv[1:3] == ["remove", "appimage"]:
+    if sys.argv[3] != "gThumb-dvm":
+        sys.exit("no such app")
+    os.remove(dest)
 '''
 
 
@@ -372,6 +382,78 @@ async def test_on_arch_shelly_is_where_apps_live(gthumb, tmp_path, monkeypatch):
     assert apps.load("gthumb")["installed"]["desktop_id"] == "gThumb-dvm.desktop"
     call = json.loads(log.read_text().splitlines()[0])
     assert call[:2] == ["install", "appimage"] and call[-1] == "-n"
+
+
+async def test_removing_an_app_uninstalls_it_and_deletes_its_builds_but_keeps_its_chats(gthumb, tmp_path):
+    engine, sb, fake, told = gthumb
+    home = tmp_path / "home"
+    engine.install_delivery("D1")
+    app_file = home / "Applications" / "gThumb-dvm.AppImage"
+    entry = home / ".local/share/applications/dvm-gthumb.desktop"
+    icon = Path(entry.read_text().split("Icon=")[1].split()[0])
+    assert app_file.exists() and icon.exists()
+    chat = engine.conv.id
+    assert (engine.conv.mode, engine.conv.app) == ("app", "gthumb")
+    assert engine.app_manager.remove("gthumb") == {"left": ""}
+    assert not app_file.exists() and not entry.exists() and not icon.exists()
+    assert apps.load("gthumb") is None and not engine.app_manager.apps() and not engine.deliveries()
+    # its chat stays, about gThumb by name: a build delivered in it later makes it an app again
+    assert (engine.conv.id, engine.conv.app, engine.conv.app_name) == (chat, "", "gThumb")
+    saved = next(c for c in engine.list_chats() if c["id"] == chat)
+    assert saved["app"] == "" and saved["app_name"] == "gThumb"
+    # D1 is never another build's id: a chat that showed it shows nothing, not something else
+    assert delivery.next_id(delivery.root_dir()) == "D2"
+    await asyncio.sleep(0)
+    assert ["rm", "-rf", "--", "/work/.dvm/apps/gthumb", "/work/apps/gthumb", "/work/apps/gthumb-clean",
+            "/work/.dvm/build/gthumb"] in sb.root_calls                     # and its folders in the sandbox
+
+
+async def test_removing_leaves_a_changed_appimage_and_says_so(gthumb, tmp_path):
+    engine, sb, fake, told = gthumb
+    meta = engine.install_delivery("D1")
+    Path(meta["installed_to"]).write_bytes(b"the user's own file now")
+    out = engine.app_manager.remove("gthumb")
+    assert out["left"].startswith(meta["installed_to"]) and Path(meta["installed_to"]).exists()
+
+
+@pytest.mark.parametrize("cli,script,call", [
+    ("gearlever", GEARLEVER, lambda path: ["--remove", path, "-y"]),
+    ("shelly", SHELLY, lambda path: ["remove", "appimage", "gThumb-dvm", "-n"]),
+])
+async def test_removing_an_app_uninstalls_it_where_it_lives(gthumb, tmp_path, monkeypatch, cli, script, call):
+    engine, sb, fake, told = gthumb
+    log = fake_cli(tmp_path, monkeypatch, cli, script)
+    engine.cfg.settings.app_home = cli
+    meta = engine.install_delivery("D1")
+    engine.app_manager.remove("gthumb")
+    assert json.loads(log.read_text().splitlines()[-1]) == call(meta["installed_to"])
+    assert not Path(meta["installed_to"]).exists() and apps.load("gthumb") is None
+
+
+async def test_an_app_that_cant_be_uninstalled_is_kept_unless_the_user_says_to_leave_it_installed(gthumb, tmp_path, monkeypatch):
+    engine, sb, fake, told = gthumb
+    fake_cli(tmp_path, monkeypatch, "shelly", SHELLY)
+    engine.cfg.settings.app_home = "shelly"
+    meta = engine.install_delivery("D1")
+    a = apps.load("gthumb")
+    apps.save({**a, "installed": {**a["installed"], "desktop_id": "Other-dvm.desktop"}})   # Shelly doesn't know it
+    with pytest.raises(appmanager.UserError, match="couldn't be uninstalled"):
+        engine.app_manager.remove("gthumb")
+    assert apps.load("gthumb") and engine.deliveries()                    # nothing gone
+    assert engine.app_manager.remove("gthumb", keep_installed=True) == {"left": meta["installed_to"]}
+    assert apps.load("gthumb") is None and Path(meta["installed_to"]).exists()
+
+
+async def test_an_app_isnt_removed_while_its_being_built_or_worked_on(gthumb):
+    engine, sb, fake, told = gthumb
+    engine.app_manager.building["gthumb"] = {"step": "build"}
+    with pytest.raises(appmanager.UserError, match="being built"):
+        engine.app_manager.remove("gthumb")
+    engine.app_manager.building.clear()
+    engine.builder.busy = True
+    with pytest.raises(appmanager.UserError, match="assistant is working on gThumb"):
+        engine.app_manager.remove("gthumb")
+    assert apps.load("gthumb")
 
 
 async def test_install_refuses_an_appimage_whose_runtime_was_never_checked(gthumb):
