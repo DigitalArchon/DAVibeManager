@@ -586,11 +586,11 @@ def test_the_assistants_commits_carry_no_attribution_of_its_own(tmp_path):
 def test_none_of_the_assistants_tools_can_install_or_run_anything_on_this_computer():
     """Its only tools: ask, request (the user runs it), apt in the sandbox, show a picture, search the web (checked for
     anything from this computer); in an app chat, offer a build (a question on the app's card) and hand over to
-    quarantine; in a computer chat, point to an app chat (a card). Installing and running on this computer are the
+    quarantine, and correct its changes' notes; in a computer chat, point to an app chat (a card). Installing and running on this computer are the
     user's clicks, through the window's own API (per-launch token, unreachable from the sandbox's network)."""
     from davibemanager.builder.tools import tool_names
     common = ("ask_user", "request_host_command", "install_packages", "show_screenshot", "web_search")
-    assert sorted(tool_names("app")) == sorted(f"mcp__host__{n}" for n in (*common, "offer_build", "deliver"))
+    assert sorted(tool_names("app")) == sorted(f"mcp__host__{n}" for n in (*common, "offer_build", "deliver", "update_change_notes"))
     assert sorted(tool_names("computer")) == sorted(f"mcp__host__{n}" for n in (*common, "suggest_app_chat", "send_findings"))
 
 

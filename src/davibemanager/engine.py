@@ -1670,6 +1670,19 @@ class Engine:
         return (f"Shown to the user: a card to start a chat about changing {name}, with their wish. They start it "
                 "themselves, or not; nothing is built in this chat.")
 
+    async def builder_change_notes(self, args: dict) -> str:
+        """update_change_notes: new notes (and titles) for changes of this chat's app; no code changes."""
+        if not self.conv or self.conv.mode != "app" or not self.conv.app or not apps_mod.load(self.conv.app):
+            raise ValueError("this chat has no app of the user's yet: notes come with its first delivery")
+        try:
+            a = await self.app_manager.set_notes(self.conv.app, args.get("changes"))
+        except delivery_mod.DeliveryError as e:
+            raise ValueError(str(e)) from None
+        given = sorted((args.get("changes") or {}).keys()) if isinstance(args.get("changes"), dict) else []
+        titles = {c["id"]: c["title"] for c in a.get("changes", [])}
+        return ("Updated, for " + "; ".join(f"{cid} ({titles.get(cid, cid)})" for cid in given)
+                + ". The user sees them in My apps (What changed?), and they go with the app when it's shared.")
+
     async def builder_findings(self, args: dict) -> str:
         """A card in a chat about getting an app working here: what was found, for the chat that fixes
         its build, which the user starts with it (and can change it first)."""
@@ -2092,10 +2105,22 @@ class Engine:
         # what the branch is, checked in code: the official release with the user's changes, nothing else
         offered = [q["offer"].get("upstream", "") for q in self.questions.values() if q.get("offer")]
         remake = bool(entry is not None and self.conv and self.conv.remake and app is not None and not port)
+        pids = await self.app_manager.patch_ids(patch)
         checked = await self.app_manager.check_branch(app, port, box=box, repo=repo, base_ref=base_ref, base=base, head=head,
                                                       origin=origin, offered=offered, by_assistant=entry is not None,
-                                                      pids=await self.app_manager.patch_ids(patch), remake=remake)
+                                                      pids=pids, remake=remake)
         upstream = checked["upstream"]
+        if app is not None and entry is not None and not port:
+            # a change whose code this changes must say what it is now: its notes go with the app when it's
+            # shared, and are how it is made again (said before the build, not after it)
+            stale = self.app_manager.stale_notes(app, checked, patch, self.app_manager.check_notes(app, args.get("change_notes")))
+            if stale:
+                raise delivery_mod.DeliveryError(
+                    "This delivery changes the code of changes the user already has: "
+                    + ", ".join(f"{c['id']} ({c['title']})" for c in stale)
+                    + ". Their notes describe them as they were. Give change_notes for each ({change id: {\"notes\": "
+                    "what it does and why, how it's done, how to carry it over, as it is now; \"title\": a new title "
+                    "if it changed}}), in your own words, and deliver again.")
         # changes the user had that this build leaves out: only when the user says so (before the builds), or,
         # in the app's own update, one the project has made itself (it is in the new release)
         left_out = checked["left_out"]

@@ -21,6 +21,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from .. import backup as backup_mod
+from .. import delivery as delivery_mod
 from .. import share as share_mod
 from ..engine import MAX_ATTACHMENT, Engine, UserError
 from ..hostenv import host_env
@@ -312,7 +313,16 @@ def create_app(token: str, make_engine: Callable[[Callable[[dict], None]], Engin
         elif action == "build":
             # an app imported, or changes added from a shared app: built on the app's own release
             e._spawn(m.rebuild(app_id, by_user=True, tag=m.app(app_id).get("base_ref", "")))
+        elif action == "share-preview":
+            return e.sharing.preview(app_id)
         elif action == "export":
+            # the notes as the user corrected them on the preview, if they did
+            notes = (body or {}).get("notes")
+            if notes:
+                try:
+                    await m.set_notes(app_id, notes)
+                except delivery_mod.DeliveryError as err:
+                    raise UserError(str(err)) from None
             return e.sharing.export(app_id)
         elif action == "export-appimage":
             return m.export_appimage(app_id)

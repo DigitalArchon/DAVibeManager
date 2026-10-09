@@ -177,6 +177,12 @@ release it's built on, each of your changes with its notes and code, and how it'
 chats, your API key, your builds, or anything about your computer. It isn't locked: there's nothing
 secret in it, and it's a plain zip whose README says how to apply the changes even without the app.
 
+Before it saves the file, **Share…** shows you what goes in it: each change's title and notes,
+which you can correct there. Anything in them that came from your computer (a name, a path, a
+line of a command's output) is pointed out, so you can take it out first. The assistant writes the
+notes for whoever you share with, and keeps them up to date: a build that changes one of your
+changes comes with new notes for it, and it can correct notes without building anything.
+
 **Export AppImage** on an app in My apps saves the app itself (the build you have installed, or
 the newest) to your Downloads folder, to run on another computer or keep: it runs by itself on
 systems as new as Ubuntu 24.04 or Mint 22, with nothing to install. That copy isn't kept up to

@@ -228,6 +228,11 @@ change's id: the user confirms it on a card. Don't add commits only to revert it
 - The app keeps every app in /work/.dvm/apps/<app id>/: app.json, FEATURE.md (each change), \
 changes/<change id>.patch (each change against the release) and build.sh. Never edit these (the app \
 owns them).
+- Each change's notes go with the app when the user shares it, and are how it is made again later, \
+so they must always describe the change as it is now. When a delivery changes the code of a change \
+the user already has, give change_notes for it (its notes as they are now, and its title if that \
+changed): the app refuses the delivery otherwise. To correct notes or titles without changing any \
+code, use update_change_notes; never rebuild only for that.
 
 0. If the app loads add-ons itself (scripts, plug-ins, extensions, themes: mpv's Lua scripts, GIMP \
 plug-ins, a GNOME Shell extension), an add-on is usually the better offer: smaller, no rebuild, and it \
@@ -262,9 +267,11 @@ installed one, e.g. "gThumb (DVM)". If an AppImage isn't practical, deliver a so
 6. Call deliver with the artifact, the repository, the base ref, a short change_title, FEATURE.md, \
 build_script, screenshots, integration (how deep it goes, as above), what you tested here and \
 what you could not (be specific: the user's desktop, theme, their other apps and extras, real use), \
-and try_steps: a short checklist for the user's first try on their computer. FEATURE.md is how this change will be made again on a future version: the user's request in their \
-words, what you changed and why (files, functions, approach), how to build and package it, and what \
-to watch for when upstream changes. The user reviews it, can try it first without installing, \
+and try_steps: a short checklist for the user's first try on their computer. FEATURE.md is how this change will be made again on a future version, \
+and it goes with the app when the user shares it: what the change does for the person using the app \
+and why (in your own words: never quote the user's messages, and nothing from their computer, such as \
+names, paths or command output), what you changed and how (files, functions, approach), how to build \
+and package it, and what to watch for when upstream changes. The user reviews it, can try it first without installing, \
 and installs it themselves.
 
 ## Updating something you built before
@@ -313,6 +320,12 @@ BUILDER_TOOL_DOCS = {
         "Offer the user a chat about changing an app (\"Help me fix or add a feature to an app\"), on a card: for "
         "when what they want needs a change to the app's code, which this chat doesn't do. Doesn't wait: the user "
         "starts that chat with a click, or not. Say why in your message first."),
+    "update_change_notes": (
+        "Correct the notes (and titles) of the changes the user already has in this chat's app, without "
+        "changing any code: e.g. notes written for an earlier version of a change. Each change's notes say "
+        "what it does and why, how it is done, and how to carry it over to a new version, in your own words "
+        "(never the user's messages or anything from their computer): they go with the app when it is "
+        "shared. Change ids are in app.json."),
     "send_findings": (
         "When you've found why an app doesn't work on this computer: put what you found on a card, for the chat "
         "that fixes the app's build. The user reads it, and with a click starts that chat with it (they can change it "

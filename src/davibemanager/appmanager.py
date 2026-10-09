@@ -31,6 +31,7 @@ import os
 import re
 import shutil
 import time
+from collections import Counter
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -447,6 +448,76 @@ class AppManager:
         left_out = [c for c in (app or {}).get("changes", []) if c["id"] not in order]
         return {"upstream": upstream, "commits": commits, "order": order, "left_out": left_out}
 
+    # ---------------------------------------------------------------- each change's notes
+
+    @staticmethod
+    def check_notes(app: dict, raw) -> dict[str, dict]:
+        """Notes (and titles) for some of an app's changes, as given (change id -> {"notes", "title"?}):
+        checked, {id: {"notes", "title"}} with "title" "" when it stays. Raises DeliveryError."""
+        Err = delivery_mod.DeliveryError
+        if raw in (None, "", {}):
+            return {}
+        if not isinstance(raw, dict):
+            raise Err("change_notes is an object: change id -> {notes, title}")
+        have = {c["id"] for c in app.get("changes", [])}
+        out = {}
+        for cid, v in raw.items():
+            if cid not in have:
+                raise Err(f"{app['name']} has no change {cid!r}" + (f" (it has {', '.join(sorted(have))})" if have else ""))
+            v = v if isinstance(v, dict) else {"notes": v}
+            notes = str(v.get("notes") or "").strip()
+            if not notes:
+                raise Err(f"The notes for {cid} are empty")
+            if len(notes) > delivery_mod.MAX_FEATURE:
+                raise Err(f"The notes for {cid} are too long (64 KB at most)")
+            out[cid] = {"notes": notes, "title": " ".join(str(v.get("title") or "").split())[:120]}
+        return out
+
+    @staticmethod
+    def _added_lines(patch: str) -> Counter:
+        """The lines a patch adds: a change's own code (what it removes, and the context around it,
+        follow the project, and differ from release to release while the change stays the same)."""
+        return Counter(l[1:] for l in patch.splitlines() if l.startswith("+") and not l.startswith("+++"))
+
+    def stale_notes(self, app: dict, checked: dict, patch: str, given: dict) -> list[dict]:
+        """The app's changes whose own code this delivery changes, and that have no new notes in `given`:
+        their notes would describe old code."""
+        owner = {c["sha"]: c.get("change") for c in checked.get("commits", [])}
+        now: dict[str, str] = {}
+        for sha, chunk in apps.split_patch(patch):
+            if owner.get(sha):
+                now[owner[sha]] = now.get(owner[sha], "") + chunk
+        return [c for c in app.get("changes", []) if c["id"] in now and c["id"] not in given
+                and self._added_lines(now[c["id"]]) != self._added_lines(apps.read_file(app["id"], f"changes/{c['id']}.patch"))]
+
+    def _write_notes(self, a: dict, notes: dict[str, dict]) -> list[dict]:
+        """The notes written, and the app's changes with their titles as they are now."""
+        for cid, v in notes.items():
+            apps.write_file(a["id"], f"changes/{cid}.md", v["notes"] + "\n")
+        return [{**c, "title": notes[c["id"]]["title"] or c["title"]} if c["id"] in notes else c
+                for c in a.get("changes", [])]
+
+    async def set_notes(self, app_id: str, raw) -> dict:
+        """New notes (and titles) for some of an app's changes, its code as it is: by the assistant
+        (update_change_notes) or the user (Share…). A change whose notes change gets a new revision,
+        so a copy shared before is told apart."""
+        a = self.app(app_id)
+        notes = self.check_notes(a, raw)
+        if not notes:
+            return a
+        before = {cid: apps.read_file(app_id, f"changes/{cid}.md").strip() for cid in notes}
+        titles = {c["id"]: c["title"] for c in a.get("changes", [])}
+        changed = {cid for cid, v in notes.items() if v["notes"] != before[cid] or (v["title"] and v["title"] != titles[cid])}
+        if not changed:
+            return a
+        a = share.lineage({**a, "changes": self._write_notes(a, {cid: notes[cid] for cid in changed})})
+        a = apps.save({**a, "changes": [{**c, "rev": share.new_rev(c["rev"])} if c["id"] in changed else c
+                                        for c in a["changes"]]})
+        self.e.log("change_notes", app=app_id, changes=sorted(changed))
+        self.changed()
+        await self.sync(a)
+        return a
+
     async def attach(self, d: Path, meta: dict, args: dict, patch: str, build_script: str,
                      packages: list[str], left_out: list[str] = (), checked: dict | None = None) -> dict:
         """Add a delivery to its app (made for it if it's new): the change it brings, or the port it is.
@@ -484,6 +555,7 @@ class AppManager:
             owner = named.get(sha, "new")
             owner = cid if owner == "new" else owner
             groups.setdefault(owner, []).append((sha, apps.with_trailer(chunk, owner)))
+        notes = self.check_notes(app, args.get("change_notes")) if old else {}
         changes = []
         grew = []
         for owner, items in groups.items():
@@ -501,6 +573,8 @@ class AppManager:
                 apps.write_file(app["id"], f"changes/{owner}.md", str(args.get("feature", "")).strip() + "\n")
             apps.write_file(app["id"], f"changes/{owner}.patch", text)
             changes.append(change)
+        # notes as the code is now: for changes this delivery changed (required: Engine._deliver), or any other
+        changes = self._write_notes({**app, "changes": changes}, notes)
         series = "".join(c for items in groups.values() for _, c in items)
         ids = [pids[s] for items in groups.values() for s, _ in items if s in pids]
         previous = app["builds"][-1] if app.get("builds") else ""
@@ -526,7 +600,7 @@ class AppManager:
         if build_script:
             apps.write_file(app["id"], "build.sh", build_script)
         app = apps.save(share.revise(app, old_app or {}, texts_before, build_before, apps.read_file(app["id"], "build.sh"),
-                                     fitted=port and not remake))
+                                     fitted=port and not remake, notes_changed=set(notes)))
         merged = set(args.get("_merged") or [])                # in the new release now: not the user's choice
         chose = [c["title"] for c in dropped if c["id"] not in merged]
         meta.update(app=app["id"], change=cid, port=port, patch_ids=ids, share_sig=share.signature(app), **({"remake": app["remade"]["was"]} if remake else {}),

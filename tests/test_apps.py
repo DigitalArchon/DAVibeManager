@@ -542,7 +542,8 @@ async def remake_chat(engine, sb):
             patch=commit_patch("eeee444", "Drag a box to zoom", "-old zoom\n+box zoom (clean)", change="drag-a-box-to-zoom")
             + commit_patch("eeee555", "Copy the file path", "-old menu\n+copy path"))
     return {**ARGS, "repo": "/work/apps/gthumb-clean", "base_ref": "3.12.7", "version": "3.12.7-dvm1",
-            "change_title": "Copy the file path", "app": "gthumb"}
+            "change_title": "Copy the file path", "app": "gthumb",
+            "change_notes": {"drag-a-box-to-zoom": {"notes": "Drag a box over the picture to zoom to it (made afresh)."}}}
 
 
 async def test_an_app_built_on_a_fork_cant_be_put_right_by_an_ordinary_change(gthumb):
@@ -598,3 +599,52 @@ async def test_the_user_can_keep_the_one_they_have(gthumb):
     with pytest.raises(delivery.DeliveryError, match="wants to keep the gThumb they have"):
         await task
     assert apps.load("gthumb")["upstream"] == FORK and apps.load("gthumb")["builds"] == ["D1"]
+
+
+# ---------------------------------------------------------------- each change's notes, as the code is now
+
+async def test_a_change_whose_code_a_delivery_changes_gets_notes_as_it_is_now(gthumb):
+    """The bug: notes were written when a change was new, and never again, so a shared app described
+    code it no longer had. Now a delivery that changes a change's own code must say what it is now,
+    and that's checked before anything is built."""
+    engine, sb, _, _ = gthumb
+    rev = apps.load("gthumb")["changes"][0]["rev"]
+    reworked = commit_patch("bbbb444", "Drag a box to zoom", "-old zoom\n+box zoom, or pan with the hand tool",
+                            change="drag-a-box-to-zoom")
+    sb.repo("/work/apps/gthumb", head="bbbb333", patch=reworked + COPY)
+    builds = len(sb.calls_of(scripts.CHECK_BUILD))
+    args = {**ARGS, "change_title": "Copy the file path", "version": "3.12.6-dvm2"}
+    with pytest.raises(delivery.DeliveryError, match=r"drag-a-box-to-zoom \(Drag a box to zoom\).*change_notes"):
+        await engine.builder_deliver(args)
+    assert len(sb.calls_of(scripts.CHECK_BUILD)) == builds                         # refused before the build
+    await engine.builder_deliver({**args, "change_notes": {"drag-a-box-to-zoom": {
+        "notes": "Drag a box over the picture to zoom to it, or pan with the hand tool.", "title": "Drag to zoom, or pan"}}})
+    a = apps.load("gthumb")
+    zoom = a["changes"][0]
+    assert zoom["title"] == "Drag to zoom, or pan" and "hand tool" in apps.read_file("gthumb", "changes/drag-a-box-to-zoom.md")
+    assert zoom["rev"]["id"] != rev["id"] and rev["id"] in zoom["rev"]["history"]   # a newer version of it
+    assert apps.read_file("gthumb", "changes/copy-the-file-path.md").startswith("# Drag to zoom")   # the new one's: feature
+    with pytest.raises(delivery.DeliveryError, match="has no change 'nope'"):
+        await engine.builder_deliver({**args, "change_notes": {"nope": {"notes": "x"}}})
+
+
+async def test_the_assistant_corrects_a_changes_notes_without_building_anything(gthumb):
+    engine, sb, _, _ = gthumb
+    engine.conv.app = "gthumb"
+    rev = apps.load("gthumb")["changes"][0]["rev"]
+    builds = len(sb.calls_of(scripts.CHECK_BUILD))
+    out = await engine.builder_change_notes({"changes": {"drag-a-box-to-zoom": {"notes": "Drag a box over the picture to zoom to it."}}})
+    assert out.startswith("Updated, for drag-a-box-to-zoom (Drag a box to zoom)")
+    assert apps.read_file("gthumb", "changes/drag-a-box-to-zoom.md") == "Drag a box over the picture to zoom to it.\n"
+    a = apps.load("gthumb")
+    assert a["changes"][0]["rev"]["id"] != rev["id"] and len(sb.calls_of(scripts.CHECK_BUILD)) == builds
+    assert b"Drag a box over the picture" in sb.files["/work/.dvm/apps/gthumb/FEATURE.md"]   # the assistant reads it so
+    again = await engine.builder_change_notes({"changes": {"drag-a-box-to-zoom": {"notes": "Drag a box over the picture to zoom to it."}}})
+    assert again and apps.load("gthumb")["changes"][0]["rev"] == a["changes"][0]["rev"]       # the same: no new version
+    with pytest.raises(ValueError, match="has no change 'nope'"):
+        await engine.builder_change_notes({"changes": {"nope": {"notes": "x"}}})
+    with pytest.raises(ValueError, match="empty"):
+        await engine.builder_change_notes({"changes": {"drag-a-box-to-zoom": {"notes": "  "}}})
+    engine.conv.app = ""
+    with pytest.raises(ValueError, match="no app of the user's yet"):
+        await engine.builder_change_notes({"changes": {"drag-a-box-to-zoom": {"notes": "x"}}})

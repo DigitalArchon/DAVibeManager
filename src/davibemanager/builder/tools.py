@@ -36,6 +36,7 @@ class BuilderHost(Protocol):
     def builder_deliver(self, args: dict) -> Awaitable[str]: ...
     def builder_suggest_app(self, args: dict) -> Awaitable[str]: ...
     def builder_findings(self, args: dict) -> Awaitable[str]: ...
+    def builder_change_notes(self, args: dict) -> Awaitable[str]: ...
     def builder_search(self, args: dict) -> Awaitable[str]: ...
     def builder_fetch_check(self, url: str) -> str: ...
 
@@ -116,6 +117,18 @@ SCHEMAS: dict[str, dict] = {
         },
         "required": ["app", "wish"],
     },
+    "update_change_notes": {
+        "type": "object",
+        "properties": {
+            "changes": {"type": "object", "description": (
+                "Change id (app.json) -> {\"notes\": the change's notes as they should be, \"title\": its title, "
+                "if it should change}."),
+                "additionalProperties": {"type": "object", "properties": {"notes": {"type": "string"},
+                                                                          "title": {"type": "string"}},
+                                         "required": ["notes"]}},
+        },
+        "required": ["changes"],
+    },
     "send_findings": {
         "type": "object",
         "properties": {
@@ -137,7 +150,16 @@ SCHEMAS: dict[str, dict] = {
             "repo": {"type": "string", "description": "The git repository (under /work) holding your commits: for an app the user has, the tree the app prepared (/work/apps/<app id>). Its origin is the official repository."},
             "base_ref": {"type": "string", "description": "The official release (tag) your branch starts from. Empty for something new of your own (the patch then holds all of it)."},
             "summary": {"type": "string", "description": "Two or three plain sentences for the user: what's new."},
-            "feature": {"type": "string", "description": "FEATURE.md: the request, the change, how to build it, and how to re-apply it to a new version."},
+            "feature": {"type": "string", "description": (
+                "FEATURE.md, the new change's notes (shared with the app): what it does and why in your own words, "
+                "how it is done, how to build it, and how to re-apply it to a new version.")},
+            "change_notes": {"type": "object", "description": (
+                "For each change the user already has whose code this delivery changes: its id (app.json) -> "
+                "{\"notes\": its notes as they are now, \"title\": its new title, if that changed}. Required for "
+                "every such change: notes must describe the code as it is."),
+                "additionalProperties": {"type": "object", "properties": {"notes": {"type": "string"},
+                                                                          "title": {"type": "string"}},
+                                         "required": ["notes"]}},
             "run_instructions": {"type": "string", "description": "How the user runs it (and for source: builds it) on their computer."},
             "integration": {"type": "string", "enum": ["app", "desktop", "system"], "description": (
                 "How deep it goes: app (an ordinary app the user opens), desktop (part of the desktop: file manager, panel, "
@@ -180,7 +202,8 @@ def _unanswered_text(e: Unanswered) -> str:
 
 # the tools of each kind of chat: only an app chat builds; a computer chat can point to one
 COMMON = ("ask_user", "request_host_command", "install_packages", "show_screenshot", "web_search")
-MODE_TOOLS = {"computer": (*COMMON, "suggest_app_chat", "send_findings"), "app": (*COMMON, "offer_build", "deliver")}
+MODE_TOOLS = {"computer": (*COMMON, "suggest_app_chat", "send_findings"),
+              "app": (*COMMON, "offer_build", "deliver", "update_change_notes")}
 
 
 def tool_names(mode: str) -> list[str]:
@@ -267,8 +290,15 @@ def make_server(host: BuilderHost, mode: str = "app"):
         except (TypeError, ValueError) as e:
             return _text(f"Not shown: {e}", True)
 
+    @tool("update_change_notes", BUILDER_TOOL_DOCS["update_change_notes"], SCHEMAS["update_change_notes"])
+    async def update_change_notes(args: dict) -> dict:
+        try:
+            return _text(await host.builder_change_notes(args))
+        except Exception as e:  # noqa: BLE001 - the assistant should see why
+            return _text(f"Not updated: {e}", True)
+
     every = [ask_user, offer_build, request_host_command, install_packages, show_screenshot, web_search, deliver,
-             suggest_app_chat, send_findings]
+             suggest_app_chat, send_findings, update_change_notes]
     names = MODE_TOOLS["app" if mode == "app" else "computer"]
     return create_sdk_mcp_server("host", "1.0.0", [t for t in every if t.name in names])
 

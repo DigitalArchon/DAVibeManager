@@ -935,8 +935,34 @@ function sourceEl(a) {
 
 // ---- one app, shared with someone else (share.py): a .vibe file of its source, changes and build script
 
+// first, what the file will hold: each change's title and notes, which the user can correct, and
+// anything in them that came from this computer (the web search check's)
 async function exportApp(a) {
-  const out = await appAct(a, "export");
+  const p = await appAct(a, "share-preview");
+  const fields = p.changes.map((c) => ({ c, title: h("input", { type: "text", value: c.title, maxlength: 120 }),
+    notes: h("textarea", { class: "notes", rows: 6, spellcheck: "true", value: c.notes }) }));
+  const flagged = (list) => list?.length ? h("div", { class: "warnbox small" },
+    `Came from your computer, so check it before you share: ${list.map((x) => `“${x}”`).join(", ")}.`) : null;
+  modal({ title: `Share ${a.name}?`, body: h("div", {},
+    h("p", { class: "small" }, `The file holds where ${a.name} comes from (${sourceText(p.upstream)}, ${p.base_ref}), how it's built, `
+      + "and each of your changes: its code, and its title and notes as below. Not your chats, your key, your builds or "
+      + "anything else about this computer. Whoever you give it to sees all of it, so correct anything here first."),
+    ...fields.map(({ c, title, notes }) => h("div", { class: "field share-change" },
+      h("span", {}, "Change"), title, notes, flagged(c.flags))),
+    p.build_flags?.length ? h("div", {}, h("div", { class: "small" }, "How it's built:"), flagged(p.build_flags)) : null),
+    buttons: [{ label: "Cancel" }, { label: "Save the file", kind: "primary", onClick: async () => {
+      const notes = {};
+      for (const { c, title, notes: n } of fields) {
+        if (title.value.trim() !== c.title || n.value.trim() !== c.notes) {
+          if (!n.value.trim()) throw new Error(`“${title.value.trim() || c.title}” needs notes: what it does, for whoever you give it to.`);
+          notes[c.id] = { title: title.value.trim(), notes: n.value.trim() };
+        }
+      }
+      exported(a, await appAct(a, "export", Object.keys(notes).length ? { notes } : undefined));
+    } }] }).box.classList.add("wide");
+}
+
+function exported(a, out) {
   modal({ title: `${a.name} is ready to share`, buttons: [{ label: "Close" }], body: h("div", {},
     h("p", {}, "Saved as ", h("b", { class: "mono" }, out.name), ` in ${out.folder} (${fmtBytes(out.size)}).`),
     h("p", { class: "small muted" }, `It holds where ${a.name} comes from, the release it's built on, your changes with their notes, and how it's built. Not your chats, your key, your builds or anything about this computer. Whoever you give it to imports it in My apps, and their computer builds it from the official source.`),

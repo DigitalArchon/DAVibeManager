@@ -288,3 +288,25 @@ async def test_an_update_to_a_new_release_keeps_the_version(gthumb):
     await m.rebuild("gthumb")                                   # carried over to 3.12.7 by the app
     a = apps.load("gthumb")
     assert a["base_ref"] == "3.12.7" and share.signature(a) == before    # the same changes, made to fit
+
+
+async def test_before_sharing_the_user_reads_and_corrects_what_goes_with_it(gthumb, tmp_path):
+    """A change's notes go with the app: Share… shows them first, flags anything that came from this
+    computer (as web searches are checked), and saves the user's corrections, as a newer version."""
+    engine, _, _, _ = gthumb
+    engine._outside().add("Linux box 6.8.0-45-generic x86_64 /home/someone/Pictures/holiday")
+    apps.write_file("gthumb", "changes/drag-a-box-to-zoom.md", "Asked for on 6.8.0-45-generic, for /home/someone/Pictures/holiday.\n")
+    p = engine.sharing.preview("gthumb")
+    [c] = p["changes"]
+    assert c["title"] == "Drag a box to zoom" and c["notes"].startswith("Asked for on")
+    assert "6.8.0-45-generic" in c["flags"] and p["build_flags"] == []
+    rev = apps.load("gthumb")["changes"][0]["rev"]
+    await engine.app_manager.set_notes("gthumb", {"drag-a-box-to-zoom": {"notes": "Drag a box over the picture to zoom to it.",
+                                                                          "title": "Drag to zoom"}})
+    out = exported(engine, tmp_path)
+    with zipfile.ZipFile(out["path"]) as z:
+        notes = z.read("changes/drag-a-box-to-zoom.md").decode()
+        m = json.loads(z.read("manifest.json"))
+    assert notes == "Drag a box over the picture to zoom to it.\n" and m["app"]["changes"][0]["title"] == "Drag to zoom"
+    assert m["app"]["changes"][0]["rev"]["id"] != rev["id"]
+    assert engine.sharing.preview("gthumb")["changes"][0]["flags"] == []

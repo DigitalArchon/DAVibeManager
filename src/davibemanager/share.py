@@ -113,10 +113,12 @@ def signature(a: dict) -> str:
     return hashlib.sha256("|".join(parts).encode()).hexdigest()[:16]
 
 
-def revise(app: dict, before: dict, texts: dict[str, str], build_was: str, build_now: str, *, fitted: bool) -> dict:
+def revise(app: dict, before: dict, texts: dict[str, str], build_was: str, build_now: str, *, fitted: bool,
+           notes_changed: set = frozenset()) -> dict:
     """The app after a delivery, with new revisions where a chat changed it: a new change, a change
-    whose code changed, the build script. `fitted`: carried over to another release (an update),
-    which is the same version of the user's changes, made to fit; nothing gets a new revision then."""
+    whose code or notes changed, the build script. `fitted`: carried over to another release (an
+    update), which is the same version of the user's changes, made to fit; nothing gets a new
+    revision then."""
     app = lineage(app)
     old = {c["id"]: c for c in before.get("changes", [])}
     changes = []
@@ -129,7 +131,7 @@ def revise(app: dict, before: dict, texts: dict[str, str], build_was: str, build
         else:
             same = (set(c.get("patch_ids") or []) == set(was.get("patch_ids") or [])) if c.get("patch_ids") and was.get("patch_ids") \
                 else texts.get(c["id"]) == apps.read_file(app["id"], f"changes/{c['id']}.patch")
-            changes.append({**c, "rev": was["rev"] if same else new_rev(was["rev"])})
+            changes.append({**c, "rev": was["rev"] if same and c["id"] not in notes_changed else new_rev(was["rev"])})
     sh = dict(app["share"])
     if not fitted and build_was.strip() and build_now.strip() and build_was != build_now:
         sh["build"] = new_rev(sh["build"])
@@ -383,6 +385,23 @@ class Sharing:
             pass
         d = Path.home() / "Downloads"
         return d if d.is_dir() else Path.home()
+
+    def preview(self, app_id: str) -> dict:
+        """What a .vibe file of this app would hold, for the user to read (and correct) first: each change's
+        title and notes, and anything in them, or in the build script, that came from this computer (the
+        check web searches have: names, paths, lines of command output)."""
+        a = self.e.app_manager.app(app_id)
+        why = exportable(a)
+        if why:
+            raise ShareError(why)
+        outside = self.e._outside()
+        changes = []
+        for c in a["changes"]:
+            notes = apps.read_file(a["id"], f"changes/{c['id']}.md").strip()
+            changes.append({"id": c["id"], "title": c["title"], "notes": notes,
+                            "flags": outside.check(f"{c['title']}\n{notes}")[:8]})
+        return {"name": a["name"], "upstream": a["upstream"], "base_ref": a["base_ref"], "changes": changes,
+                "build_flags": outside.check(apps.read_file(a["id"], "build.sh"))[:8], "folder": str(self.folder())}
 
     def export(self, app_id: str) -> dict:
         a = apps.save(lineage(self.e.app_manager.app(app_id)))      # its share id and revisions, kept from now on
