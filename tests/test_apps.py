@@ -792,3 +792,21 @@ async def test_the_open_chat_can_be_deleted_but_not_while_the_assistant_answers_
     engine.builder.busy = False
     assert (await engine.delete_chats([chat]))["deleted"] == [chat]
     assert engine.conv.id != chat and chat not in {c["id"] for c in engine.list_chats()}
+
+
+async def test_a_build_installed_under_a_new_name_takes_the_old_entrys_place_in_gear_lever(gthumb, tmp_path, monkeypatch):
+    """Gear Lever keeps an app by its menu name: one renamed (an import given the user's name) is a new
+    entry there, so the one before it goes; never one another app of the user's is installed as."""
+    engine, sb, fake, told = gthumb
+    log = fake_cli(tmp_path, monkeypatch, "gearlever", GEARLEVER)
+    old = tmp_path / "home" / "AppImages" / "old.appimage"
+    old.parent.mkdir(parents=True)
+    old.write_bytes(b"old")
+    a = apps.load("gthumb")
+    before = {"via": "gearlever", "path": str(old), "build": "D1"}
+    other = apps.create("gThumb 2", "appimage", GTHUMB, installed=before)
+    engine.app_manager._drop_replaced(a, before, {"via": "gearlever", "path": "/new.appimage"})
+    assert old.exists() and not log.exists()                            # another app is installed there
+    apps.save({**other, "installed": None})
+    engine.app_manager._drop_replaced(a, before, {"via": "gearlever", "path": "/new.appimage"})
+    assert json.loads(log.read_text().splitlines()[-1]) == ["--remove", str(old), "-y"] and not old.exists()

@@ -29,7 +29,7 @@ BUILD = r"""set -eu
 d="$(mktemp -d)/AppDir"; mkdir -p "$d"
 printf '#!/bin/sh\ncat "$APPDIR/note"\n' > "$d/AppRun"; chmod +x "$d/AppRun"
 cp dvm-note.txt "$d/note"
-printf '[Desktop Entry]\nType=Application\nName=hexyl\nExec=hexyl\nIcon=hexyl\nCategories=Utility;\nTerminal=true\n' > "$d/hexyl.desktop"
+printf '[Desktop Entry]\nType=Application\nName=hexyl\nName[de]=hexyl auf Deutsch\nExec=hexyl\nIcon=hexyl\nCategories=Utility;\nTerminal=true\n' > "$d/hexyl.desktop"
 python3 -c "import base64,sys; sys.stdout.buffer.write(base64.b64decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=='))" > "$d/hexyl.png"
 ARCH=x86_64 appimagetool --no-appstream --runtime-file /usr/local/share/appimage/runtime-x86_64 "$d" "$DVM_OUT/hexyl-x86_64.AppImage"
 """
@@ -218,6 +218,10 @@ async def test_the_assistant_in_its_sandbox_asks_and_gets_only_what_the_user_sen
         assert did and a["builds"] == [did] and a["imported"]["built"] is True, a.get("update")
         meta = delivery.load(delivery.root_dir() / did)
         assert meta["upstream"] == up and meta["base_ref"] == "v0.13.0" and meta["port"], meta
+        # imported as an app of its own: its menu entry named as the user named it, in the AppImage itself
+        entry = (delivery.root_dir() / did / "desktop" / "app.desktop").read_text()
+        assert meta["menu_name"] == "hexyl (DVM)" and "Name=hexyl (DVM)\n" in entry and "Name[de]" not in entry, entry
+        assert "Exec=hexyl" in entry and "Terminal=true" in entry
         apps.save({**a, "update": {"status": "available", "latest": "v0.14.0"}})
         again = await engine.app_manager.rebuild(a["id"], by_user=False)
         a = apps.load(a["id"])

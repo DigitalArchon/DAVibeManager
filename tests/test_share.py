@@ -12,7 +12,7 @@ from pathlib import Path
 import pytest
 from fakesandbox import commit_patch
 
-from davibemanager import apps, share
+from davibemanager import apps, integrate, share
 from davibemanager.workspace import scripts
 from helpers import wait_for
 from test_apps import ARGS, GTHUMB, gthumb  # noqa: F401 - the fixture
@@ -399,3 +399,23 @@ async def test_an_import_the_assistant_finishes_counts_as_built_and_its_chat_can
     await engine.delete_chats([chat])                     # the open one: a new chat takes its place
     assert engine.conv.id != chat and engine.conv.chat == []
     assert next(x for x in engine.app_manager.apps() if x["id"] == aid)["chat"] is None
+
+
+async def test_an_app_imported_as_its_own_is_installed_under_the_name_the_user_gave_it(gthumb, tmp_path):
+    """Its build script names it as whoever shared it does ("gThumb (DLA)" here): its menu entry is
+    named as the user named it, so it sits next to their own gThumb instead of taking its place."""
+    from davibemanager import delivery
+    engine, sb, _, _ = gthumb
+    faked_review(engine)
+    view = engine.sharing.peek(Path(exported(engine, tmp_path)["path"]))
+    await wait_for(lambda: engine.sharing.view(view["token"])["review"]["status"] == "done", "the review")
+    aid = engine.sharing.accept(view["token"], name="gThumb (Sam's)")["app"]
+    did = await engine.app_manager.rebuild(aid, tag="3.12.6")
+    meta = delivery.load(delivery.root_dir() / did)
+    assert meta["menu_name"] == "gThumb (Sam's) (DVM)"
+    assert integrate.desktop_name(delivery.root_dir() / did / "desktop") == "gThumb (Sam's) (DVM)"
+    engine.install_delivery(did)
+    entry = (tmp_path / "home" / ".local/share/applications" / f"dvm-{aid}.desktop").read_text()
+    assert "Name=gThumb (Sam's) (DVM)" in entry
+    # the user's own apps are never renamed
+    assert engine.app_manager.menu_name(apps.load("gthumb")) == "" and "menu_name" not in delivery.load(delivery.root_dir() / "D1")

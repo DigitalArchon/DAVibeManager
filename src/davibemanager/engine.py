@@ -2252,6 +2252,9 @@ class Engine:
                 # script, in a clean container: so it can be made again (byte-identical builds aren't
                 # asked for here: that matters for apps one publishes, not for the user's own)
                 path, _ = await self._app_builds(box, did, head, packages)
+            renamed = ""
+            if kind == "appimage" and (renamed := self.app_manager.menu_name(app)):
+                await self._menu_named(box, path, renamed, did)
             meta = {"kind": kind, "name": str(args.get("name", ""))[:80], "version": str(args.get("version", ""))[:60],
                     "summary": str(args.get("summary", ""))[:2000], **report,
                     "run_instructions": str(args.get("run_instructions", ""))[:4000], "path": path, "repo": repo,
@@ -2259,7 +2262,7 @@ class Engine:
                     "uncommitted_changes": bool(dirty), "diffstat": stat.strip()[-4000:], "commits": log.strip()[-4000:],
                     "created": time.time(), "status": "new", "screenshots": [], "id": did,
                     "conversation": self.conv.id if entry is not None and self.conv else "", "by": "assistant" if entry is not None else "app",
-                    **({"install_to": install_to} if install_to else {})}
+                    **({"install_to": install_to} if install_to else {}), **({"menu_name": renamed} if renamed else {})}
             (d / "changes.patch").write_text(patch, encoding="utf-8")
             (d / "FEATURE.md").write_text(feature + "\n", encoding="utf-8")
             if kind == "appimage":
@@ -2315,6 +2318,19 @@ class Engine:
         self.log("delivered", **{k: v for k, v in meta.items() if k not in ("diffstat", "commits", "patch_ids")})
         self.app_manager.changed()
         return did
+
+    async def _menu_named(self, box: str, path: str, name: str, did: str) -> None:
+        """The AppImage at `path`, in the clean container, with its menu entry named `name`
+        (AppManager.menu_name), unless it is already."""
+        out = f"{appmanager_mod.BUILD_FOLDER}/name-{did}"
+        rc, listing = await podman.exec_agent(box, ["sh", "-c", sandbox_scripts.EXTRACT, "sh", path, out], timeout=600)
+        if rc == 0 and "app.desktop" in listing.split():
+            rc, entry = await podman.exec_agent(box, ["cat", f"{out}/app.desktop"], timeout=60)
+            if rc == 0 and appimage_mod.read_desktop(entry).get("Name") == name:
+                return
+        rc, out_text = await podman.exec_agent(box, ["sh", "-c", sandbox_scripts.RENAME, "sh", path, name, out], timeout=1800)
+        if rc != 0:
+            raise delivery_mod.DeliveryError(f"The app couldn't give its menu entry the name {name}:\n{_last_lines(out_text)}")
 
     async def _extract_menu_entry(self, box: str, path: str, d: Path) -> None:
         """The AppImage's own menu entry and icon, taken out in the clean container it was built in

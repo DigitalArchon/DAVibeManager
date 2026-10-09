@@ -333,6 +333,17 @@ class AppManager:
         """Where an app made again, cleanly, is made (beside its old source, which is only read)."""
         return f"/work/apps/{a['id']}-clean"
 
+    @staticmethod
+    def menu_name(a: dict | None) -> str:
+        """The name a build of this app must have in its menu entry, when that isn't the build's own:
+        an app imported as one of its own, under the name the user gave it. (Its build script, from
+        whoever shared it, names it as theirs: where apps live, it would take the place of any app of
+        that name, the user's own copy of it too.) "" for any other app."""
+        imp = (a or {}).get("imported") or {}
+        if not imp or imp.get("into") or a.get("kind") != "appimage":
+            return ""
+        return f"{a['name']} ({integrate.tag(a).upper()})"
+
     def desktop_name(self, a: dict) -> str:
         """The app's name in the menu entry of the build the user has (else its newest): a build made
         again keeps it, so installing it replaces that one."""
@@ -1135,6 +1146,7 @@ class AppManager:
         finally:
             staged.unlink(missing_ok=True)
         before = a.get("installed")
+        self._drop_replaced(a, before, info)
         a = apps.save({**a, "installed": {**info, "build": did, "version": meta["version"], "at": time.time()},
                        "previous": before if before and before.get("build") != did else a.get("previous"),
                        "update": {**(a.get("update") or {}), **({"status": "current"} if (a.get("update") or {}).get("build") == did else {})}})
@@ -1198,6 +1210,23 @@ class AppManager:
                                                      self.remake_tree(a), f"{BUILD_FOLDER}/{a['id']}"], timeout=300)
         except podman.PodmanError:
             pass                                # the sandbox isn't up: a later chat's tree is made afresh
+
+    def _drop_replaced(self, a: dict, before: dict | None, now: dict) -> None:
+        """A build installed under another menu name than the one before it (an imported app, given the
+        name the user chose) is a second entry where apps live: the one before it goes, unless another
+        app of the user's is installed there too. Best effort: it's said in the log if it can't be."""
+        if not before or not before.get("path") or before.get("path") == now.get("path") or before.get("via") != now.get("via"):
+            return
+        if any((x.get("installed") or {}).get("path") == before["path"] for x in apps.list_all() if x["id"] != a["id"]):
+            return
+        s = self.e.cfg.settings
+        integrator = integrate.by_key(before["via"], Path(s.install_dir), data_dir() / "icons")
+        meta = delivery_mod.load(delivery_mod.root_dir() / before.get("build", "")) if before.get("build") else None
+        try:
+            if integrator is not None:
+                integrator.uninstall(before, a, (meta or {}).get("sha256", ""))
+        except (integrate.IntegrationError, OSError) as e:
+            self.e.log("replaced_not_removed", app=a["id"], path=before["path"], error=str(e))
 
     # ---------------------------------------------------------------- a copy to run elsewhere
 

@@ -90,6 +90,7 @@ class FakeSandbox:
                           "commits": ["Fix TIFF overflow", "Speed up thumbnails"], "commit_count": 2, "notes": "", "url": ""}
         self.installed_packages: list[list[str]] = []
         self.official: dict[str, str] = {}      # tag -> its commit in the official repository (else as repo() makes it)
+        self.menu_names: dict[str, str] = {}      # an AppImage -> its menu entry's name, made so (RENAME)
         self.root_calls: list[list[str]] = []     # what the app ran as root in a container
         self.carry_fail: dict[str, str] = {}    # change id -> what git says: it doesn't carry over to a new release
         self.merged: set[str] = set()           # changes the new release has already
@@ -173,10 +174,15 @@ class FakeSandbox:
             self.activity_args.append(args)
             return 0, self.activity.pop(0) if self.activity else "@@CPU \n@@MEM \n@@PS\n"
         if script == scripts.EXTRACT:
-            out = args[1]
-            self.files[at(f"{out}/app.desktop")] = DESKTOP.encode()
+            f, out = args
+            named = self.menu_names.get(at(f))
+            self.files[at(f"{out}/app.desktop")] = (DESKTOP.replace("Name=gThumb (DLA)", f"Name={named}") if named else DESKTOP).encode()
             self.files[at(f"{out}/icon.png")] = PNG
             return 0, "app.desktop\nicon.png\n"
+        if script == scripts.RENAME:
+            f, name, work = args
+            self.menu_names[at(f)] = name
+            return 0, f"@@OUT {f}\n"
         if script == scripts.SNAPSHOT:
             src, snap, tag = args
             step("snapshot")

@@ -1424,7 +1424,6 @@ function appsPanel() {
     h("button", { class: "small", onclick: importApp }, "Import an app…"));
   if (!list.length) return [h("div", { class: "welcome" }, "Apps I build for you show up here, and I keep them up to date. Tell me what you wish an app could do, and if it's open source I can make you a version that does it.",
     h("div", {}, h("button", { class: "primary", onclick: pickApp }, "📦 Help me fix or add a feature to an app"))), imp];
-  if (list.length === 1) return [imp, appCard(list[0])];
   const byName = [...list].sort((x, y) => x.name.localeCompare(y.name, undefined, { sensitivity: "base" }));
   return [imp, h("div", { class: "app-list" }, ...byName.map(appRow))];
 }

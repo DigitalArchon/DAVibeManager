@@ -231,6 +231,37 @@ rm -rf "$out/x" "$out/a.AppImage"
 ls "$out"
 """
 
+# an AppImage ($1) with its menu entry's name made $2 (the name the user gave the app), in the clean
+# container it was built in: unpacked (its own runtime, run here, where that can't matter), the
+# top-level .desktop's Name set and its translations dropped, packed again with the pinned runtime.
+# Nothing else in it changes.
+RENAME = r"""
+set -eu
+f="$1"; work="$3"
+export NAME="$2"
+rm -rf "$work"; mkdir -p "$work"; cd "$work"
+cp "$f" a.AppImage; chmod 755 a.AppImage
+./a.AppImage --appimage-extract >/dev/null 2>&1 || { echo "@@FAILED extract"; exit 5; }
+root="$work/squashfs-root"; n=0
+for d in "$root"/*.desktop; do
+  [ -e "$d" ] || continue
+  t=$(readlink -f "$d"); case "$t" in "$root"/*) ;; *) continue;; esac
+  [ -f "$t" ] || continue
+  awk '/^\[/ { g = ($0 == "[Desktop Entry]") }
+       g && /^Name(\[[^]]*\])?[ \t]*=/ { if ($0 ~ /^Name[ \t]*=/) print "Name=" ENVIRON["NAME"]; next }
+       { print }' "$t" > "$work/entry" && cat "$work/entry" > "$t"
+  n=$((n + 1))
+done
+[ "$n" -gt 0 ] || { echo "@@FAILED rename: it has no menu entry"; exit 5; }
+rm -f a.AppImage
+export SOURCE_DATE_EPOCH="$(stat -c %Y "$f")"
+ARCH=x86_64 appimagetool --no-appstream --runtime-file /usr/local/share/appimage/runtime-x86_64 "$root" "$work/out.AppImage" \
+  >"$work/pack.log" 2>&1 || { echo "@@FAILED pack"; tail -20 "$work/pack.log"; exit 5; }
+mv -f "$work/out.AppImage" "$f"
+rm -rf "$root"
+echo "@@OUT $f"
+"""
+
 # what changed upstream between two releases: the news/changelog files' new lines, the commit
 # subjects, and the forge's release notes (GitHub, GitLab); JSON on stdout
 CHANGELOG = r"""
