@@ -908,10 +908,11 @@ function releaseEl(a) {
       !port && a.schedule?.waiting === "battery" ? h("div", { class: "small" }, "Waiting to build: your computer is on its battery. It's built at the quiet time once it's plugged in (or now, if you like).") : null,
       port ? h("div", { class: "warnbox" }, failedChanges(a, port).length
         ? `${failedChanges(a, port).map((t) => `“${t}”`).join(" and ")} didn't fit the new version as ${failedChanges(a, port).length > 1 ? "they are" : "it is"}. The assistant can make ${failedChanges(a, port).length > 1 ? "them" : "it"} fit; the rest of your changes carried over by themselves.`
-        : `Your changes didn't carry over by themselves (${STEP_LABEL[port.step] || port.step} failed). The assistant can finish it.`) : null,
+        : `${port.step === "error" ? "The build stopped with an error." : `Your changes didn't carry over by themselves (${STEP_LABEL[port.step] || port.step} failed).`} The assistant can finish it.`) : null,
+      port && port.step !== "apply" && port.log ? portLogEl(port) : null,
       h("div", { class: "actions" },
         port && a.chat?.tag === u.latest ? chatButton(a, "primary")
-          : port ? h("button", { class: "small primary", onclick: () => guarded(async () => { await appAct(a, "assistant"); closePanel(); }) }, "Let the assistant do it")
+          : port ? assistantButton(a)
           : a.kind === "appimage" ? h("button", { class: "small primary", onclick: () => rebuildApp(a) }, a.schedule?.waiting ? "Build it now" : `Build ${u.latest} with my changes`)
           : h("button", { class: "small primary", onclick: () => guarded(async () => { await appAct(a, "assistant"); closePanel(); }) }, `Update to ${u.latest}`),
         h("button", { class: "small", onclick: () => guarded(() => showChangelog(a)) }, "What's new?"),
@@ -1035,13 +1036,29 @@ function importedEl(a) {
       : imp.into ? `Added from a shared app: ${titles.join(" · ")}.` : "Shared with you."),
       ` Not built yet: it's built from the official ${a.base_ref} with ${imp.into ? "all your changes" : "its changes"}.`),
     sharedReviewEl(imp.review, true),
-    failed ? h("div", { class: "small" }, `${a.update.port.step === "apply" ? "Not all of them applied by themselves" : "It didn't build by itself"}, so the assistant was asked to finish it in a chat. Its build shows up here when it's done.`) : null,
+    failed ? h("div", { class: "small" }, portWords(a.update.port),
+      a.chat ? " The assistant was asked to finish it in a chat. Its build shows up here when it's done." : " The assistant can finish it in a chat.") : null,
+    failed && a.update.port.step !== "apply" && a.update.port.log ? portLogEl(a.update.port) : null,
     h("div", { class: "actions" },
       failed && a.chat ? chatButton(a, "primary") : null,
-      h("button", { class: `small ${failed && a.chat ? "ghost" : "primary"}`, onclick: () => guarded(async () => {
+      failed && !a.chat ? assistantButton(a) : null,
+      h("button", { class: `small ${failed ? "ghost" : "primary"}`, onclick: () => guarded(async () => {
         if (imp.review?.level === "stop" && !(await confirmModal("Build it anyway?", "The reviewer said not to install these changes. Building it is safe (it happens in the sandbox), but read what it said before you install it.", "Build it"))) return;
-        if (failed && !(await confirmModal("Try building it again?", "Last time it couldn't be made by itself, so the same will probably happen again, and a new chat with the assistant starts (which costs money). To carry on with the one already working on it, use “Go to its chat”.", "Try again"))) return;
+        if (failed && a.chat && !(await confirmModal("Try building it again?", "Last time it couldn't be made by itself, so the same will probably happen again, and a new chat with the assistant starts (which costs money). To carry on with the one already working on it, use “Go to its chat”.", "Try again"))) return;
         await appAct(a, "build"); }) }, failed ? "Try again" : "Build it")));
+}
+
+// what stopped the app's own build of it (AppManager.rebuild), in words
+function portWords(port) {
+  if (port.step === "error") return "The build stopped with an error.";
+  if (port.step === "apply") return "Not all of the changes applied by themselves.";
+  return `It didn't build by itself (${STEP_LABEL[port.step] || port.step} failed).`;
+}
+function portLogEl(port) {
+  return h("details", { class: "small" }, h("summary", {}, "What it said"), h("pre", { class: "outview small" }, port.log.slice(-3000)));
+}
+function assistantButton(a) {
+  return h("button", { class: "small primary", onclick: () => guarded(async () => { await appAct(a, "assistant"); closePanel(); }) }, "Let the assistant do it");
 }
 
 // the chat the assistant was asked to build an app in (AppManager.ask_assistant)
@@ -1389,12 +1406,14 @@ function chatsPanel() {
     list.replaceChildren(...chats.map((c) => h("div", { class: "list-item" },
       h("div", { class: "grow" }, h("div", {}, c.title),
         h("div", { class: "small muted" }, [c.mode === "app" ? `📦 ${chatAppName(c)}${c.remake ? ", made again" : ""}` : c.mode === "computer" ? (c.app ? `🩺 ${chatAppName(c)} here` : "🩺 Your computer") : "",
-          c.started.replace("T", " ").slice(0, 16), `${c.messages} messages`].filter(Boolean).join(" · "))),
+          c.started.replace("T", " ").slice(0, 16), `${c.messages} message${c.messages === 1 ? "" : "s"}`].filter(Boolean).join(" · "))),
       S.state.conversation?.id === c.id ? h("span", { class: "small muted" }, "open") : h("button", { class: "small", onclick: () => guarded(async () => {
         await api("POST", "/api/chats/open", { id: c.id }); closePanel(); }) }, "Open"),
-      S.state.conversation?.id === c.id ? null : h("button", { class: "small ghost", title: "Delete", onclick: () => guarded(async () => {
-        if (!(await confirmModal("Delete this chat?", c.title, "Delete", "danger"))) return;
-        await api("POST", "/api/chats/delete", { ids: [c.id] }); openPanel("chats"); }) }, "🗑"))));
+      h("button", { class: "small ghost danger", onclick: () => guarded(async () => {
+        const open = S.state.conversation?.id === c.id;
+        if (!(await confirmModal("Delete this chat?", h("div", {}, h("p", {}, c.title),
+          h("p", { class: "small muted" }, `It can't be brought back${open ? ", and a new chat opens in its place" : ""}. Apps it built stay in My apps.`)), "Delete", "danger"))) return;
+        await api("POST", "/api/chats/delete", { ids: [c.id] }); openPanel("chats"); }) }, "Delete"))));
   }).catch((e) => list.replaceChildren(h("div", { class: "err" }, e.message)));
   return [h("button", { class: "primary", onclick: () => guarded(async () => { await api("POST", "/api/chats/new"); closePanel(); }) }, "＋ New chat"), list];
 }
@@ -1430,7 +1449,8 @@ function appBadges(a) {
   const out = [];
   if (a.building) out.push(h("span", { class: "chip row" }, h("span", { class: "spinner" }), "Building"));
   else if (a.latest?.status === "new") out.push(h("span", { class: "chip ok" }, "Ready to install"));
-  if (a.imported?.built === false && !a.building) out.push(h("span", { class: "chip warn" }, "Not built yet"));
+  const importFailed = a.update?.port?.status === "failed" && a.update.port.tag === a.base_ref;
+  if (a.imported?.built === false && !a.building) out.push(h("span", { class: "chip warn" }, importFailed && !a.chat ? "Didn't build" : "Not built yet"));
   else if (u.port?.status === "failed" && u.status === "available" && !a.building) out.push(h("span", { class: "chip warn" }, "Needs the assistant"));
   else if (u.status === "available" && a.skip !== u.latest && !a.building && a.latest?.status !== "new") {
     const security = (u.security_lines || []).length || u.summary?.security;

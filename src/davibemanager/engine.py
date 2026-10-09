@@ -313,7 +313,16 @@ class Engine:
         task = asyncio.ensure_future(coro)
         self._background.add(task)
         task.add_done_callback(self._background.discard)
+        task.add_done_callback(self._spawned_done)
         return task
+
+    def _spawned_done(self, task: asyncio.Task) -> None:
+        """Work started in the background that failed: logged, and the user told, never dropped."""
+        if task.cancelled() or task.exception() is None:
+            return
+        e = task.exception()
+        self.log("background_failed", error=f"{type(e).__name__}: {e}")
+        self.emit("toast", level="error", text=str(e) or type(e).__name__)
 
     # ---------------------------------------------------------------- state
 
@@ -657,17 +666,23 @@ class Engine:
             self._persist()
             self._changed()
 
-    def delete_chats(self, ids: list[str]) -> dict:
+    async def delete_chats(self, ids: list[str]) -> dict:
+        """Delete chats; the open one too, once the assistant isn't answering in it (a new chat opens
+        in its place)."""
         deleted, errors = [], []
-        for cid in dict.fromkeys(ids):
-            if self.conv and cid == self.conv.id:
-                errors.append("the open conversation can't be deleted")
-                continue
+        ids = list(dict.fromkeys(ids))
+        if self.conv and self.conv.id in ids:
+            if self.busy:
+                raise UserError("Wait for the assistant to finish (or stop it) before deleting this chat.")
+            await self._switch(Conversation.create())
+        for cid in ids:
             try:
                 Conversation.delete(cid)
                 deleted.append(cid)
             except (OSError, ValueError) as e:
                 errors.append(f"{cid}: {e}")
+        if deleted:
+            self.app_manager.changed()          # an app's link to its chat goes with it
         return {"deleted": deleted, "errors": errors}
 
     # ---------------------------------------------------------------- talking to the assistant

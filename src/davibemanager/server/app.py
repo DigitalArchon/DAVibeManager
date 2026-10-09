@@ -212,7 +212,7 @@ def create_app(token: str, make_engine: Callable[[Callable[[dict], None]], Engin
 
     @app.post("/api/chats/delete")
     async def delete_chats(body: dict, e: Engine = Depends(auth)):
-        return e.delete_chats([str(i) for i in body.get("ids", [])])
+        return await e.delete_chats([str(i) for i in body.get("ids", [])])
 
     @app.post("/api/requests/{rid}/{action}")
     async def request_action(rid: int, action: str, body: dict | None = None, e: Engine = Depends(auth)):
@@ -331,7 +331,7 @@ def create_app(token: str, make_engine: Callable[[Callable[[dict], None]], Engin
         elif action == "reshare-later":
             m.reshare_later(app_id)
         elif action == "assistant":
-            await m.ask_assistant(app_id, None)
+            await m.assistant(app_id)
         elif action == "rollback":
             return m.rollback(app_id)
         elif action == "remove":

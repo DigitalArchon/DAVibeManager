@@ -962,15 +962,28 @@ class AppManager:
             self.e.log("port_failed", app=app_id, step=f.step)
             self.changed()
             if by_user:
-                await self.ask_assistant(app_id, f, tag)
+                try:
+                    await self.ask_assistant(app_id, f, tag)
+                except UserError as e:
+                    # the card offers it again ("Let the assistant do it"), once it can be
+                    self.e.emit("toast", level="error", text=f"{a['name']} didn't build by itself, and the assistant "
+                                                             f"can't take it over now: {e}")
             else:
                 self.e.notify(f"{a['name']} {tag} needs the assistant",
                               f"Your changes didn't carry over by themselves ({f.step}). Open My apps to let the assistant finish it.")
             return ""
-        except Exception:
+        except Exception as e:  # noqa: BLE001 - any other end of the build is the user's to see, never silent
             self.building.pop(app_id, None)
+            why = str(e).strip() or type(e).__name__
+            a = self.app(app_id)
+            apps.save({**a, "update": {**a.get("update", {}), "port": {"status": "failed", "step": "error", "log": why[-6000:],
+                                                                        "changes": {}, "tag": tag, "at": time.time()}}})
+            self.e.log("build_failed", app=app_id, to=tag, error=why)
             self.changed()
-            raise
+            self.e.notify(f"{a['name']} {tag} wasn't built", f"{why[:300]} Open My apps to try again, or let the assistant look at it.")
+            if by_user:
+                self.e.emit("toast", level="error", text=f"{a['name']} wasn't built: {why[:500]}")
+            return ""
         self.building.pop(app_id, None)
         a = self.app(app_id)
         _, meta = self.e._delivery(did)
@@ -1012,6 +1025,16 @@ class AppManager:
             self._step(aid, "deliver")
             return await self.e.make_delivery(args, entry=None)
 
+    async def assistant(self, app_id: str) -> None:
+        """The user's "Let the assistant do it": told what the app's own try ran into, on the release
+        it tried."""
+        port = ((self.app(app_id).get("update") or {}).get("port") or {})
+        if port.get("status") == "failed":
+            await self.ask_assistant(app_id, PortFailed(port.get("step", "apply"), port.get("log", ""), port.get("changes")),
+                                     port.get("tag", ""))
+        else:
+            await self.ask_assistant(app_id, None)
+
     async def ask_assistant(self, app_id: str, failure: PortFailed | None, tag: str = "") -> None:
         """A new chat in which the assistant makes the app's changes on the new release (or on `tag`, its
         own, for changes from a shared app): in a tree the app prepared with what carried over by
@@ -1051,7 +1074,9 @@ class AppManager:
                         "installed)",
                "start": "a clean container to build in couldn't be started",
                "snapshot": "the source it made couldn't be copied to build",
-               "fetch": "the new version couldn't be fetched", "packages": "the build tools couldn't be installed"}.get(
+               "fetch": "the new version couldn't be fetched", "packages": "the build tools couldn't be installed",
+               "deliver": "what it built didn't pass the checks a delivery has",
+               "error": "it stopped with an error"}.get(
                failure.step, failure.step) + "." + ("" if failure.step == "apply" else " Its output:\n" + fence(failure.log[-4000:]))) \
             if failure else "There's no saved build script for it yet: make one (build_script) as you deliver."
         task = (prompts.SHARED_BUILD_TASK if own else prompts.UPDATE_TASK).format(app=a["id"], name=a["name"], kind=a["kind"], upstream=a["upstream"],

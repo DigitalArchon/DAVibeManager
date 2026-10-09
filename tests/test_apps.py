@@ -730,3 +730,65 @@ async def test_the_assistant_corrects_a_changes_notes_without_building_anything(
     engine.conv.app = ""
     with pytest.raises(ValueError, match="no app of the user's yet"):
         await engine.builder_change_notes({"changes": {"drag-a-box-to-zoom": {"notes": "x"}}})
+
+
+async def test_a_build_that_stops_with_an_error_says_so_and_never_just_vanishes(gthumb, env, monkeypatch):
+    """A build the user started that ends any other way than its changes not fitting (a delivery check,
+    Podman, the AppImage runtime): the card says what stopped it, the user is told, and the assistant
+    can be asked to look, told what happened (not that there's no build script)."""
+    engine, sb, fake, told = gthumb
+    events = env[2]
+    engine.cfg.settings.changelog_summary = "manual"
+    await engine.app_manager.check("gthumb")
+
+    async def refused(args, entry):
+        raise delivery.DeliveryError("Its AppImage runtime isn't the pinned one.")
+    monkeypatch.setattr(engine, "make_delivery", refused)
+    assert await engine.app_manager.rebuild("gthumb", by_user=True) == ""
+    a = apps.load("gthumb")
+    assert not engine.app_manager.building and a["update"]["port"]["step"] == "error"
+    assert "runtime isn't the pinned one" in a["update"]["port"]["log"] and a["update"]["port"]["tag"] == "3.12.7"
+    assert told[-1][0] == "gThumb 3.12.7 wasn't built"
+    assert any(e["type"] == "toast" and "runtime isn't the pinned one" in e["text"] for e in events)
+    assert engine.conv.chat == []                                    # nobody was asked to pay for it unasked
+    sent = []
+    monkeypatch.setattr(engine, "_start_turn", lambda content, note=True: sent.append(content))
+    await engine.app_manager.assistant("gthumb")
+    assert "it stopped with an error" in sent[0] and "runtime isn't the pinned one" in sent[0]
+    assert "no saved build script" not in sent[0] and "3.12.7" in sent[0]
+
+
+async def test_when_the_assistant_cant_take_over_now_the_user_is_told(gthumb, env, monkeypatch):
+    engine, sb, fake, told = gthumb
+    events = env[2]
+    engine.cfg.settings.changelog_summary = "manual"
+    await engine.app_manager.check("gthumb")
+    sb.carry_fail["drag-a-box-to-zoom"] = "CONFLICT (content)"
+    engine.builder.busy = True                                       # answering in another chat
+    assert await engine.app_manager.rebuild("gthumb", by_user=True) == ""
+    assert apps.load("gthumb")["update"]["port"]["step"] == "apply"  # the card offers it again
+    assert any(e["type"] == "toast" and "can't take it over now" in e["text"] for e in events)
+
+
+async def test_work_started_in_the_background_that_fails_is_logged_and_shown(env):
+    engine, _, events = env
+
+    async def fails():
+        raise RuntimeError("the clean container went away")
+    task = engine._spawn(fails())
+    await asyncio.gather(task, return_exceptions=True)
+    await asyncio.sleep(0)
+    assert any(e["type"] == "toast" and e["text"] == "the clean container went away" for e in events)
+    logged = (engine.conv.dir / "events.jsonl").read_text()
+    assert "background_failed" in logged and "the clean container went away" in logged
+
+
+async def test_the_open_chat_can_be_deleted_but_not_while_the_assistant_answers_in_it(gthumb):
+    engine, sb, fake, told = gthumb
+    chat = engine.conv.id
+    engine.builder.busy = True
+    with pytest.raises(appmanager.UserError, match="Wait for the assistant"):
+        await engine.delete_chats([chat])
+    engine.builder.busy = False
+    assert (await engine.delete_chats([chat]))["deleted"] == [chat]
+    assert engine.conv.id != chat and chat not in {c["id"] for c in engine.list_chats()}

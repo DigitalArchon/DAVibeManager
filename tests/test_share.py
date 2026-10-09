@@ -396,7 +396,6 @@ async def test_an_import_the_assistant_finishes_counts_as_built_and_its_chat_can
     a = apps.load(aid)
     assert len(a["builds"]) == 1 and a["imported"]["built"] is True and "port" not in a["update"]
     # a chat that's gone isn't linked to
-    engine.conv.chat.append({"kind": "user", "text": "x"})
-    await engine.new_chat()
-    engine.delete_chats([chat])
+    await engine.delete_chats([chat])                     # the open one: a new chat takes its place
+    assert engine.conv.id != chat and engine.conv.chat == []
     assert next(x for x in engine.app_manager.apps() if x["id"] == aid)["chat"] is None
