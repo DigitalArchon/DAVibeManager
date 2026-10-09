@@ -812,9 +812,9 @@ async def test_a_build_installed_under_a_new_name_takes_the_old_entrys_place_in_
     assert json.loads(log.read_text().splitlines()[-1]) == ["--remove", str(old), "-y"] and not old.exists()
 
 
-async def test_an_app_installed_under_its_old_dla_names_is_replaced_not_doubled(gthumb, tmp_path):
-    """Apps made before the rename were installed as gThumb-dla.AppImage / dla-gthumb.desktop: the next
-    install takes their place."""
+async def test_an_app_installed_under_older_names_is_replaced_not_doubled(gthumb, tmp_path):
+    """An app an earlier DA Vibe Manager installed under other names (gThumb-dla.AppImage /
+    dla-gthumb.desktop): the next install takes their place."""
     engine, sb, fake, told = gthumb
     home = tmp_path / "home"
     engine.install_delivery("D1")

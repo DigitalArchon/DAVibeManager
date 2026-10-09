@@ -136,12 +136,14 @@ def plan(which: Callable[[str], str | None] | None = None,
 SELF_DESKTOP = """[Desktop Entry]
 Type=Application
 Name=DA Vibe Manager
-GenericName=Vibe-coded app manager
-Comment=Change the apps you use, and keep them up to date
+GenericName=Custom app creator and package manager
+Comment=Add the features you wish your apps had, keep them up to date, and get them working on your computer
 Exec={exec}
 Icon={icon}
-Categories=Utility;Development;
 StartupWMClass=davibemanager
+Terminal=false
+Categories=Utility;
+Keywords=help;assistant;ai;linux;settings;apps;packages;updates;vibe;
 X-DVM-Self=true
 """
 

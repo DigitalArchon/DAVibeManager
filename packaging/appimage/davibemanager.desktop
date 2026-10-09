@@ -1,7 +1,7 @@
 [Desktop Entry]
 Type=Application
 Name=DA Vibe Manager
-GenericName=App and computer helper
+GenericName=Custom app creator and package manager
 Comment=Add the features you wish your apps had, keep them up to date, and get them working on your computer
 Exec=davibemanager
 Icon=davibemanager
