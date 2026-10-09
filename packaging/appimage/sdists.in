@@ -1,0 +1,4 @@
+# Built from source in the container (no Linux wheels exist); locked in sdists.lock.
+# PyGObject >= 3.52 uses girepository-2.0 (GLib >= 2.80): Ubuntu 24.04, Debian 13, current Fedora and Arch.
+PyGObject
+pycairo

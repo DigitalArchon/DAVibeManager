@@ -1,0 +1,13 @@
+#!/bin/sh
+# Expose the app's gateway (Unix sockets bind-mounted at /run/dvm) on loopback: the model
+# endpoint on 8080 (ANTHROPIC_BASE_URL) and the HTTPS proxy on 3128 (HTTPS_PROXY). There is no
+# other network in here.
+relay() {
+    while :; do
+        socat "TCP-LISTEN:$1,bind=127.0.0.1,fork,reuseaddr" "UNIX-CONNECT:/run/dvm/$2" 2>/dev/null
+        sleep 1
+    done
+}
+relay 8080 model.sock &
+relay 3128 proxy.sock &
+exec sleep infinity

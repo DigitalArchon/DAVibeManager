@@ -1,0 +1,4 @@
+Vendored third-party libraries (served locally so the app works offline):
+
+- marked v15.0.12 (marked.min.js) - MIT License - https://github.com/markedjs/marked
+- DOMPurify 3.4.16 (purify.min.js) - Apache-2.0 OR MPL-2.0 - https://github.com/cure53/DOMPurify

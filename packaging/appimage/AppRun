@@ -1,0 +1,5 @@
+#!/bin/sh
+# DAVibeManager AppImage entry point. The bundled Python runs isolated (-I: no PYTHONPATH or user
+# site-packages from the host); GTK and WebKitGTK come from the host (see packaging/README.md).
+HERE="$(dirname "$(readlink -f "$0")")"
+exec "$HERE/usr/python/bin/python3" -I -m davibemanager "$@"

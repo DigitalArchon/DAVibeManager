@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- Everything is served from this origin. In particular no remote images: a prompt injection
+     must not be able to make the AI's markdown fetch a URL that carries data out. -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self' ws://127.0.0.1:* ws://localhost:*; frame-src 'none'; object-src 'none'; base-uri 'none'; form-action 'self'">
+<title>DA Vibe Manager</title>
+<link rel="icon" href="/static/icon.svg">
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header id="top">
+  <img src="/static/icon.svg" alt="" class="logo">
+  <div class="title">
+    <div class="name">DA Vibe Manager</div>
+    <div id="mode" class="mode hidden"></div>
+    <div id="status" class="status"><span class="dot"></span><span id="status-text">Starting…</span></div>
+  </div>
+  <button id="new-btn" class="icon-btn" title="New chat">＋</button>
+  <div class="menu-wrap">
+    <button id="menu-btn" class="icon-btn" title="Menu">☰</button>
+    <div id="menu" class="menu hidden">
+      <button data-act="chats">💬 Chats</button>
+      <button data-act="apps">📦 My apps <span id="apps-count" class="count"></span></button>
+      <button data-act="settings">⚙ Settings</button>
+      <button data-act="activity">🌐 Sandbox activity</button>
+      <div class="sep"></div>
+      <button data-act="quit">Quit</button>
+    </div>
+  </div>
+</header>
+
+<div id="banner" class="banner hidden"></div>
+
+<main id="chat"></main>
+
+<div id="attachments" class="hidden"></div>
+<form id="composer">
+  <button type="button" id="attach-btn" class="attach" title="Attach files or pictures (or drop them here, or paste a picture)">📎</button>
+  <input type="file" id="file-input" multiple hidden>
+  <textarea id="input" rows="1" placeholder="Pick one above, or just ask…"></textarea>
+  <button type="button" id="stop-btn" class="stop hidden" title="Stop">■</button>
+  <button type="submit" id="send-btn" class="send" title="Send (Enter)">➤</button>
+</form>
+
+<section id="panel" class="hidden">
+  <div class="panel-head"><button id="panel-back" class="icon-btn" title="Back">←</button><h2 id="panel-title"></h2></div>
+  <div id="panel-body"></div>
+</section>
+
+<div id="modal-root"></div>
+<div id="toasts"></div>
+
+<script src="/static/vendor/marked.min.js"></script>
+<script src="/static/vendor/purify.min.js"></script>
+<script src="/static/app.js"></script>
+</body>
+</html>

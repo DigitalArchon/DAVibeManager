@@ -1,0 +1,51 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "davibemanager"
+version = "0.1.0b1"
+description = "A package manager for vibe-coded apps: have an AI add the feature you wish your app had, and keep that app up to date like any other. It also helps fix your computer. It works in a sealed sandbox and asks before touching anything."
+readme = "README.md"
+license = "AGPL-3.0-or-later"
+license-files = ["LICENSE"]
+requires-python = ">=3.11"
+dependencies = [
+    "openai>=1.50",
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.29",
+    "pywebview>=5",
+    "keyring>=25",
+    "tomli-w>=1.0",
+    # attached images are re-encoded from pixels only (safety/images.py)
+    "pillow>=10",
+    # TEE attestation (llm/tee.py, dcap.py, nras.py)
+    "cryptography>=42",
+    # TEE attestation requests, the gateway's model forwarder
+    "httpx>=0.27",
+    # NanoGPT sends brotli-compressed replies; the OpenAI SDK's HTTP layer needs Brotli >= 1.2
+    "brotli>=1.2",
+    # End-to-end encrypted NanoGPT Private Mode (llm/private_mode.py). Pinned exactly: it holds the plaintext.
+    "tinfoil==0.14.0",
+    # The builder (builder/bridge.py). Pinned exactly: its bundled Claude Code CLI is what the
+    # workspace image runs (workspace/pins.py holds that binary's hash)
+    "claude-agent-sdk==0.2.164",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "pytest-asyncio>=0.23", "httpx>=0.27"]
+
+[project.scripts]
+davibemanager = "davibemanager.app:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+davibemanager = ["web/*.html", "web/*.js", "web/*.css", "web/*.svg", "web/vendor/*", "workspace/image/*"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+markers = ["podman: needs rootless Podman and network (builds the workspace image); run with -m podman"]
+addopts = "-m 'not podman'"

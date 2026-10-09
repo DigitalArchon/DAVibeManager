@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Name=DA Vibe Manager
+GenericName=App and computer helper
+Comment=Add the features you wish your apps had, keep them up to date, and get them working on your computer
+Exec=davibemanager
+Icon=davibemanager
+StartupWMClass=davibemanager
+Terminal=false
+Categories=Utility;
+Keywords=help;assistant;ai;linux;settings;apps;packages;updates;vibe;
+X-AppImage-Name=DA Vibe Manager
+X-AppImage-Version=@VERSION@

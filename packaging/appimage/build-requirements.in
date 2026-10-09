@@ -1,0 +1,6 @@
+# Tools that build PyGObject, pycairo and DAVibeManager's own wheel (locked in build-requirements.lock)
+meson-python
+meson
+ninja
+setuptools>=77
+packaging

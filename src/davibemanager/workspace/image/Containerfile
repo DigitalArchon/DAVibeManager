@@ -1,0 +1,80 @@
+# The assistant's sandbox: Ubuntu 24.04 (so AppImages built here run on Ubuntu 24.04 / Mint 22
+# and newer), pinned by digest, with its packages from a dated archive snapshot. Everything the
+# image downloads is pinned in workspace/pins.py. The host's CA bundle is mounted at
+# /hostca.crt only so apt can reach the snapshot over HTTPS until ca-certificates is installed.
+#
+# At run time the container has no network (--network=none): the entry script exposes the
+# app's gateway sockets (/run/dvm, bind-mounted) on loopback, and everything goes through them.
+ARG BASE_IMAGE
+FROM ${BASE_IMAGE}
+ARG APT_SNAPSHOT
+ARG APPIMAGETOOL_URL
+ARG APPIMAGETOOL_SHA256
+ARG RUNTIME_URL
+ARG RUNTIME_SHA256
+ARG CLAUDE_SHA256
+ENV DEBIAN_FRONTEND=noninteractive LANG=C.UTF-8 LC_ALL=C.UTF-8 TZ=UTC
+RUN rm -f /etc/apt/sources.list && printf '%s\n' \
+      'Types: deb' \
+      "URIs: https://snapshot.ubuntu.com/ubuntu/${APT_SNAPSHOT}/" \
+      'Suites: noble noble-updates noble-security' \
+      'Components: main universe' \
+      'Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg' > /etc/apt/sources.list.d/ubuntu.sources \
+ && echo 'Acquire::https::CaInfo "/hostca.crt";' > /etc/apt/apt.conf.d/99hostca \
+ && apt-get update -o Acquire::Retries=3 \
+ && apt-get install -y --no-install-recommends -o Acquire::Retries=3 \
+      ca-certificates curl git build-essential pkg-config patch file socat \
+      xz-utils zstd unzip python3 python3-venv desktop-file-utils \
+      xvfb xauth x11-utils xdotool imagemagick fonts-dejavu-core \
+ && rm /etc/apt/apt.conf.d/99hostca \
+ && rm -rf /var/lib/apt/lists/*
+
+# Later installs (the install_packages tool) get current packages from the live archive, over
+# HTTPS through the gateway's proxy; the gateway refuses plain http.
+RUN printf '%s\n' \
+      'Types: deb' \
+      'URIs: https://archive.ubuntu.com/ubuntu/' \
+      'Suites: noble noble-updates' \
+      'Components: main universe' \
+      'Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg' \
+      '' \
+      'Types: deb' \
+      'URIs: https://security.ubuntu.com/ubuntu/' \
+      'Suites: noble-security' \
+      'Components: main universe' \
+      'Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg' > /etc/apt/sources.list.d/ubuntu.sources \
+ && printf '%s\n' \
+      'Acquire::http::Proxy "http://127.0.0.1:3128";' \
+      'Acquire::https::Proxy "http://127.0.0.1:3128";' \
+      'Acquire::Retries "3";' > /etc/apt/apt.conf.d/90dvm-proxy
+
+# appimagetool (an AppImage itself, so unpacked: there is no FUSE here) and the type 2 runtime
+RUN curl -fsSL -o /tmp/appimagetool "$APPIMAGETOOL_URL" \
+ && echo "$APPIMAGETOOL_SHA256  /tmp/appimagetool" | sha256sum -c - \
+ && chmod +x /tmp/appimagetool && cd /opt && /tmp/appimagetool --appimage-extract >/dev/null \
+ && mv /opt/squashfs-root /opt/appimagetool && ln -s /opt/appimagetool/AppRun /usr/local/bin/appimagetool \
+ && rm /tmp/appimagetool \
+ && mkdir -p /usr/local/share/appimage \
+ && curl -fsSL -o /usr/local/share/appimage/runtime-x86_64 "$RUNTIME_URL" \
+ && echo "$RUNTIME_SHA256  /usr/local/share/appimage/runtime-x86_64" | sha256sum -c -
+
+# Claude Code: the CLI bundled with the pinned claude-agent-sdk the app talks to it with
+COPY claude /usr/local/bin/claude
+RUN echo "$CLAUDE_SHA256  /usr/local/bin/claude" | sha256sum -c - && chmod 755 /usr/local/bin/claude
+
+# The agent: uid 1000 (rootless Podman maps it to one of the user's subordinate ids, not the
+# user's own), no sudo. Packages are installed for it by the app (podman exec --privileged -u 0).
+RUN userdel -r ubuntu 2>/dev/null; useradd -m -u 1000 -s /bin/bash agent \
+ && mkdir -p /work /run/dvm && chown agent:agent /work
+COPY dvm-entry /usr/local/bin/dvm-entry
+RUN chmod 755 /usr/local/bin/dvm-entry
+
+ENV HTTPS_PROXY=http://127.0.0.1:3128 https_proxy=http://127.0.0.1:3128 \
+    HTTP_PROXY=http://127.0.0.1:3128 http_proxy=http://127.0.0.1:3128 \
+    NO_PROXY=127.0.0.1,localhost no_proxy=127.0.0.1,localhost \
+    ANTHROPIC_BASE_URL=http://127.0.0.1:8080 \
+    DISABLE_AUTOUPDATER=1 CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 DISABLE_TELEMETRY=1 \
+    DISABLE_ERROR_REPORTING=1 PATH=/home/agent/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+USER agent
+WORKDIR /work
+ENTRYPOINT ["/usr/local/bin/dvm-entry"]

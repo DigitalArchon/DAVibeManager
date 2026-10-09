@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>au.com.digitalarchon.davibemanager</id>
+  <name>DA Vibe Manager</name>
+  <summary>Add the features you wish your apps had, and keep those apps up to date</summary>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>AGPL-3.0-or-later</project_license>
+  <developer id="au.com.digitalarchon"><name>Digital Archon</name></developer>
+  <description>
+    <p>Tell it what you wish an open-source app could do, and an AI builds you a version that
+    does it. Then it keeps that app up to date like any other software: when the project releases
+    a new version, your changes are carried over and rebuilt, at a time you choose.</p>
+    <p>When an app it built doesn't work on your computer, it finds out why, asking before every
+    step, and fixes the build so it works there too. Apps can be shared with other people who use
+    it, and a version fixed on one computer goes back to the others as an update. It works in a
+    sealed sandbox: it can't see your files, and nothing runs on your computer until you say so.</p>
+  </description>
+  <launchable type="desktop-id">davibemanager.desktop</launchable>
+  <content_rating type="oars-1.1"/>
+  <releases>
+    <release version="@VERSION@" date="@DATE@"/>
+  </releases>
+</component>
