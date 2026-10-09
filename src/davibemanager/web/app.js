@@ -893,6 +893,8 @@ function releaseEl(a) {
   if (u.port?.status === "merged" && u.status === "available") {
     return h("div", { class: "small" }, `🎉 ${a.name} ${u.latest} has your change${(a.changes || []).length > 1 ? "s" : ""} itself: the project made ${(a.changes || []).length > 1 ? "them" : "it"} part of it. Its own version does what yours does.`);
   }
+  // a look that failed (offline): said, beside what was known before it
+  const lastLook = u.error && u.status !== "error" ? h("div", { class: "small muted" }, `Couldn't look for a newer version ${fmtDay(u.checked)}: ${u.error}`) : null;
   if (u.status === "available" && a.skip !== u.latest) {
     const sum = u.summary || {};
     const security = (u.security_lines || []).length || sum.security;
@@ -917,13 +919,15 @@ function releaseEl(a) {
           : h("button", { class: "small primary", onclick: () => guarded(async () => { await appAct(a, "assistant"); closePanel(); }) }, `Update to ${u.latest}`),
         h("button", { class: "small", onclick: () => guarded(() => showChangelog(a)) }, "What's new?"),
         !sum.status || sum.status === "error" ? h("button", { class: "small", onclick: () => guarded(() => appAct(a, "summarize")) }, "Summarise it") : null,
-        h("button", { class: "small ghost", onclick: () => guarded(() => appAct(a, "skip")) }, "Skip this version")));
+        h("button", { class: "small ghost", onclick: () => guarded(() => appAct(a, "skip")) }, "Skip this version")),
+      lastLook);
     return box;
   }
-  if (u.status === "current") return h("div", { class: "small muted" }, `Up to date: ${a.base_ref} is the newest release (checked ${fmtDay(u.checked)}).`);
+  if (u.status === "current") return lastLook ? h("div", {}, lastLook, h("div", { class: "small muted" }, `${a.base_ref} was the newest release at the last look.`))
+    : h("div", { class: "small muted" }, `Up to date: ${a.base_ref} is the newest release (checked ${fmtDay(u.checked)}).`);
   if (u.status === "error") return h("div", { class: "small muted" }, `Couldn't check for a new version: ${u.error}`);
-  if (u.status === "available" && a.skip === u.latest) return h("div", { class: "small muted" }, `You skipped ${u.latest}. You'll hear about the next one.`);
-  return null;
+  if (u.status === "available" && a.skip === u.latest) return h("div", {}, h("div", { class: "small muted" }, `You skipped ${u.latest}. You'll hear about the next one.`), lastLook);
+  return lastLook;
 }
 
 // where the app's code comes from: the project's own repository, which its updates follow
@@ -1679,7 +1683,7 @@ function appsSettings(s, save) {
       h("div", { class: "row" }, h("input", { type: "time", value: s.build_time || "03:00", onchange: (e) => e.target.value && save({ build_time: e.target.value }) })),
       h("span", { class: "small muted" }, "If your computer is off or asleep then, it's built at that time the next day, not when you start it.")),
     h("label", { class: "radio" }, h("input", { type: "checkbox", checked: !!s.build_on_battery, onchange: (e) => save({ build_on_battery: e.target.checked }) }),
-      h("div", {}, h("div", {}, "Build on battery too"), h("div", { class: "small muted" }, "Off: a laptop on its battery waits until it's plugged in."))),
+      h("div", {}, h("div", {}, "Build at the quiet time on battery too"), h("div", { class: "small muted" }, "Off: a build waiting for the quiet time waits until the laptop is plugged in. A build you start yourself, or one set to straight away, doesn't wait."))),
     h("div", { class: "field" }, h("span", {}, "Where installed apps live"),
       select("app_home", [["auto", `Automatic (${auto})`], ["gearlever", `Gear Lever${homes.gearlever ? "" : " (not installed)"}`],
         ["shelly", `Shelly${homes.shelly ? "" : " (not installed)"}`], ["menu", "Your apps menu (this app adds them)"],

@@ -119,7 +119,8 @@ class Settings:
     rebuild: str = "scheduled"
     # the quiet time for scheduled builds, local "HH:MM"; one is started within two hours after it
     build_time: str = "03:00"
-    # whether a scheduled build may start while the computer runs on its battery
+    # whether a build waiting for the quiet time may start while the computer runs on its battery (a build
+    # the user starts, or one set to straight away, doesn't wait)
     build_on_battery: bool = False
     # where installed apps live: "auto" (Shelly where it is, else Gear Lever, else a menu entry of
     # our own), "shelly", "gearlever" or "menu"

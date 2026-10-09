@@ -138,3 +138,53 @@ async def test_an_apps_own_choices_and_its_changes_from_the_window(gthumb):
         m.set_schedule("gthumb", check_every="hourly")
     c = m.change_detail("gthumb", "drag-a-box-to-zoom")
     assert c["title"] == "Drag a box to zoom" and "DVM-Change: drag-a-box-to-zoom" in c["patch"] and "The user asked" in c["feature"]
+
+
+async def test_a_look_that_fails_forgets_nothing_and_a_build_isnt_told_or_tried_twice(gthumb):
+    engine, sb, _, told = gthumb
+    engine.cfg.settings.changelog_summary = "manual"
+    engine.cfg.settings.rebuild = "auto"
+    m = engine.app_manager
+    sb.carry_fail["drag-a-box-to-zoom"] = "CONFLICT (content)"
+    await m.check("gthumb", quiet=True)
+    await wait_for(lambda: (apps.load("gthumb")["update"].get("port") or {}).get("status") == "failed", "the try")
+    n = len(sb.calls_of(scripts.CARRY))
+    # the next look fails (offline): the release, its change log and the app's own try stay, with the error beside them
+    tags, sb.tags = sb.tags, None
+    u = await m.check("gthumb", quiet=True)
+    assert u["status"] == "available" and u["latest"] == "3.12.7" and u["changelog"] and u["port"]["status"] == "failed"
+    assert u["error"] and m.apps()[0]["update"]["error"]
+    # and once it works again, the release isn't news: not told again, not built again
+    sb.tags = tags
+    u = await m.check("gthumb", quiet=True)
+    assert "error" not in u and u["port"]["status"] == "failed"
+    assert [t[0] for t in told].count("gThumb 3.12.7 is out") == 1 and len(sb.calls_of(scripts.CARRY)) == n
+
+
+async def test_a_look_saves_onto_the_app_as_it_is_after_the_look(gthumb, monkeypatch):
+    from davibemanager.workspace import podman
+    engine, sb, _, _ = gthumb
+    engine.cfg.settings.changelog_summary = "manual"
+    m = engine.app_manager
+    real = podman.exec_agent
+
+    async def during(name, argv, **kw):
+        if argv[0] == "env" and not argv[-1].startswith("refs/tags/"):
+            apps.save({**apps.load("gthumb"), "skip": "3.12.7"})      # the user, while the source is asked
+        return await real(name, argv, **kw)
+    monkeypatch.setattr(podman, "exec_agent", during)
+    await m.check("gthumb", quiet=True)
+    assert apps.load("gthumb")["skip"] == "3.12.7" and apps.load("gthumb")["update"]["latest"] == "3.12.7"
+
+
+async def test_an_app_being_built_isnt_looked_at_and_isnt_built_twice(gthumb):
+    engine, sb, _, told = gthumb
+    engine.cfg.settings.changelog_summary = "manual"
+    engine.cfg.settings.rebuild = "auto"
+    m = engine.app_manager
+    m.building["gthumb"] = {"step": "build", "started": time.time(), "tag": "3.12.7"}
+    await m.tick(now=at(12))
+    assert looked(sb) == []                                      # its release is changing under the look
+    await m.check("gthumb", quiet=True)                          # the user's own click: told, not built on top
+    assert told[-1][0] == "gThumb 3.12.7 is out" and "open My apps" in told[-1][1] and not sb.calls_of(scripts.CARRY)
+    m.building.pop("gthumb")

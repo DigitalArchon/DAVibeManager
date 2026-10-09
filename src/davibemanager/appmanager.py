@@ -689,13 +689,20 @@ class AppManager:
                 raise
             except Exception as e:  # noqa: BLE001 - shown on the card
                 info.update(status="error", error=str(e)[-300:] or type(e).__name__)
-        old = a.get("update") or {}
-        if info.get("status") == "available" and old.get("latest") == info.get("latest"):
+        old = {k: v for k, v in (a.get("update") or {}).items() if k != "error"}
+        if info.get("status") == "error" and old.get("status") in ("available", "built", "current"):
+            # a look that failed (offline) forgets nothing: the release, its change log and the app's own
+            # try at it stay, with the error beside them. Otherwise the next look would find the release
+            # "new" again: told again, built again
+            info = {**old, "checked": info["checked"], "error": info["error"]}
+        elif info.get("status") == "available" and old.get("latest") == info.get("latest"):
             info = {**old, **info}              # keep what is known of this release (its change log, summary)
-        a = apps.save({**a, "update": info})
+        # saved onto the app as it is now, not as it was before the look (a build may have finished
+        # meanwhile, or the user skipped a version)
+        a = apps.save({**self.app(app_id), "update": info})
         self.e.log("update_check", app=app_id, **{k: v for k, v in info.items() if k in ("status", "latest", "error")})
         self.changed()
-        fresh = info.get("status") == "available" and info.get("latest") != known
+        fresh = info.get("status") == "available" and info.get("latest") != known and not info.get("error")
         if fresh and a.get("skip") != info["latest"]:
             await self._on_new_release(a, quiet)
         return apps.load(app_id)["update"]
@@ -712,7 +719,7 @@ class AppManager:
         u = (apps.load(a["id"]) or a).get("update", {})
         security = bool(u.get("security_lines") or (u.get("summary") or {}).get("security"))
         when = self.build_when(a) if a.get("kind") == "appimage" else "ask"
-        rebuilding = when == "auto"
+        rebuilding = when == "auto" and a["id"] not in self.building     # one build of it at a time
         if quiet or rebuilding:
             body = ("It includes security fixes. " if security else "") + (
                 "Building your version of it now (your computer may be slower for a while)." if rebuilding
@@ -902,6 +909,8 @@ class AppManager:
         self._battery = self.on_battery()
         for a in apps.list_all():
             every = self.check_every(a)
+            if a["id"] in self.building:
+                continue                        # being built: its release is changing under the look
             if every in CHECK_EVERY and a.get("upstream") and a.get("base_ref") and \
                     now - (a.get("update") or {}).get("checked", 0) > CHECK_EVERY[every]:
                 try:

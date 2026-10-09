@@ -162,8 +162,9 @@ can choose. When one is out, it says so, with security fixes first.
 
 Building the new version takes your computer's power for a while, so by default it's done at a
 quiet time you set (3:00 AM unless you change it), not while you're using the computer, and
-never on battery unless you allow it; an app can also build straight away, or only when you say
-so. **Build it now** is always there. Installing the new build replaces the old one in place,
+a laptop waits until it's plugged in unless you allow building on battery (that applies to the
+quiet time only); an app can also build straight away, or only when you say so. **Build it now**
+is always there. Installing the new build replaces the old one in place,
 and **Go back to …** returns to the one before.
 
 When your changes don't carry over to the new version by themselves (or it doesn't build with the
