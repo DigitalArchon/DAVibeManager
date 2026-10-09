@@ -310,3 +310,59 @@ async def test_before_sharing_the_user_reads_and_corrects_what_goes_with_it(gthu
     assert notes == "Drag a box over the picture to zoom to it.\n" and m["app"]["changes"][0]["title"] == "Drag to zoom"
     assert m["app"]["changes"][0]["rev"]["id"] != rev["id"]
     assert engine.sharing.preview("gthumb")["changes"][0]["flags"] == []
+
+
+BINARY = ("diff --git a/tests/song.flac b/tests/song.flac\nnew file mode 100644\nindex 0000000..1d2e3f4\n"
+          "GIT binary patch\nliteral 152177\nzcmV)VK~#9!?VWjCRMp+bpL5Q=_q~}6V+bLz9z+H~5D*X)0d2KfTA|j~+FHNb\n"
+          "zYO&U}_O-QIt+v{>R@>U9AhoT52qK6eA_=Ii@{l~>a6e^*rMq4ZZ{SlC_#a@0hY\n\nliteral 0\nHcmV?d00001\n\n")
+
+
+def test_a_binary_file_goes_to_the_reviewer_as_a_line_saying_what_it_is():
+    """The bug: a shared app's test recordings (sound files) were most of its patch as git's encoding
+    of their bytes, so the reviewer's reading ran out before the code."""
+    first = commit_patch("bbbb222", "Save while listening", "+fn autosave() {}") + BINARY
+    second = commit_patch("bbbb333", "A switch for it", "+let enabled = true;")
+    text, bins = share.for_review(first + second)
+    assert bins == [{"file": "tests/song.flac", "bytes": 152177}]
+    assert "[binary file tests/song.flac, 152177 bytes: not shown" in text and "zcmV" not in text and "HcmV" not in text
+    assert "+fn autosave() {}" in text and "+let enabled = true;" in text                  # all the code
+    assert "From bbbb333" in text and "Subject: [PATCH] A switch for it" in text            # and the next commit
+    assert share.for_review(second) == (second, [])
+
+
+async def test_changes_too_long_to_read_together_are_each_reviewed_on_their_own(gthumb, tmp_path, monkeypatch):
+    """Never cut off: the reviewer reads each change whole, and the most cautious verdict counts."""
+    engine, _, _, _ = gthumb
+    a = apps.load("gthumb")
+    lines = lambda what: "\n".join(f"+line {i} of the {what}" for i in range(300))
+    zoom = commit_patch("bbbb222", "Drag a box to zoom", "+box zoom\n" + lines("zoom tool"), change="drag-a-box-to-zoom")
+    apps.write_file("gthumb", "changes/drag-a-box-to-zoom.patch", zoom)
+    apps.write_file("gthumb", "changes/copy-the-file-path.patch",
+                    commit_patch("bbbb333", "Copy the file path", lines("copy menu"), change="copy-the-file-path") + BINARY)
+    apps.save({**a, "changes": [*a["changes"], {"id": "copy-the-file-path", "title": "Copy the file path", "patch_ids": []}]})
+    monkeypatch.setattr(share, "REVIEW_CHARS", len(zoom) + 2500)                  # each fits, both together don't
+
+    asked = []
+
+    async def review(system, context, purpose, **log):
+        asked.append(context)
+        bad = "Copy the file path\n" in context.split("Its patch:")[0]
+        return {"model": "private/reviewer", "tier": "e2ee", "text": (
+            "SUMMARY: Copies the path.\nCONCERNS: reads the clipboard history\nVERDICT: be careful" if bad else REVIEW)}
+    engine._review = review
+    view = engine.sharing.peek(Path(exported(engine, tmp_path)["path"]))
+    await wait_for(lambda: engine.sharing.view(view["token"])["review"]["status"] == "done", "the review")
+    r = engine.sharing.view(view["token"])["review"]
+    assert len(asked) == 2 and all(len(c) <= share.REVIEW_CHARS for c in asked) and r["parts"] == 2
+    assert "+line 299 of the zoom tool" in asked[0] and "+line 299 of the copy menu" in asked[1] and "zcmV" not in asked[1]
+    assert "one of 2; the others: Copy the file path" in asked[0]                         # it knows it sees a part
+    assert r["level"] == "care" and r["partial"] is False                               # the most cautious, read whole
+    assert r["summary"] == "Drag a box to zoom: A zoom tool, only that. Copy the file path: Copies the path."
+    assert r["concerns"] == "Copy the file path: reads the clipboard history"
+    assert r["binaries"] == [{"change": "Copy the file path", "file": "tests/song.flac", "bytes": 152177}]
+    # one change too long even on its own: read as far as it goes, and said so
+    monkeypatch.setattr(share, "REVIEW_CHARS", len(zoom) // 2)
+    asked.clear()
+    view = engine.sharing.peek(Path(exported(engine, tmp_path)["path"]))
+    await wait_for(lambda: engine.sharing.view(view["token"])["review"]["status"] == "done", "the review")
+    assert engine.sharing.view(view["token"])["review"]["partial"] is True and asked[0].endswith("too long to include]")

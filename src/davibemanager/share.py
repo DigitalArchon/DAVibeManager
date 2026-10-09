@@ -348,6 +348,54 @@ def _rev_of(r) -> dict:
     return {"id": r["id"], "history": history[-HISTORY:]}
 
 
+_BASE85 = re.compile(r"[0-9A-Za-z!#$%&()*+;<=>?@^_`{|}~-]+")
+
+
+def for_review(patch: str) -> tuple[str, list[dict]]:
+    """A patch as a reviewer can read it: each binary file (git's "GIT binary patch", its bytes
+    encoded as lines of text) as one line saying what it is, since to a reader they're only noise,
+    and a lot of it. Returns (text, [{"file", "bytes"}] of the binary files)."""
+    out: list = []
+    binaries: list[dict] = []
+    file, inside = "", False
+    for line in patch.split("\n"):
+        if inside:
+            m = re.fullmatch(r"(?:literal|delta) (\d+)", line)
+            if m:
+                if binaries[-1]["bytes"] is None:
+                    binaries[-1]["bytes"] = int(m.group(1))
+                continue
+            if line == "" or _BASE85.fullmatch(line):
+                continue
+            inside = False
+        if line.startswith("diff --git "):
+            file = line.rsplit(" b/", 1)[-1]
+        if line == "GIT binary patch":
+            inside = True
+            binaries.append({"file": file, "bytes": None})
+            out.append(binaries[-1])
+            continue
+        out.append(line)
+    text = "\n".join(f"[binary file {x['file']}, {x['bytes'] if x['bytes'] is not None else '?'} bytes: not shown, "
+                     "its contents can't be read as text]" if isinstance(x, dict) else x for x in out)
+    return text, binaries
+
+
+_CAUTION = {"stop": 3, "care": 2, "": 1, "ok": 0}       # an unclear verdict is never the safest
+
+
+def combined(outs: list[tuple[str, dict]]) -> dict:
+    """The reviews of each change, as one: the most cautious verdict, and what each said."""
+    parsed = [(title, out, parse_review(out["text"])) for title, out in outs]
+    if len(parsed) == 1:
+        return {"text": parsed[0][1]["text"], **parsed[0][2]}
+    worst = max(parsed, key=lambda x: _CAUTION[x[2]["level"]])[2]
+    return {"text": "\n\n".join(f"### {title}\n{out['text']}" for title, out, _ in parsed),
+            "summary": " ".join(f"{title}: {r['summary']}" for title, _, r in parsed if r["summary"]),
+            "concerns": "; ".join(f"{title}: {r['concerns']}" for title, _, r in parsed if r["concerns"]),
+            "verdict": worst["verdict"], "level": worst["level"]}
+
+
 def parse_review(text: str) -> dict:
     def line(key: str) -> str:
         # the last: the reviewer may quote what it read, and that can hold a "VERDICT:" line of its own
@@ -440,7 +488,7 @@ class Sharing:
                 if apps.same_upstream(x.get("upstream", ""), a["upstream"]) and x["id"] not in {c["id"] for c in copies}]
         names = {apps.slug(x["name"]) for x in apps.list_all()}
         name = a["name"] if apps.slug(a["name"]) not in names else f"{a['name']} (shared)"
-        changes = [{**c, "notes": p["files"].get(f"changes/{c['id']}.md", ""), "patch": p["files"][f"changes/{c['id']}.patch"],
+        changes = [{**c, "notes": p["files"].get(f"changes/{c['id']}.md", ""), "patch": for_review(p["files"][f"changes/{c['id']}.patch"])[0],
                     "lines": apps.changed_lines(p["files"][f"changes/{c['id']}.patch"])} for c in a["changes"]]
         return {"token": token, "app": {**a, "changes": changes}, "build_script": p["files"]["build.sh"],
                 "exported": p["exported"], "review": p["review"], "yours": same, "copies": copies, "name": name,
@@ -453,30 +501,50 @@ class Sharing:
         return p
 
     async def _review(self, token: str) -> None:
+        """A reviewer outside the sandbox reads the changes and build script: all of them at once, or,
+        when they're too long for that, each change on its own (the most cautious verdict counts).
+        Binary files go to it as a line each, not as git's encoding of their bytes."""
         p = self.pending.get(token)
         if p is None:
             return
         a, files = p["app"], p["files"]
-        parts = [f"App: {a['name']}. Official source, as the file says: {a['upstream']}, release {a['base_ref']}.",
-                 "The build script (runs in a sealed container to build it):\n" + fence(files["build.sh"][:20000])]
+        head = [f"App: {a['name']}. Official source, as the file says: {a['upstream']}, release {a['base_ref']}.",
+                "The build script (runs in a sealed container to build it):\n" + fence(files["build.sh"][:20000])]
         if a["packages"]:
-            parts.append("Ubuntu packages the build installs: " + ", ".join(a["packages"]))
+            head.append("Ubuntu packages the build installs: " + ", ".join(a["packages"]))
+        sections, binaries = [], []
         for c in a["changes"]:
+            patch, bins = for_review(files[f"changes/{c['id']}.patch"])
+            binaries += [{"change": c["title"], **b} for b in bins]
             notes = files.get(f"changes/{c['id']}.md", "").strip()
-            parts.append(f"Change {c['id']}: {c['title']}\n" + (f"What its notes say it does:\n{fence(notes[:8000])}\n" if notes else
-                         "(it has no notes)\n") + "Its patch:\n" + fence(files[f"changes/{c['id']}.patch"]))
-        context = "\n\n".join(parts)
-        cut = len(context) > REVIEW_CHARS
-        if cut:
-            context = context[:REVIEW_CHARS] + "\n[… the rest was too long to include]"
+            sections.append(f"Change {c['id']}: {c['title']}\n" + (f"What its notes say it does:\n{fence(notes[:8000])}\n" if notes
+                            else "(it has no notes)\n") + "Its patch:\n" + fence(patch))
+        whole = "\n\n".join([*head, *sections])
+        if len(whole) <= REVIEW_CHARS:
+            asks = [("", whole)]
+        else:
+            # too long for one reading: each change on its own, with the app and its build script
+            titles = [c["title"] for c in a["changes"]]
+            asks = []
+            for c, section in zip(a["changes"], sections):
+                others = "; ".join(t for t in titles if t != c["title"])
+                note = (f"(The changes were too long to read together, so each is reviewed on its own. This is one of "
+                        f"{len(titles)}; the others: {others}.)")
+                asks.append((c["title"], "\n\n".join([*head, note, section])))
+        outs, cut = [], False
         try:
-            out = await self.e._review(prompts.SHARED_CHANGES_PROMPT, context, "shared_app_review", app=a["name"])
+            for title, context in asks:
+                if len(context) > REVIEW_CHARS:
+                    context, cut = context[:REVIEW_CHARS] + "\n[… the rest was too long to include]", True
+                outs.append((title, await self.e._review(prompts.SHARED_CHANGES_PROMPT, context, "shared_app_review",
+                                                         app=a["name"], change=title)))
         except Exception as e:  # noqa: BLE001 - shown on the card; the user decides
             p["review"] = {"status": "error", "error": str(e)}
             return
-        p["review"] = {"status": "done", "model": out["model"], "text": out["text"], "partial": cut,
-                       **parse_review(out["text"]), "at": time.time()}
-        self.e.log("shared_app_reviewed", app=a["name"], level=p["review"]["level"], partial=cut)
+        p["review"] = {"status": "done", "model": outs[0][1]["model"], "partial": cut, "parts": len(outs),
+                       "binaries": binaries, **combined(outs), "at": time.time()}
+        self.e.log("shared_app_reviewed", app=a["name"], level=p["review"]["level"], partial=cut, parts=len(outs),
+                   binaries=len(binaries))
 
     def accept(self, token: str, *, into: str = "", name: str = "", update: str = "") -> dict:
         """Import it: as an app of its own (the default), its changes into the user's copy `into`, or as

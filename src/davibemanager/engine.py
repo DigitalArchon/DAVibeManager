@@ -2422,7 +2422,8 @@ class Engine:
             feature = (d / "FEATURE.md").read_text(encoding="utf-8")
         except OSError:
             feature = ""
-        return {**meta, "feature": feature, "patch": delivery_mod.patch_text(d)[:400000]}
+        # binary files as a line each (what's kept is the whole patch)
+        return {**meta, "feature": feature, "patch": share_mod.for_review(delivery_mod.patch_text(d))[0][:400000]}
 
     def delivery_file(self, did: str, name: str) -> Path:
         d, meta = self._delivery(did)

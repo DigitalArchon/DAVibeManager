@@ -444,9 +444,10 @@ servers the app didn't before (telemetry, analytics, an address hidden or built 
 read, upload or delete the user's files beyond what the feature needs, or touch passwords, keys, \
 browsers, SSH or the keyring? Does it download and run code, run shell commands, or start anything at \
 login? Is anything obfuscated (encoded strings, long hex or base64, eval)? Does the build script \
-fetch or run things beyond building this app? In at most 200 plain words, say what the changes do and \
-anything worrying, naming the change and the file. If they're too long to read in full, say so. End \
-with exactly these three lines:
+fetch or run things beyond building this app? Binary files are listed as a line each, not shown: \
+say if one looks out of place (a program or library, rather than an image, a sound or test data the \
+change uses). In at most 200 plain words, say what the changes do and anything worrying, naming the \
+change and the file. If they're too long to read in full, say so. End with exactly these three lines:
 SUMMARY: <one plain sentence, under 25 words>
 CONCERNS: none | <the worrying things, in a few words each>
 VERDICT: looks safe | be careful | do not install"""

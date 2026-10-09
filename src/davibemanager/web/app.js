@@ -991,7 +991,11 @@ function sharedReviewEl(r, compact) {
   const [cls, label] = REVIEW_LOOK[r.level] || ["", r.verdict || "Read by a reviewer"];
   return h("div", { class: `review ${cls}` }, h("div", {}, h("span", { class: `chip ${cls}` }, label), " ", h("span", { class: "small" }, r.summary)),
     r.concerns ? h("div", { class: "small" }, h("b", {}, "Worth knowing: "), r.concerns) : null,
-    r.partial ? h("div", { class: "small muted" }, "Its changes were too long to read in full.") : null,
+    r.parts > 1 ? h("div", { class: "small muted" }, `Its changes were too long to read together, so each was read on its own (${r.parts} readings).`) : null,
+    r.partial ? h("div", { class: "small muted" }, "A change was too long to read in full.") : null,
+    r.binaries?.length ? h("div", { class: "small" }, h("b", {}, `${r.binaries.length} binary file${r.binaries.length > 1 ? "s" : ""} the reviewer can't read: `),
+      r.binaries.map((b) => `${b.file.split("/").pop()} (${b.bytes != null ? fmtBytes(b.bytes) : "?"})`).join(", "),
+      ". Check they're what the change needs (pictures, sounds, test data), not programs.") : null,
     !compact && r.text ? h("details", { class: "small" }, h("summary", {}, "What the reviewer said"), h("div", { class: "md", html: md(r.text) })) : null);
 }
 

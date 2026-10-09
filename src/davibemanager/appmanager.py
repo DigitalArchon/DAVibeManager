@@ -765,7 +765,8 @@ class AppManager:
         if c is None:
             raise UserError(f"{a['name']} has no change {change_id[:40]!r}.")
         return {**c, "feature": apps.read_file(app_id, f"changes/{c['id']}.md"),
-                "patch": apps.read_file(app_id, f"changes/{c['id']}.patch"), "base_ref": a.get("base_ref", "")}
+                # binary files as a line each, as for the reviewer (what's kept is the whole patch)
+                "patch": share.for_review(apps.read_file(app_id, f"changes/{c['id']}.patch"))[0], "base_ref": a.get("base_ref", "")}
 
     # ---------------------------------------------------------------- versions of a shared app (share.py)
 
