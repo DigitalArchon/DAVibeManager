@@ -1133,6 +1133,7 @@ function importView(v) {
     h("h3", {}, "Import it"), ...copyNotes, choices);
   const m = modal({ title: `Import ${a.name}?`, body, buttons: [{ label: "Cancel" }, { label: "Import", kind: "primary", onClick: async () => {
     const out = await api("POST", `/api/share/${v.token}/import`, { ...pick, name: name.value.trim() });
+    setAppOpen(out.app, true);
     toast(pick.update ? `Your ${out.name} has the new version's changes. Build it in My apps when you're ready.`
       : `${out.name} is in My apps. Build it there when you're ready.`, "ok");
     openPanel("apps");
@@ -1220,14 +1221,14 @@ async function showChangelog(a) {
   modal({ title: `${a.name} ${log.tag}: what's new`, body, buttons: [{ label: "Close" }] });
 }
 
-function appCard(a) {
+function appCard(a, inList = false) {
   const inst = a.installed || null;
   const latest = a.latest;
   const pending = latest && latest.status === "new" ? latest : null;
   const card = h("div", { class: "card app" },
     h("div", { class: "head" }, inst ? `✓ You have ${inst.version}${HOME_LABEL[inst.via] ? `, in ${HOME_LABEL[inst.via]}` : ""}` : "Not installed yet",
       h("span", { class: "spacer" }), h("span", { class: "chip" }, KIND_LABEL[a.kind] || a.kind)),
-    h("div", { class: "name" }, a.name),
+    inList ? null : h("div", { class: "name" }, a.name),        // in the list, its line names it
     sourceEl(a),
     a.changes?.length ? h("div", { class: "changes" },
       h("div", { class: "small muted" }, `Your change${a.changes.length > 1 ? "s" : ""}, on top of it:`),
@@ -1404,7 +1405,51 @@ function appsPanel() {
     h("button", { class: "small", onclick: importApp }, "Import an app…"));
   if (!list.length) return [h("div", { class: "welcome" }, "Apps I build for you show up here, and I keep them up to date. Tell me what you wish an app could do, and if it's open source I can make you a version that does it.",
     h("div", {}, h("button", { class: "primary", onclick: pickApp }, "📦 Help me fix or add a feature to an app"))), imp];
-  return [imp, ...[...list].reverse().map(appCard)];
+  if (list.length === 1) return [imp, appCard(list[0])];
+  const byName = [...list].sort((x, y) => x.name.localeCompare(y.name, undefined, { sensitivity: "base" }));
+  return [imp, h("div", { class: "app-list" }, ...byName.map(appRow))];
+}
+
+// which apps' cards are open in My apps (only a convenience: kept in this browser if it can be)
+const OPEN_APPS_KEY = "dvm-open-apps";
+function openApps() {
+  if (!S.openApps) {
+    try { S.openApps = new Set(JSON.parse(localStorage.getItem(OPEN_APPS_KEY) || "[]")); } catch { S.openApps = new Set(); }
+  }
+  return S.openApps;
+}
+function setAppOpen(id, open) {
+  const set = openApps();
+  if (open) set.add(id); else set.delete(id);
+  try { localStorage.setItem(OPEN_APPS_KEY, JSON.stringify([...set])); } catch { /* not kept */ }
+}
+
+// what an app's line says at a glance: what you have, and anything waiting on you
+function appBadges(a) {
+  const u = a.update || {};
+  const out = [];
+  if (a.building) out.push(h("span", { class: "chip row" }, h("span", { class: "spinner" }), "Building"));
+  else if (a.latest?.status === "new") out.push(h("span", { class: "chip ok" }, "Ready to install"));
+  if (a.imported?.built === false && !a.building) out.push(h("span", { class: "chip warn" }, "Not built yet"));
+  else if (u.port?.status === "failed" && u.status === "available" && !a.building) out.push(h("span", { class: "chip warn" }, "Needs the assistant"));
+  else if (u.status === "available" && a.skip !== u.latest && !a.building && a.latest?.status !== "new") {
+    const security = (u.security_lines || []).length || u.summary?.security;
+    out.push(h("span", { class: `chip ${security ? "danger" : ""}`, title: security ? "It has security fixes" : "" }, `${u.latest} is out`));
+  }
+  if (a.reshare && !out.length) out.push(h("span", { class: "chip" }, "Share back?"));
+  return out;
+}
+
+function appRow(a) {
+  const open = openApps().has(a.id);
+  const inst = a.installed;
+  const row = h("button", { type: "button", class: "app-row", "aria-expanded": String(open), onclick: () => {
+    setAppOpen(a.id, !open); openPanel("apps"); } },
+    h("span", { class: "chev" }, open ? "▾" : "▸"),
+    h("span", { class: "grow" }, h("span", { class: "name" }, a.name),
+      h("span", { class: "small muted" }, inst ? ` · ${inst.version}` : " · not installed")),
+    h("span", { class: "badges" }, ...appBadges(a)));
+  return h("div", { class: `app-item${open ? " open" : ""}` }, row, open ? appCard(a, true) : null);
 }
 
 function activityPanel() {

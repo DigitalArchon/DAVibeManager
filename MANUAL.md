@@ -152,8 +152,10 @@ Private, TEE and Claude models run where they run, so they have no host to choos
 
 ## Keeping your apps up to date
 
-My apps shows each app's official source (GitHub, GitLab…), the release it's built on, and your
-changes on top of it. While the sandbox runs, it asks each app's official repository (from
+My apps lists your apps by name, each with what you have installed and a badge when something
+waits on you (a new version, a build to install, one that needs the assistant); click one to open
+its card. The card shows the app's official source (GitHub, GitLab…), the release it's built on, and
+your changes on top of it. While the sandbox runs, it asks each app's official repository (from
 inside the sandbox) for new releases, every day, week or month, or only when you ask: each app
 can choose. When one is out, it says so, with security fixes first.
 

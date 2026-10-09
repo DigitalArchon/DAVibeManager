@@ -218,6 +218,17 @@ code, pre { font-family: var(--mono); font-size: 12.5px; }
 .card.delivery.settled { border-left-color: var(--border); opacity: .8; }
 .update { background: var(--panel-2); border: 1px solid var(--accent-2); border-radius: 8px; padding: 7px 9px; display: flex; flex-direction: column; gap: 6px; font-size: 13px; }
 .app-line { display: flex; flex-direction: column; gap: 6px; }
+.app-list { display: flex; flex-direction: column; border: 1px solid var(--border); border-radius: 12px; overflow: hidden; }
+.app-item { border-top: 1px solid var(--border); }
+.app-item:first-child { border-top: none; }
+.app-item.open > .app-line { padding: 0 8px 8px; }
+.app-row { display: flex; align-items: center; gap: 8px; width: 100%; text-align: left; background: var(--panel); border: none; border-radius: 0; padding: 9px 12px; color: var(--text); cursor: pointer; }
+.app-row:hover { background: var(--panel-2); }
+.app-row .chev { color: var(--muted); width: 1em; flex: none; }
+.app-row .grow { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.app-row .name { font-weight: 600; }
+.app-row .badges { display: flex; gap: 4px; flex-wrap: wrap; justify-content: flex-end; flex: none; max-width: 55%; }
+.app-row .chip.row { display: inline-flex; align-items: center; gap: 4px; }
 .card.app .name { font-weight: 600; font-size: 15px; }
 .update.security { border-color: var(--danger); }
 .update ul { margin: 2px 0; padding-left: 18px; }
