@@ -21,6 +21,7 @@ This is the full guide. For what DA Vibe Manager is and how to install it, see t
 - [The sandbox](#the-sandbox)
 - [How it stays safe](#how-it-stays-safe)
 - [Running from source](#running-from-source)
+- [On Omarchy](#on-omarchy)
 
 ## First start
 
@@ -92,7 +93,8 @@ Here's how a build goes:
 
 - **An app**: an AppImage the app builds itself from the committed source, in a clean container,
   to check the build works without anything done by hand. It's installed where your apps live:
-  Gear Lever, or Shelly on Arch-based systems such as CachyOS, or else an entry in your apps menu.
+  the Omarchy menu on Omarchy, Gear Lever, or Shelly on Arch-based systems such as CachyOS, or
+  else an entry in your apps menu.
   It sits next to your distribution's own copy, never over it. One app holds all your changes to it.
 - **An add-on** for an app that loads them (an mpv script, a GIMP plug-in), copied into that
   app's folder. Never into a place that runs things at login or holds secrets, and a file of
@@ -172,11 +174,11 @@ chat** on the app's card takes you back to that chat (it's in Chats too).
 ## Removing an app
 
 **Remove…** on an app in My apps uninstalls it the way it was installed (from Gear Lever, which puts
-it in the Trash; from Shelly; or our own menu entry), and takes it off My apps with its builds and
-changes. An add-on's files are taken out of the app's folder, and any files of your own it set aside
-are put back. An AppImage you've changed since it was installed is left where it is, and so is a copy
-of source code; the app tells you what stayed. Its chats stay in Chats. To be able to have it back,
-**Share…** it first: the `.vibe` file can be imported again.
+it in the Trash; from Shelly; or our own menu entry and icon, in the Omarchy menu too), and takes it
+off My apps with its builds and changes. An add-on's files are taken out of the app's folder, and
+any files of your own it set aside are put back. An AppImage you've changed since it was installed
+is left where it is, and so is a copy of source code; the app tells you what stayed. Its chats stay
+in Chats. To be able to have it back, **Share…** it first: the `.vibe` file can be imported again.
 
 ## Starting an app again, cleanly
 
@@ -350,3 +352,19 @@ receives only the output the user sent.
 
 How the AppImage is built, and how to check a release is exactly what its source makes, is in
 [packaging/README.md](packaging/README.md).
+
+## On Omarchy
+
+Omarchy has no AppImage manager, so on Omarchy DA Vibe Manager installs apps the way Omarchy's own
+web apps are: the AppImage in your apps folder (~/Applications), an entry in the Omarchy menu
+(Super + Space), and its icon in your icon theme. An update replaces it in place.
+
+A card at the top of My apps offers to put DA Vibe Manager itself in the Omarchy menu. If the apps
+it builds or its own window would need something Omarchy lacks (FUSE, WebKitGTK, the tray icon's
+library), the card lists it and installs it with one command, shown in full, as administrator once
+you enter your password. A current Omarchy has all of them already.
+
+Removing an app with Delete in the Omarchy menu takes away only its menu entry: the app is still
+installed. Its card in My apps says so, and offers to put the entry back. **Remove…** there
+uninstalls it completely.
+

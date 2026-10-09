@@ -41,15 +41,17 @@ chmod +x DAVibeManager-*-x86_64.AppImage
 ./DAVibeManager-*-x86_64.AppImage
 ```
 
-Or add it with Gear Lever (or Shelly on CachyOS) to get it in your apps menu. It needs Ubuntu
-24.04 / Mint 22, Debian 13, or a current Fedora, Arch or CachyOS, with rootless **Podman** for
-the sandbox and **WebKitGTK** for its window:
+Or add it with Gear Lever (or Shelly on CachyOS) to get it in your apps menu; on Omarchy, My apps
+offers to put it in the Omarchy menu. It needs Ubuntu 24.04 / Mint 22, Debian 13, or a current
+Fedora, Arch, CachyOS or Omarchy, with rootless **Podman** for the sandbox and **WebKitGTK** for
+its window:
 
 | Distribution | |
 |---|---|
 | Ubuntu, Mint, Debian | `sudo apt install podman gir1.2-webkit2-4.1` |
 | Fedora | `sudo dnf install podman webkit2gtk4.1` |
 | Arch, CachyOS | `sudo pacman -S podman passt webkit2gtk-4.1` |
+| Omarchy | `sudo pacman -S podman passt` (it has WebKitGTK) |
 
 If Podman is missing, the first screen offers to install it for you. Then paste your
 [NanoGPT](https://nano-gpt.com) API key, and the first start prepares the sandbox, which takes a
