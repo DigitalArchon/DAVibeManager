@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "davibemanager"
-version = "0.1.0b1"
+version = "0.1.0b2"
 description = "A package manager for vibe-coded apps: have an AI add the feature you wish your app had, and keep that app up to date like any other. It also helps fix your computer. It works in a sealed sandbox and asks before touching anything."
 readme = "README.md"
 license = "AGPL-3.0-or-later"
