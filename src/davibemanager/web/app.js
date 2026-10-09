@@ -1397,14 +1397,17 @@ function omarchyBox(o) {
       ins.state === "failed" ? h("div", { class: "err small" }, ins.error,
         ins.output ? h("details", {}, h("summary", {}, "What it printed"), h("pre", { class: "small mono" }, ins.output)) : null) : null);
   }
-  if (!o.self_entry) {
-    parts.push(h("div", { class: "small" }, "Put DA Vibe Manager in the Omarchy menu, so you can start it with Super + Space like your other apps."),
+  // this app itself (not the apps it builds: those go in the menu by themselves when installed)
+  if (!o.self_entry && !S.omarchyOfferHidden) {
+    parts.push(h("div", { class: "small" }, h("b", {}, "DA Vibe Manager itself isn't in the Omarchy menu yet. "),
+      "Put it there to start it with Super + Space, like your other apps."),
       h("div", { class: "actions" }, h("button", { class: setup ? "small" : "small primary", onclick: () => guarded(async () => {
-        await api("POST", "/api/omarchy/self-entry"); toast("DA Vibe Manager is in the Omarchy menu.", "ok"); }) }, "Add it to the Omarchy menu")));
+        await api("POST", "/api/omarchy/self-entry"); toast("DA Vibe Manager is in the Omarchy menu.", "ok"); }) }, "Put DA Vibe Manager in the menu"),
+      h("button", { class: "small ghost", onclick: () => { S.omarchyOfferHidden = true; openPanel("apps"); } }, "Not now")));
   }
   if (!parts.length) return null;
   return h("div", { class: "card podman" },
-    h("div", { class: "small muted" }, `Omarchy ${o.version || ""}: apps built here go in the Omarchy menu, with your other apps.`), ...parts);
+    h("div", { class: "small muted" }, `On Omarchy ${o.version || ""}, the apps built here go in the Omarchy menu by themselves.`), ...parts);
 }
 
 function setupScreen() {
