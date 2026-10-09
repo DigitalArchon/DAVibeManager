@@ -14,9 +14,9 @@ from helpers import wait_for
 
 def test_the_wrapper_passes_only_the_named_variables_into_the_container(tmp_path, monkeypatch):
     monkeypatch.setattr(podman, "podman", lambda: "/usr/bin/podman")
-    path = bridge.write_wrapper(tmp_path / "claude-x", "dla-x")
+    path = bridge.write_wrapper(tmp_path / "claude-x", "dvm-x")
     text = path.read_text()
-    assert text.splitlines()[-1] == 'exec /usr/bin/podman exec -i --detach-keys= -w /work $E dla-x /usr/local/bin/claude "$@"'
+    assert text.splitlines()[-1] == 'exec /usr/bin/podman exec -i --detach-keys= -w /work $E dvm-x /usr/local/bin/claude "$@"'
     for name in ("ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_ENTRYPOINT", "ANTHROPIC_MODEL", "MCP_TOOL_TIMEOUT"):
         assert f'-e {name}"' in text
     for name in ("HOME", "PATH", "SSH_AUTH_SOCK", "DISPLAY", "DBUS_SESSION_BUS_ADDRESS", "PWD"):

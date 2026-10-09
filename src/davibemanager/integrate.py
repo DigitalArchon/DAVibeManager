@@ -76,16 +76,14 @@ def desktop_name(desktop_dir: Path | None) -> str:
         return ""
 
 
-def tag(app: dict) -> str:
-    """The short name in an app's file names and menu entry: "dvm", or "dla" for apps made before the
-    rename (DA Linux Agent), so an update replaces its install instead of adding a second one."""
-    return app.get("tag") or "dla"
+# the short name in an app's file names and menu entry, and in its name there: "gThumb (DVM)"
+TAG = "dvm"
 
 
 def stable_name(app: dict) -> str:
     """The AppImage's file name for an app, the same for every version."""
     name = "".join(c if c.isalnum() or c in "._+-" else "-" for c in app["name"]).strip("-.") or app["id"]
-    return f"{name}-{tag(app)}.AppImage"
+    return f"{name}-{TAG}.AppImage"
 
 
 class GearLever:
@@ -203,12 +201,12 @@ class Menu:
             icon_ref = "application-x-executable"
             if icon:
                 self.icons_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
-                icon_dest = self.icons_dir / f"{tag(app)}-{app['id']}{icon.suffix}"
+                icon_dest = self.icons_dir / f"{TAG}-{app['id']}{icon.suffix}"
                 shutil.copyfile(icon, icon_dest)
                 icon_ref = str(icon_dest)
             entry = appimage.menu_entry(desktop.read_text(encoding="utf-8", errors="replace"), str(dest), icon_ref, app["id"])
             self.applications.mkdir(parents=True, exist_ok=True)
-            desktop_id = f"{tag(app)}-{app['id']}.desktop"
+            desktop_id = f"{TAG}-{app['id']}.desktop"
             (self.applications / desktop_id).write_text(entry, encoding="utf-8")
             if updb := _which("update-desktop-database"):
                 try:
@@ -227,15 +225,24 @@ class Menu:
                 path.unlink()
             else:
                 left = f"{path} (it has changed since it was installed)"
-        if (info.get("desktop_id") or "") == f"{tag(app)}-{app['id']}.desktop":
-            (self.applications / info["desktop_id"]).unlink(missing_ok=True)
+        # the entry it was installed with (its name from then, which an older version may have named
+        # otherwise), and the icon of ours it showed
+        desktop_id = info.get("desktop_id") or ""
+        entry = self.applications / desktop_id
+        if desktop_id.endswith(f"-{app['id']}.desktop") and "/" not in desktop_id and entry.is_file():
+            icon = appimage.read_desktop(entry.read_text(encoding="utf-8", errors="replace")).get("Icon", "")
+            if icon and Path(icon).parent == self.icons_dir:
+                Path(icon).unlink(missing_ok=True)
+            entry.unlink()
             if updb := _which("update-desktop-database"):
                 try:
                     _run([updb, str(self.applications)], timeout=60)
                 except IntegrationError:
                     pass
-        for icon in self.icons_dir.glob(f"{tag(app)}-{app['id']}.*") if self.icons_dir.is_dir() else []:
-            icon.unlink(missing_ok=True)
+        # an install under today's names (not one an update just replaced): its icons, entry or not
+        if desktop_id in ("", f"{TAG}-{app['id']}.desktop"):
+            for icon in self.icons_dir.glob(f"{TAG}-{app['id']}.*") if self.icons_dir.is_dir() else []:
+                icon.unlink(missing_ok=True)
         return left
 
 

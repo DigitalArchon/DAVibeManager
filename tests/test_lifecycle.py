@@ -78,7 +78,7 @@ def _guard(tmp_path, pid: int, start: str) -> subprocess.Popen:
     fake = tmp_path / "podman"
     fake.write_text(f'#!/bin/sh\necho "$@" >> {tmp_path}/calls\n')
     fake.chmod(0o755)
-    return subprocess.Popen(["/bin/sh", "-c", scripts.GUARD, "dvm-sandbox-guard", str(pid), start, str(fake), "dla-x"])
+    return subprocess.Popen(["/bin/sh", "-c", scripts.GUARD, "dvm-sandbox-guard", str(pid), start, str(fake), "dvm-x"])
 
 
 def _start(pid: int) -> str:
@@ -93,13 +93,13 @@ def test_the_sandbox_is_stopped_when_the_app_dies_without_stopping_it(tmp_path):
     app.kill()
     app.wait()
     guard.wait(10)
-    assert (tmp_path / "calls").read_text() == "stop --ignore -t 3 dla-x\n"
+    assert (tmp_path / "calls").read_text() == "stop --ignore -t 3 dvm-x\n"
 
 
 def test_another_process_with_the_apps_number_doesnt_count(tmp_path):
     guard = _guard(tmp_path, os.getpid(), "1")                            # this pid, started at another time
     guard.wait(10)
-    assert (tmp_path / "calls").read_text() == "stop --ignore -t 3 dla-x\n"
+    assert (tmp_path / "calls").read_text() == "stop --ignore -t 3 dvm-x\n"
 
 
 def test_a_dead_copys_watcher_is_ended_before_the_sandbox_starts(tmp_path):

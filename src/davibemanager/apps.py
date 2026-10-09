@@ -112,7 +112,7 @@ def new_id(name: str) -> str:
 def create(name: str, kind: str, upstream: str, **fields) -> dict:
     app = {"id": new_id(name), "name": name, "kind": kind, "upstream": upstream, "created": time.time(),
            "changes": [], "builds": [], "installed": None, "previous": None, "watch": True, "skip": "",
-           "update": {}, "packages": [], "tag": "dvm", **fields}
+           "update": {}, "packages": [], **fields}
     return save(app)
 
 

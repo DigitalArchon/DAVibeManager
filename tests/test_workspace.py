@@ -14,13 +14,13 @@ def fake_podman(monkeypatch):
 
 
 def test_the_container_has_no_network_no_capabilities_and_no_host_paths():
-    argv = podman.run_argv("dla-x", "localhost/img:1", Path("/run/user/1000/davibemanager/gw/x"), project_id="x")
+    argv = podman.run_argv("dvm-x", "localhost/img:1", Path("/run/user/1000/davibemanager/gw/x"), project_id="x")
     assert "--network=none" in argv
     assert "--cap-drop=ALL" in argv and not any(a.startswith("--cap-add") for a in argv)
     assert "--security-opt=no-new-privileges" in argv and "--privileged" not in argv
     assert argv[argv.index("--user") + 1] == "1000:1000"
     mounts = [argv[i + 1] for i, a in enumerate(argv) if a == "-v"]
-    assert mounts == ["dla-x-work:/work", "dla-x-home:/home/agent", "dla-x-mirrors:/var/lib/dvm",
+    assert mounts == ["dvm-x-work:/work", "dvm-x-home:/home/agent", "dvm-x-mirrors:/var/lib/dvm",
                       "/run/user/1000/davibemanager/gw/x:/run/dvm:ro,z"]
     forbidden = {"--volume", "--mount", "--device", "--env-file", "--pid", "--ipc", "--userns", "--privileged", "--net"}
     assert not any(a.split("=")[0] in forbidden for a in argv)
@@ -37,13 +37,13 @@ async def test_the_clean_container_reads_the_sandbox_but_cant_change_it(no_real_
 
 def test_limits_are_checked_before_they_reach_podman():
     with pytest.raises(podman.PodmanError):
-        podman.run_argv("dla-x", "img", Path("/g"), project_id="x", memory="8g --privileged")
+        podman.run_argv("dvm-x", "img", Path("/g"), project_id="x", memory="8g --privileged")
     with pytest.raises(podman.PodmanError):
-        podman.run_argv("dla-x", "img", Path("/g"), project_id="x", cpus="all")
+        podman.run_argv("dvm-x", "img", Path("/g"), project_id="x", cpus="all")
 
 
 def test_the_users_terminal_in_the_workspace_runs_as_the_agent_not_root():
-    argv = podman.shell_argv("dla-x")
+    argv = podman.shell_argv("dvm-x")
     assert "-u" not in argv and "--privileged" not in argv and argv[-2:] == ["bash", "-l"]
 
 
@@ -262,7 +262,7 @@ async def test_only_earlier_sandbox_images_are_removed_and_none_in_use(monkeypat
         calls.append(argv)
         if argv[1] == "images":
             repo = argv[-1]
-            return 0, {podman.IMAGE_REPO: f"{repo}:aaa\n{repo}:now\n", podman.OLD_IMAGE_REPO: f"{repo}:old\n"}[repo]
+            return 0, f"{repo}:aaa\n{repo}:now\n{repo}:old\n"
         return (1, "image is in use") if argv[-1].endswith(":old") else (0, "")
     monkeypatch.setattr(podman, "run", run)
     removed = await podman.prune_images(f"{podman.IMAGE_REPO}:now")

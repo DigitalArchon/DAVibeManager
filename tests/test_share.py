@@ -402,7 +402,7 @@ async def test_an_import_the_assistant_finishes_counts_as_built_and_its_chat_can
 
 
 async def test_an_app_imported_as_its_own_is_installed_under_the_name_the_user_gave_it(gthumb, tmp_path):
-    """Its build script names it as whoever shared it does ("gThumb (DLA)" here): its menu entry is
+    """Its build script names it as whoever shared it does ("gThumb (DVM)" here): its menu entry is
     named as the user named it, so it sits next to their own gThumb instead of taking its place."""
     from davibemanager import delivery
     engine, sb, _, _ = gthumb

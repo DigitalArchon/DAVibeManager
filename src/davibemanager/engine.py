@@ -118,8 +118,7 @@ def _end_old_guards() -> None:
             continue
         try:
             argv = (d / "cmdline").read_bytes().split(b"\0")
-            # (dla-: a copy from before the rename, DA Linux Agent)
-            if argv[:2] == [b"/bin/sh", b"-c"] and len(argv) > 3 and argv[3] in (b"dvm-sandbox-guard", b"dla-sandbox-guard") \
+            if argv[:2] == [b"/bin/sh", b"-c"] and len(argv) > 3 and argv[3] == b"dvm-sandbox-guard" \
                     and d.stat().st_uid == os.getuid():
                 os.kill(int(d.name), 15)
         except (OSError, ValueError):
@@ -1365,10 +1364,6 @@ class Engine:
                 if self._first_start:
                     self._first_start = False
                     _end_old_guards()               # a dead copy's watcher mustn't stop this copy's sandbox
-                    self._set_workspace(state="starting", step="Moving your sandbox over from DA Linux Agent…")
-                    moved = await podman.move_old_sandbox(SANDBOX) if SANDBOX == podman.NEW_SANDBOX else ""
-                    if moved:
-                        app_log("sandbox_moved", result=moved[-600:])
                     await podman.remove_check(SANDBOX)    # a clean build a dead copy left
                     if await podman.state(SANDBOX) == "running":
                         # left running by a copy of the app that didn't get to stop it (killed, crashed):
@@ -1430,7 +1425,7 @@ class Engine:
             self.notify("The assistant's sandbox couldn't start", error[-200:])
             return
         app_log("sandbox_started", image=image)
-        if SANDBOX == podman.NEW_SANDBOX:       # the app's own sandbox, never a test's: its images are the app's
+        if SANDBOX == podman.APP_SANDBOX:       # the app's own sandbox, never a test's: its images are the app's
             self._spawn(podman.prune_images(image))  # the images of earlier versions of the sandbox: GBs each
         self._spawn(self.app_manager.sync())     # the user's apps, for the assistant and the app's own builds
         self._spawn(self.backups.place_sessions())   # restored chats' sessions, if any are waiting

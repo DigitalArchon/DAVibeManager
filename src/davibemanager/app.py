@@ -220,17 +220,7 @@ def main(argv: list[str] | None = None) -> None:
     ap.add_argument("--port", type=int, default=0, help="port to listen on (default: random)")
     args = ap.parse_args(argv)
 
-    from . import migrate, tray as tray_mod
-    if migrate.old_copy_running():
-        print("DA Linux Agent (this app's old name) is still running: quit it from its tray menu, then start "
-              "DA Vibe Manager again.", file=sys.stderr)
-        tray_mod.notify("Quit DA Linux Agent first",
-                             "It's this app under its old name. Quit it from its tray menu, then start DA Vibe Manager again.")
-        sys.exit(1)
-    try:
-        moved = migrate.run()
-    except OSError as e:
-        sys.exit(f"Your settings and apps couldn't be moved over from DA Linux Agent: {e}")
+    from . import tray as tray_mod
     shown = threading.Event()
     desktop_ref: dict = {}
 
@@ -264,8 +254,6 @@ def main(argv: list[str] | None = None) -> None:
         engine = Engine(cfg, emit, runtime, notify=desktop.notify if desktop else None)
         engine.ui_notice = notice
         engine.launch_command = launch_command()
-        if moved["autostart"]:
-            tray_mod.set_autostart(True, engine.launch_command)   # it started with the computer under the old name
         tray_mod.refresh_autostart(engine.launch_command)
         holder["engine"] = engine
         return engine

@@ -21,7 +21,6 @@ This is the full guide. For what DA Vibe Manager is and how to install it, see t
 - [The sandbox](#the-sandbox)
 - [How it stays safe](#how-it-stays-safe)
 - [Running from source](#running-from-source)
-- [Coming from DA Linux Agent](#coming-from-da-linux-agent)
 
 ## First start
 
@@ -351,9 +350,3 @@ receives only the output the user sent.
 
 How the AppImage is built, and how to check a release is exactly what its source makes, is in
 [packaging/README.md](packaging/README.md).
-
-## Coming from DA Linux Agent
-
-DA Vibe Manager used to be called DA Linux Agent. Its first start moves your settings, API key,
-apps, chats and sandbox over by itself (quit DA Linux Agent first). Apps it built before keep
-their "(DLA)" names, so their updates replace them rather than adding a second copy.

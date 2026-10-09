@@ -195,7 +195,7 @@ git clone -q --no-checkout "$repo" "$work/src"
 git -C "$work/src" fetch -q origin refs/dvm/check
 git -C "$work/src" checkout -q --detach "$commit"
 cd "$work/src"
-export SOURCE_DATE_EPOCH="$(git log -1 --format=%ct)" DVM_OUT="$out" DLA_OUT="$out" TZ=UTC LC_ALL=C.UTF-8
+export SOURCE_DATE_EPOCH="$(git log -1 --format=%ct)" DVM_OUT="$out" TZ=UTC LC_ALL=C.UTF-8
 # the build script runs as the agent's own would, with its tools and git settings (podman.AGENT_ENV is the app's)
 unset GIT_CONFIG_GLOBAL GIT_NO_REPLACE_OBJECTS GIT_GRAFT_FILE GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0 \
   GIT_CONFIG_KEY_1 GIT_CONFIG_VALUE_1 GIT_CONFIG_KEY_2 GIT_CONFIG_VALUE_2

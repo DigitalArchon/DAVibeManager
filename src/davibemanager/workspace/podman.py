@@ -19,7 +19,6 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
-import os
 import re
 import shutil
 import tempfile
@@ -348,65 +347,19 @@ async def remove(name: str) -> None:
         await run([podman(), "volume", "rm", "-f", vol], timeout=60)
 
 
-OLD_SANDBOX = "dla-sandbox"               # the sandbox's name before the app was renamed (DA Linux Agent)
-NEW_SANDBOX = "dvm-sandbox"               # its name now: the only one the old one is ever moved into
-OLD_IMAGE_REPO = "localhost/dalinuxagent-workspace"
-
-
-async def move_old_sandbox(name: str, old: str = OLD_SANDBOX, old_images: str = OLD_IMAGE_REPO) -> str:
-    """Once, after the rename: the old sandbox's volumes (the assistant's files, and the Claude Code
-    sessions old chats resume) copied into this one's, then the old container, volumes and images
-    removed. Owners, modes and links come through (podman volume export/import). Returns "moved",
-    "" (nothing to move) or the reason it failed: the old volumes are kept then, and the sandbox
-    starts empty (the user's apps live outside it).
-    The user's own old sandbox goes into the app's own sandbox only, never another (a test's
-    sandbox once took it, and the test then removed it with its own)."""
-    if old == OLD_SANDBOX and name != NEW_SANDBOX:
-        return ""
-    pairs = list(zip(volume_names(old), volume_names(name)))
-    have = [await run([podman(), "volume", "exists", v]) for pair in pairs for v in pair]
-    if have[0][0] != 0 or any(rc == 0 for rc, _ in have[1::2]):
-        return ""                               # no old sandbox, or this one has volumes already
-    await run([podman(), "rm", "-f", "-t", "5", old, check_name(old)], timeout=60)
-    for src, dest in pairs:
-        if (await run([podman(), "volume", "exists", src]))[0] != 0:
-            continue
-        rc, out = await run([podman(), "volume", "create", dest])
-        if rc == 0:
-            r, w = os.pipe()
-            try:
-                exp = await asyncio.create_subprocess_exec(podman(), "volume", "export", src, stdout=w,
-                                                           stderr=asyncio.subprocess.PIPE)
-                imp = await asyncio.create_subprocess_exec(podman(), "volume", "import", dest, "-", stdin=r,
-                                                           stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE)
-            finally:
-                os.close(r)
-                os.close(w)
-            (_, e1), (_, e2) = await asyncio.gather(exp.communicate(), imp.communicate())
-            rc, out = (exp.returncode or imp.returncode), (e1 + e2).decode(errors="replace")
-        if rc != 0:
-            for _, d in pairs:
-                await run([podman(), "volume", "rm", "-f", d], timeout=60)
-            return f"copying {src} failed: {out.strip()[-500:]}"
-    for src, _ in pairs:
-        await run([podman(), "volume", "rm", "-f", src], timeout=60)
-    rc, out = await run([podman(), "images", "--format", "{{.Repository}}:{{.Tag}}", old_images])
-    for tag in out.split() if rc == 0 else []:
-        await run([podman(), "image", "rm", tag], timeout=120)    # not forced: one still in use stays
-    return "moved"
+APP_SANDBOX = "dvm-sandbox"               # the app's own sandbox (tests use others, and leave its images alone)
 
 
 async def prune_images(keep: str) -> list[str]:
-    """Remove the sandbox images of earlier versions of the app (and from before its rename): each is
-    a few GB. Not forced: one a container still uses stays. Returns those removed."""
+    """Remove the sandbox images of earlier versions of the app: each is a few GB. Not forced: one a
+    container still uses stays. Returns those removed."""
     removed = []
-    for repo in (IMAGE_REPO, OLD_IMAGE_REPO):
-        rc, out = await run([podman(), "images", "--format", "{{.Repository}}:{{.Tag}}", repo])
-        for tag in out.split() if rc == 0 else []:
-            if tag != keep and tag.startswith(f"{repo}:"):
-                rc2, _ = await run([podman(), "image", "rm", tag], timeout=120)
-                if rc2 == 0:
-                    removed.append(tag)
+    rc, out = await run([podman(), "images", "--format", "{{.Repository}}:{{.Tag}}", IMAGE_REPO])
+    for tag in out.split() if rc == 0 else []:
+        if tag != keep and tag.startswith(f"{IMAGE_REPO}:"):
+            rc2, _ = await run([podman(), "image", "rm", tag], timeout=120)
+            if rc2 == 0:
+                removed.append(tag)
     return removed
 
 
@@ -421,7 +374,7 @@ async def exec_root(name: str, argv: list[str], *, timeout: float = 1800,
 
 
 # the agent's own folders: their tops belong to it. A volume made empty gets that from the image; one
-# filled from elsewhere (the move from DA Linux Agent's sandbox) kept root's, and the agent then
+# filled from elsewhere (copied in from another sandbox) keeps the owner it had, and the agent then
 # couldn't make /work/.dvm, where the app hands it each app's files and takes its builds from
 AGENT_FOLDERS = ("/work", "/home/agent")
 

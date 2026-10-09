@@ -13,7 +13,6 @@ import keyring.core
 from keyring.errors import PasswordDeleteError
 
 SERVICE = "davibemanager"
-OLD_SERVICE = "dalinuxagent"             # before the app was renamed (DA Linux Agent)
 
 
 class KeyringUnavailable(Exception):
@@ -55,35 +54,16 @@ def set_secret(kind: str, name: str, value: str) -> None:
 
 def get_secret(kind: str, name: str) -> str | None:
     try:
-        backend = _backend()
-        value = backend.get_password(SERVICE, _user(kind, name))
-        if value is None:
-            value = _moved(backend, _user(kind, name))
-        return value
+        return _backend().get_password(SERVICE, _user(kind, name))
     except Exception as e:  # noqa: BLE001 - locked, not running yet, or none
         raise KeyringUnavailable(str(e) or type(e).__name__) from e
 
 
-def _moved(backend, user: str) -> str | None:
-    """A secret stored under the app's old name, moved to its new one (here, not at startup: the
-    keyring may still be locked then). The old one is deleted only once the new one reads back."""
-    value = backend.get_password(OLD_SERVICE, user)
-    if value is not None:
-        backend.set_password(SERVICE, user, value)
-        if backend.get_password(SERVICE, user) == value:
-            try:
-                backend.delete_password(OLD_SERVICE, user)
-            except PasswordDeleteError:
-                pass
-    return value
-
-
 def delete_secret(kind: str, name: str) -> None:
-    for service in (SERVICE, OLD_SERVICE):
-        try:
-            _backend().delete_password(service, _user(kind, name))
-        except PasswordDeleteError:
-            pass
+    try:
+        _backend().delete_password(SERVICE, _user(kind, name))
+    except PasswordDeleteError:
+        pass
 
 
 def has_secret(kind: str, name: str) -> bool:

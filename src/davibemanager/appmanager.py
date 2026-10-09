@@ -342,14 +342,14 @@ class AppManager:
         imp = (a or {}).get("imported") or {}
         if not imp or imp.get("into") or a.get("kind") != "appimage":
             return ""
-        return f"{a['name']} ({integrate.tag(a).upper()})"
+        return f"{a['name']} ({integrate.TAG.upper()})"
 
     def desktop_name(self, a: dict) -> str:
         """The app's name in the menu entry of the build the user has (else its newest): a build made
         again keeps it, so installing it replaces that one."""
         did = (a.get("installed") or {}).get("build") or (a.get("builds") or [""])[-1]
         name = integrate.desktop_name(delivery_mod.root_dir() / did / "desktop") if did else ""
-        return name or f"{a['name']} ({integrate.tag(a).upper()})"
+        return name or f"{a['name']} ({integrate.TAG.upper()})"
 
     # ---------------------------------------------------------------- recording a delivery
 

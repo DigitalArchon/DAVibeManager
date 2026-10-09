@@ -1286,7 +1286,7 @@ async function installDelivery(d) {
   const lives = choice !== "auto" ? choice : home.shelly ? "shelly" : home.gearlever ? "gearlever" : "menu";
   const where = {
     appimage: (lives === "menu" ? `It's copied to ${S.state.config.settings.install_dir}, with an entry in your apps menu.`
-      : `It's added to ${HOME_LABEL[lives]}, with your other apps.`) + ` Your own ${d.name.replace(/ \((DVM|DLA)\)$/, "")} from your distribution stays as it is, and nothing starts until you open it.`,
+      : `It's added to ${HOME_LABEL[lives]}, with your other apps.`) + ` Your own ${d.name.replace(/ \(DVM\)$/, "")} from your distribution stays as it is, and nothing starts until you open it.`,
     source: `The source code is copied to ${S.state.config.settings.install_dir}/src.`,
     addon: `${(d.files || []).length > 1 ? "Its files are" : "It's"} copied into ${d.install_to}, where the app finds ${(d.files || []).length > 1 ? "them" : "it"} the next time it starts. If you already have a file of the same name there, it's kept, renamed.`,
   }[d.kind];

@@ -34,8 +34,8 @@ def make_appimage(payload: bytes = b"app v1", runtime: bytes = RUNTIME) -> bytes
 
 DESKTOP = """[Desktop Entry]
 Type=Application
-Name=gThumb (DLA)
-Name[de]=gThumb (DLA)
+Name=gThumb (DVM)
+Name[de]=gThumb (DVM)
 Comment=View your photos
 Exec=gthumb %U
 Icon=gthumb
@@ -176,7 +176,7 @@ class FakeSandbox:
         if script == scripts.EXTRACT:
             f, out = args
             named = self.menu_names.get(at(f))
-            self.files[at(f"{out}/app.desktop")] = (DESKTOP.replace("Name=gThumb (DLA)", f"Name={named}") if named else DESKTOP).encode()
+            self.files[at(f"{out}/app.desktop")] = (DESKTOP.replace("Name=gThumb (DVM)", f"Name={named}") if named else DESKTOP).encode()
             self.files[at(f"{out}/icon.png")] = PNG
             return 0, "app.desktop\nicon.png\n"
         if script == scripts.RENAME:

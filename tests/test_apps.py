@@ -252,7 +252,7 @@ async def test_installing_makes_a_menu_entry_of_its_own_and_an_update_takes_its_
     assert meta["installed_to"] == str(app_file) and app_file.read_bytes() == sb.appimage
     assert os.stat(app_file).st_mode & stat.S_IXUSR
     entry = (home / ".local/share/applications/dvm-gthumb.desktop").read_text()
-    assert f"Exec={app_file} %U" in entry and "Name=gThumb (DLA)" in entry and "MimeType=image/png;" in entry
+    assert f"Exec={app_file} %U" in entry and "Name=gThumb (DVM)" in entry and "MimeType=image/png;" in entry
     assert "Autostart" not in entry and "curl" not in entry and "Actions" not in entry   # only what describes the app
     assert "Icon=" in entry and Path(entry.split("Icon=")[1].split()[0]).read_bytes().startswith(b"\x89PNG")
     # the update replaces it in place: same file, same menu entry
@@ -314,13 +314,13 @@ if sys.argv[1] == "--integrate":
     # as Gear Lever 4.6.2 does: the old one is replaced only when the question is answered "r";
     # -y skips the question, and a second copy is made
     answers = [] if "-y" in sys.argv else sys.stdin.read().split()
-    existing = [a for a in apps if a["name"] == "gThumb (DLA)"]
+    existing = [a for a in apps if a["name"] == "gThumb (DVM)"]
     replace = existing and len(answers) > 1 and answers[1] == "r"
     dest = existing[0]["path"] if replace else os.path.expanduser(f"~/AppImages/gthumb_dvm{'_0' if existing else ''}.appimage")
     os.makedirs(os.path.dirname(dest), exist_ok=True)
     shutil.copy(sys.argv[2], dest)
     if not replace:
-        apps.append({"name": "gThumb (DLA)", "path": dest, "desktop_id": os.path.basename(dest)[:-9] + ".desktop"})
+        apps.append({"name": "gThumb (DVM)", "path": dest, "desktop_id": os.path.basename(dest)[:-9] + ".desktop"})
     json.dump(apps, open(db, "w"))
     print(f"{dest} was integrated successfully")
 elif sys.argv[1] == "--list-installed":
@@ -490,9 +490,9 @@ async def test_apps_are_made_for_deliveries_from_before_apps_existed(env, tmp_pa
 
 def test_the_menu_entry_keeps_only_what_describes_the_app():
     from davibemanager import appimage
-    entry = appimage.menu_entry(DESKTOP, "/home/u/Applications/My App-dla.AppImage", "/i/x.png", "gthumb")
-    assert 'Exec="/home/u/Applications/My App-dla.AppImage" %U' in entry
-    assert "X-GNOME-Autostart" not in entry and "curl" not in entry and "Name[de]=gThumb (DLA)" in entry
+    entry = appimage.menu_entry(DESKTOP, "/home/u/Applications/My App-dvm.AppImage", "/i/x.png", "gthumb")
+    assert 'Exec="/home/u/Applications/My App-dvm.AppImage" %U' in entry
+    assert "X-GNOME-Autostart" not in entry and "curl" not in entry and "Name[de]=gThumb (DVM)" in entry
 
 
 # ---------------------------------------------------------------- an app is the official release with the user's changes
@@ -643,7 +643,7 @@ async def test_started_again_cleanly_it_is_the_official_release_with_each_change
     args = await remake_chat(engine, sb)
     note = await engine._app_note()
     assert FORK in note and "drag-a-box-to-zoom: Drag a box to zoom" in note and "/work/apps/gthumb-clean" in note
-    assert "name it exactly gThumb (DLA)" in note                      # the menu name of the build they have
+    assert "name it exactly gThumb (DVM)" in note                      # the menu name of the build they have
     assert not sb.calls_of(scripts.CARRY)                               # the old changes aren't applied for it
     # the source the user is shown is the one the assistant names, never the old recorded one
     engine.builder.entry = {"parts": [{"t": "text", "text": "I'll make it again from GNOME's own gThumb."}]}
@@ -810,3 +810,29 @@ async def test_a_build_installed_under_a_new_name_takes_the_old_entrys_place_in_
     apps.save({**other, "installed": None})
     engine.app_manager._drop_replaced(a, before, {"via": "gearlever", "path": "/new.appimage"})
     assert json.loads(log.read_text().splitlines()[-1]) == ["--remove", str(old), "-y"] and not old.exists()
+
+
+async def test_an_app_installed_under_its_old_dla_names_is_replaced_not_doubled(gthumb, tmp_path):
+    """Apps made before the rename were installed as gThumb-dla.AppImage / dla-gthumb.desktop: the next
+    install takes their place."""
+    engine, sb, fake, told = gthumb
+    home = tmp_path / "home"
+    engine.install_delivery("D1")
+    apps_dir = home / ".local/share/applications"
+    new_file, new_entry = home / "Applications/gThumb-dvm.AppImage", apps_dir / "dvm-gthumb.desktop"
+    old_file, old_entry = home / "Applications/gThumb-dla.AppImage", apps_dir / "dla-gthumb.desktop"
+    new_icon = Path(new_entry.read_text().split("Icon=")[1].split()[0])
+    old_icon = new_icon.with_name("dla-gthumb.png")
+    new_file.rename(old_file)
+    new_icon.rename(old_icon)
+    old_entry.write_text(new_entry.read_text().replace(str(new_file), str(old_file)).replace(str(new_icon), str(old_icon)))
+    new_entry.unlink()
+    a = apps.load("gthumb")
+    apps.save({**a, "installed": {**a["installed"], "path": str(old_file), "desktop_id": "dla-gthumb.desktop"}})
+    engine.cfg.settings.changelog_summary = "manual"
+    await engine.app_manager.check("gthumb")
+    sb.appimage = sb.rebuilt = make_appimage(b"app v2")
+    engine.install_delivery(await engine.app_manager.rebuild("gthumb"))
+    assert sorted(p.name for p in apps_dir.glob("*.desktop")) == ["dvm-gthumb.desktop"]
+    assert sorted(p.name for p in (home / "Applications").iterdir()) == ["gThumb-dvm.AppImage"]
+    assert not old_icon.exists() and new_icon.exists()
