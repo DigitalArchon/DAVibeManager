@@ -186,7 +186,13 @@ def window_problem() -> str | None:
     try:
         _bundled_girepository()
         import gi
+        from gi.repository import GLib
 
+        # the window's class and Wayland app_id, which desktops match to our desktop entry (and its
+        # icon); GTK takes it from the program name when it starts (importing Gtk, below), so it's
+        # set first. Otherwise it would be "__main__.py" (`python -m davibemanager`).
+        GLib.set_prgname(desktop_id())
+        GLib.set_application_name("DA Vibe Manager")
         gi.require_version("Gtk", "3.0")
         gi.require_version("WebKit2", "4.1")
         from gi.repository import Gtk, WebKit2  # noqa: F401
@@ -290,12 +296,7 @@ def main(argv: list[str] | None = None) -> None:
                 thread.join(0.5)
         else:
             import webview
-            from gi.repository import GLib
 
-            # the window's class and Wayland app_id, which desktops match to our desktop entry (and its
-            # icon); under `python -m davibemanager` it would otherwise be "__main__.py"
-            GLib.set_prgname(desktop_id())
-            GLib.set_application_name("DA Vibe Manager")
             window = webview.create_window("DA Vibe Manager", url + "&desktop=1", width=460, height=720,
                                            min_size=(380, 480), hidden=args.hidden, text_select=True,
                                            background_color=config.WINDOW_BACKGROUND.get(cfg.settings.theme, "#111418"))
