@@ -461,3 +461,31 @@ async def test_resetting_waits_for_builds_and_then_carries_on_as_if_nothing_happ
     assert sb.files[f"{backup.SESSIONS}/-work/s-kept.jsonl"] == b'{"kept": true}\n'
     assert sb.files["/work/.dvm/from-user/notes.txt"] == b"step one\n"
     assert not (data_dir() / "restored-sessions").exists()
+
+
+async def test_a_terminal_app_is_tried_and_opened_in_a_terminal_window(workspace, monkeypatch, tmp_path):
+    import shutil
+    import subprocess
+    import fakesandbox
+    from davibemanager import launch
+    from davibemanager.models import UserError
+    engine, sb = workspace
+    monkeypatch.setattr(fakesandbox, "DESKTOP", fakesandbox.DESKTOP.replace("Exec=gthumb %U", "Exec=htop\nTerminal=true"))
+    ran = []
+    monkeypatch.setattr(subprocess, "Popen", lambda argv, **kw: ran.append(argv))
+    monkeypatch.setattr(shutil, "which", lambda n: f"/usr/bin/{n}" if n == "alacritty" else None)
+    monkeypatch.setenv("XDG_CURRENT_DESKTOP", "Hyprland")
+    monkeypatch.delenv("TERMINAL", raising=False)
+    await engine.builder_deliver(ARGS)
+    engine.try_delivery("D1")
+    assert ran[-1][:2] == ["alacritty", "-e"] and ran[-1][2].startswith(str(engine.runtime_dir / "trial"))
+    # once installed, Open it goes the same way
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    meta = engine.install_delivery("D1")
+    engine.open_app("D1")
+    assert ran[-1] == ["alacritty", "-e", meta["installed_to"]]
+    # with no terminal to open it in, the user is told, and nothing is started
+    monkeypatch.setattr(shutil, "which", lambda n: None)
+    with pytest.raises(UserError, match="runs in a terminal"):
+        engine.try_delivery("D1")
+    assert len(ran) == 2 and launch.is_terminal_app(delivery.root_dir() / "D1" / "desktop")

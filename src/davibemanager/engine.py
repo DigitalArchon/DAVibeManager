@@ -33,6 +33,7 @@ from . import creds
 from . import delivery as delivery_mod
 from . import hostrun
 from . import integrate as integrate_mod
+from . import launch
 from . import omarchy
 from . import podmansetup
 from . import share as share_mod
@@ -2667,8 +2668,7 @@ class Engine:
         target = trial / f"{did}-{meta['file']}"
         shutil.copyfile(src, target)
         os.chmod(target, 0o700)
-        subprocess.Popen([str(target)], env=host_env(), stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                         stderr=subprocess.DEVNULL, start_new_session=True, cwd=os.path.expanduser("~"))
+        self._start_app([str(target)], d / "desktop", meta["name"])
         delivery_mod.record(d, {**meta, "tried": time.time()})
         self.log("app_tried", delivery=did, sha256=meta["sha256"])
         self.emit("deliveries", deliveries=self.deliveries())
@@ -2685,6 +2685,18 @@ class Engine:
             raise UserError("It isn't where it was installed any more. Install it again.")
         else:
             argv = [target] if meta["kind"] == "appimage" else ["xdg-open", target]   # a folder: source, add-on
-        subprocess.Popen(argv, env=host_env(), stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                         stderr=subprocess.DEVNULL, start_new_session=True, cwd=os.path.expanduser("~"))
+        self._start_app(argv, d / "desktop" if meta["kind"] == "appimage" else None, meta["name"])
         self.log("app_opened", delivery=did, path=target)
+
+    @staticmethod
+    def _start_app(argv: list[str], desktop_dir: Path | None, name: str) -> None:
+        """Start an app of the user's, detached; a terminal program (its menu entry says so) in a
+        terminal window, as the menu would (launch.py)."""
+        env = host_env()
+        if launch.is_terminal_app(desktop_dir):
+            argv = launch.terminal_argv(argv, env)
+            if argv is None:
+                raise UserError(f"{name} runs in a terminal, and no terminal program was found to open it in. "
+                                "Install one (your desktop's own), or start it from a terminal yourself.")
+        subprocess.Popen(argv, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                         stderr=subprocess.DEVNULL, start_new_session=True, cwd=os.path.expanduser("~"))

@@ -103,7 +103,8 @@ Here's how a build goes:
 
 Every build says what was tested in the sandbox and, just as plainly, what wasn't (your desktop
 and theme, your other apps, real use), with a short checklist. **Try it first** runs it once
-without installing it, and **It works** / **Something's wrong** tells the assistant how it went.
+without installing it (a terminal program such as htop opens in a terminal window, as it does
+from the menu), and **It works** / **Something's wrong** tells the assistant how it went.
 
 ## How deep a change goes
 
