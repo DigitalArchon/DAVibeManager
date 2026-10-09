@@ -17,6 +17,7 @@ This is the full guide. For what DA Vibe Manager is and how to install it, see t
 - [Starting an app again, cleanly](#starting-an-app-again-cleanly)
 - [Sharing an app](#sharing-an-app)
 - [Backups](#backups)
+- [The sandbox](#the-sandbox)
 - [How it stays safe](#how-it-stays-safe)
 - [Running from source](#running-from-source)
 - [Coming from DA Linux Agent](#coming-from-da-linux-agent)
@@ -230,6 +231,18 @@ them by itself every day, every week or after each new app or change, into a fol
 the first screen has **Restore a backup**. Restoring moves what was there aside instead of
 deleting it, and keeps the new computer's own settings (where apps are installed, the sandbox's
 size).
+
+## The sandbox
+
+**Settings → The sandbox** sets how much memory and how many processors it may use. A change applies
+at once, and stays: if the sandbox can't take it while it runs, it gets it when it next starts.
+
+**Reset the sandbox…** starts it afresh, clearing out what has built up in it (downloads,
+installed tools, builds). It's meant to be painless: everything comes back as it's needed, so
+things take longer for a while, but you carry on as before. The assistant remembers your chats,
+the files you attached are put back, each app's source is prepared again, and your apps, their
+changes, the builds you have and your backups aren't touched. Only work the assistant hasn't
+delivered yet is lost.
 
 ## How it stays safe
 

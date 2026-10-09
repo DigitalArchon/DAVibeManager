@@ -215,13 +215,43 @@ def run_argv(name: str, image: str, gateway_dir: Path, *, project_id: str, memor
         "--cap-drop=ALL",
         "--security-opt=no-new-privileges",
         "--pids-limit", str(int(pids)),
-        "--memory", _check_limit(memory, r"\d+[kmg]?", "memory"),
+        "--memory", _check_limit(memory, r"\d+[bkmg]?", "memory"),
         "--cpus", _check_limit(cpus, r"\d+(\.\d+)?", "CPU"),
         "--user", "1000:1000",
         *(a for m in mounts for a in ("-v", m)),
         "-v", f"{gateway_dir}:{GATEWAY_MOUNT}:ro,z",          # its sockets: connecting needs no writing
         image,
     ]
+
+
+_UNITS = {"": 1, "b": 1, "k": 1 << 10, "m": 1 << 20, "g": 1 << 30}
+
+
+def wanted_limits(memory: str, cpus: str, pids: int) -> dict:
+    """The limits a container is made with, as Podman records them (bytes, nano-CPUs, processes)."""
+    m = re.fullmatch(r"(\d+)([bkmg]?)", _check_limit(memory, r"\d+[bkmg]?", "memory"))
+    return {"memory": int(m.group(1)) * _UNITS[m.group(2)],
+            "cpus": round(float(_check_limit(cpus, r"\d+(\.\d+)?", "CPU")) * 1e9), "pids": int(pids)}
+
+
+async def limits(name: str) -> dict | None:
+    """The limits the container was made with (what it gets again whenever it starts), or None."""
+    rc, out = await run([podman(), "container", "inspect", "--format",
+                         "{{.HostConfig.Memory}} {{.HostConfig.NanoCpus}} {{.HostConfig.PidsLimit}}", name])
+    try:
+        memory, cpus, pids = (int(x) for x in out.split())
+    except ValueError:
+        return None
+    return {"memory": memory, "cpus": cpus, "pids": pids} if rc == 0 else None
+
+
+async def update_limits(name: str, memory: str, cpus: str, pids: int) -> tuple[int, str]:
+    """New limits for a running container, at once. Podman 4 doesn't record them, so the container
+    gets the ones it was made with again when it next starts: Engine makes it again then."""
+    w = wanted_limits(memory, cpus, pids)
+    return await run([podman(), "update", "--memory", str(w["memory"]), "--memory-swap", str(2 * w["memory"]),
+                      "--cpus", _check_limit(cpus, r"\d+(\.\d+)?", "CPU"), "--pids-limit", str(w["pids"]), name],
+                     timeout=60)
 
 
 async def state(name: str) -> str:

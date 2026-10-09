@@ -1771,11 +1771,13 @@ function settingsPanel() {
         h("div", {}, "Start with my computer (in the tray)")),
       h("div", { class: "field" }, h("span", {}, "Install apps it builds to"), h("div", { class: "row" }, dir, h("button", { class: "small", onclick: () => save({ install_dir: dir.value.trim() }) }, "Save")))),
     h("div", { class: "section" }, h("h3", {}, "The sandbox"),
-      h("div", { class: "row small" }, "Memory", mem, "CPUs", cpus, h("button", { class: "small", onclick: () => save({ container_memory: mem.value.trim(), container_cpus: cpus.value.trim() }, "Saved. Takes effect when the sandbox is reset.") }, "Save")),
-      h("p", { class: "small muted" }, "Resetting deletes everything inside the sandbox: its downloads, tools and builds, and the assistant's memory of every chat. Your apps, their changes, the builds you have, your chats and your backups stay: they're kept outside it. Each app's source is fetched again when it's needed."),
+      h("div", { class: "row small" }, "Memory", mem, "CPUs", cpus, h("button", { class: "small", onclick: () => guarded(async () => {
+        const out = await api("POST", "/api/settings", { container_memory: mem.value.trim(), container_cpus: cpus.value.trim() });
+        toast(out.limits === "now" ? "Saved: the sandbox has them now." : "Saved: the sandbox gets them when it next starts.", "ok", 3000); }) }, "Save")),
+      h("p", { class: "small muted" }, "Resetting starts the sandbox afresh, clearing out what has built up in it: its downloads, installed tools and builds are deleted, and fetched or made again as they're needed, so things take longer for a while. The assistant remembers your chats, and your apps, their changes, the builds you have and your backups aren't touched. Only work the assistant hasn't delivered yet is lost."),
       h("button", { class: "small danger", onclick: () => guarded(async () => {
-        if (!(await confirmModal("Reset the sandbox?", "Everything inside it is deleted, and the assistant starts afresh in every chat (the chats themselves stay, to read). Your apps and backups aren't touched.", "Reset", "danger"))) return;
-        await api("POST", "/api/workspace/reset"); toast("The sandbox is being rebuilt.", "ok"); }) }, "Reset the sandbox…")),
+        if (!(await confirmModal("Reset the sandbox?", "Its downloads, tools and builds are deleted, and come back as they're needed. The assistant remembers your chats and carries on. Work it hasn't delivered yet is lost. Your apps and backups aren't touched.", "Reset", "danger"))) return;
+        await api("POST", "/api/workspace/reset"); toast("The sandbox is starting afresh.", "ok"); }) }, "Reset the sandbox…")),
     h("div", { class: "small muted", style: "text-align:center" }, `${st.computer.os} · ${st.computer.desktop}`),
   ];
 }

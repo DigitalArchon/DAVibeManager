@@ -945,6 +945,7 @@ class Engine:
         builder = self._ensure_builder()
         content = self._with_about(content)
         first = note and not self.conv.session and (self.conv.mode == "app" or (self.conv.mode == "computer" and self.conv.app))
+        after_reset = self.conv.after_reset and bool(self.conv.session)
         for e in self.conv.chat:
             e.pop("queued", None)
         entry = self._new_entry()
@@ -955,6 +956,10 @@ class Engine:
                 if first:
                     note_text = await (self._app_note() if self.conv.mode == "app" else self._diagnose_note())
                     content = f"{note_text}\n\n{content}"
+                elif after_reset:
+                    content = f"{await self._after_reset()}\n\n{content}"
+                    self.conv.after_reset = False
+                    self.conv.save()
                 self.log("sent_to_ai", content=content)
                 if self._unplaced:              # attached while the sandbox wasn't running
                     files, self._unplaced = self._unplaced, []
@@ -1343,6 +1348,12 @@ class Engine:
                     # made with another gateway directory (another runtime dir): it couldn't reach this one
                     app_log("sandbox_recreated", reason="gateway moved", was=source, now=str(self.gateway.dir))
                     await podman.recreate(SANDBOX)
+                elif source and (have := await podman.limits(SANDBOX)) is not None and have != podman.wanted_limits(
+                        s.container_memory, s.container_cpus, s.container_pids):
+                    # its memory, processors or processes changed in Settings: a container gets the limits it was
+                    # made with whenever it starts, so it is made again with them (its files kept)
+                    app_log("sandbox_recreated", reason="limits changed", was=have)
+                    await podman.recreate(SANDBOX)
                 elif source and not await podman.has_mount(SANDBOX, podman.MIRROR_HOME):
                     # made before the official sources' copies had a volume of their own (which the app's
                     # clean containers read too): made again with it, its files kept, the copies fetched again
@@ -1457,10 +1468,26 @@ class Engine:
         self._podman_install = {"state": "failed", "error": error, "output": output[-4000:]}
         self._changed()
 
+    async def apply_limits(self) -> str:
+        """The sandbox's limits as Settings say, at once if it runs: "now", or "next start" (when it
+        starts again it is made again with them, its files kept: _start_workspace)."""
+        if self.workspace.get("state") != "running":
+            return "next start"
+        s = self.cfg.settings
+        try:
+            rc, out = await podman.update_limits(SANDBOX, s.container_memory, s.container_cpus, s.container_pids)
+        except podman.PodmanError as e:
+            rc, out = 1, str(e)
+        app_log("sandbox_limits", memory=s.container_memory, cpus=s.container_cpus, pids=s.container_pids,
+                applied=rc == 0, **({} if rc == 0 else {"error": out.strip()[-300:]}))
+        return "now" if rc == 0 else "next start"
+
     async def reset_workspace(self) -> None:
-        """Delete the sandbox and everything in it; conversations start their sessions afresh. What
-        the user has lives outside it (their apps, builds, chats, backups); the official sources the
-        app keeps in it are fetched again when they're needed."""
+        """Start the sandbox afresh: everything in it is deleted (downloads, tools, builds, the official
+        sources' copies), and comes back as it's needed. For the user it carries on as before: their apps,
+        builds, chats and backups live outside it, every chat's session is kept and put back (the assistant
+        remembers, and is told once what happened), and the files they attached are put back too. Only work
+        the assistant hadn't delivered is lost."""
         if self.busy:
             raise UserError("Wait for the assistant to finish (or stop it) first.")
         if self.app_manager.building or self._check_lock.locked():
@@ -1468,22 +1495,53 @@ class Engine:
         if self.backups.running:
             raise UserError("Wait for the backup to finish first.")
         await self._close_builder()
+        kept: set[str] = set()
+        if self.workspace.get("state") == "running":
+            try:
+                kept = await self.backups.keep_sessions()
+            except Exception as e:  # noqa: BLE001 - those chats start their sessions afresh, as before
+                app_log("reset_sessions_not_kept", error=str(e))
         await podman.remove_check(SANDBOX)         # it uses the sandbox's /work
         await podman.remove(SANDBOX)
         self._packages_installed = set()           # installed in the sandbox that's gone
-        shutil.rmtree(data_dir() / "restored-sessions", ignore_errors=True)   # sessions no chat has any more
         self.network, self.activity = [], None
+        lost = 0
         for c in Conversation.list_all():
             try:
                 conv = self.conv if self.conv and self.conv.id == c["id"] else Conversation.load(c["id"])
             except FileNotFoundError:
                 continue
-            conv.session = ""
+            if conv.session and conv.session not in kept:
+                conv.session, lost = "", lost + 1   # couldn't be kept: the assistant starts that one afresh
+            elif conv.session:
+                conv.after_reset = True             # its next turn: told what happened, and the app's source prepared
             conv.save()
+        # what came from this computer stays known: the sessions that were kept hold it
         self._set_workspace(state="stopped")
-        self._outside().clear()            # nothing of this computer's is left in the sandbox to search with
-        self._note("The sandbox was reset: everything in it is gone, and the assistant starts afresh.")
+        app_log("sandbox_reset", sessions_kept=len(kept), sessions_lost=lost)
+        self._note("The sandbox was reset: it starts afresh, and what it needs is fetched again as it's needed."
+                   + (" The assistant remembers your chats." if not lost else
+                      f" {lost} chat{'s' if lost > 1 else ''} couldn't be kept, and start{'' if lost > 1 else 's'} afresh."))
         self.start_workspace()
+
+    async def _after_reset(self) -> str:
+        """The first turn of a chat after the sandbox was reset: its session back in place, the files the
+        user attached in it put back, the app's source prepared again (an app chat); what the assistant is told."""
+        await self.backups.place_sessions()
+        files = []
+        for e in self.conv.chat:
+            for f in e.get("files") or []:
+                local = self.conv.dir / "attachments" / f"{f['id']}-{f['name']}"
+                if local.is_file() and not local.is_symlink():
+                    files.append({**f, "local": str(local)})
+        try:
+            await self._place(files)
+        except UserError as e:
+            self.log("reattach_failed", error=str(e))
+        note = prompts.AFTER_RESET_NOTE
+        if self.conv.mode == "app" and self.conv.app:
+            note += "\n\n" + await self._app_note()          # its source, prepared again where it was
+        return note
 
     def _builder_upstream(self) -> Upstream:
         prov, model, small, tier = self.models.builder_target()

@@ -36,6 +36,7 @@ class Conversation:
     app: str = ""              # the chat's app (its id): an app chat's, once it has one, or the app a computer chat is about
     app_name: str = ""         # an app chat's app as the user named it (a new one, not built yet)
     remake: bool = False       # an app chat that makes its app again, cleanly, from the official source
+    after_reset: bool = False  # the sandbox was reset since its last turn: the next one tells the assistant
 
     @classmethod
     def create(cls, root: Path | None = None) -> "Conversation":
@@ -65,7 +66,8 @@ class Conversation:
                    session=data.get("session", ""), chat=list(data.get("chat", [])),
                    requests=list(data.get("requests", [])), questions=list(data.get("questions", [])),
                    tokens=dict(data.get("tokens") or {}), mode=data.get("mode") or _old_mode(data),
-                   app=data.get("app", ""), app_name=data.get("app_name", ""), remake=bool(data.get("remake")))
+                   app=data.get("app", ""), app_name=data.get("app_name", ""), remake=bool(data.get("remake")),
+                   after_reset=bool(data.get("after_reset")))
 
     @staticmethod
     def list_all(root: Path | None = None) -> list[dict]:
@@ -99,7 +101,7 @@ class Conversation:
         tmp.write_text(json.dumps({"version": 1, "title": self.title, "started": self.started, "session": self.session,
                                    "chat": self.chat, "requests": self.requests, "questions": self.questions,
                                    "tokens": self.tokens, "mode": self.mode, "app": self.app, "app_name": self.app_name,
-                                   "remake": self.remake},
+                                   "remake": self.remake, "after_reset": self.after_reset},
                                   ensure_ascii=False, default=str), encoding="utf-8")
         tmp.replace(self.dir / "state.json")
 

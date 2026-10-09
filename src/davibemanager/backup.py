@@ -352,6 +352,7 @@ class Backups:
         self.e = engine
         self.running: dict | None = None        # {"what": "backup" | "restore", "since"}
         self._lock = asyncio.Lock()
+        self._placing = asyncio.Lock()          # sessions put back into the sandbox, once at a time
 
     @staticmethod
     def state_path() -> Path:
@@ -575,14 +576,24 @@ class Backups:
                     "created": manifest.get("created"), "sessions": manifest.get("sessions", False)}
 
     async def place_sessions(self) -> None:
-        """Restored chats' Claude Code sessions, into the sandbox (when it runs; else when it starts)."""
-        src = config.data_dir() / "restored-sessions"
-        if not src.is_dir() or self.e.workspace.get("state") != "running":
-            return
-        for f in sorted(src.rglob("*.jsonl")):
-            await podman.put_file(self.e.sandbox, f"{SESSIONS}/{f.relative_to(src).as_posix()}", f.read_bytes())
-        shutil.rmtree(src, ignore_errors=True)
+        """Chats' Claude Code sessions kept outside the sandbox (from a backup restored, or across a reset
+        of the sandbox) put back into it: when it runs, else when it starts."""
+        async with self._placing:
+            src = config.data_dir() / "restored-sessions"
+            if not src.is_dir() or self.e.workspace.get("state") != "running":
+                return
+            for f in sorted(src.rglob("*.jsonl")):
+                await podman.put_file(self.e.sandbox, f"{SESSIONS}/{f.relative_to(src).as_posix()}", f.read_bytes())
+            shutil.rmtree(src, ignore_errors=True)
         await self.e.app_manager.sync()
+
+    async def keep_sessions(self) -> set[str]:
+        """The chats' sessions copied out of the running sandbox, to be put back (place_sessions) once it
+        starts again: the ids kept."""
+        keep = config.data_dir() / "restored-sessions"
+        keep.mkdir(parents=True, exist_ok=True, mode=0o700)
+        await self._sessions(keep)
+        return {p.stem for p in keep.rglob("*.jsonl")}
 
 
 def check_password(password: str) -> None:

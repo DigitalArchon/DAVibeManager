@@ -406,8 +406,13 @@ async def test_what_git_shows_of_a_delivery_takes_nothing_of_the_agents_reposito
     assert seen == [("dvm-sandbox-check", "/work/.dvm/snapshot.git", {"GIT_ATTR_SOURCE": "4b825dc642cb6eb9a060e54bf8d69288fbee4904"})]
 
 
-async def test_resetting_waits_for_builds_and_forgets_what_was_in_the_sandbox(workspace, no_real_podman):
+async def test_resetting_waits_for_builds_and_then_carries_on_as_if_nothing_happened(workspace, no_real_podman):
+    """A reset clears out what built up in the sandbox, but for the user it carries on: every chat's session
+    is kept and put back (the assistant remembers, and is told once what happened), the files they attached
+    are put back, what came from their computer stays known, and nothing of theirs outside it is touched."""
+    from davibemanager import backup
     from davibemanager.config import data_dir
+    from davibemanager.conversation import Conversation
     from davibemanager.models import UserError
     engine, sb = workspace
     engine.builder = None                                     # the assistant isn't working (that's refused too)
@@ -416,7 +421,36 @@ async def test_resetting_waits_for_builds_and_forgets_what_was_in_the_sandbox(wo
         await engine.reset_workspace()
     engine.app_manager.building.clear()
     engine._packages_installed = {"meson"}
-    (data_dir() / "restored-sessions").mkdir(parents=True)
+    c = engine.conv
+    c.session = "s-kept"
+    (c.dir / "attachments").mkdir(exist_ok=True)
+    (c.dir / "attachments" / "a1b2c3d4e5f60718-notes.txt").write_text("step one\n")
+    c.chat.append({"kind": "user", "text": "see my notes", "at": 0, "files": [
+        {"id": "a1b2c3d4e5f60718", "name": "notes.txt", "size": 9, "kind": "file", "path": "/work/.dvm/from-user/notes.txt"}]})
+    c.save()
+    other = Conversation.create()
+    other.session, other.title = "s-not-kept", "other"
+    other.save()
+    engine._outside().add("Linux box 6.8.0-45-generic")
+
+    async def sessions(into):                                 # the running sandbox's sessions, copied out
+        (into / "-work").mkdir(parents=True, exist_ok=True)
+        (into / "-work" / "s-kept.jsonl").write_text('{"kept": true}\n')
+        return into
+    engine.backups._sessions = sessions
     engine.start_workspace = lambda: None
     await engine.reset_workspace()
-    assert engine._packages_installed == set() and not (data_dir() / "restored-sessions").exists()
+    assert engine._packages_installed == set()
+    assert (data_dir() / "restored-sessions" / "-work" / "s-kept.jsonl").is_file()
+    again = Conversation.load(c.id)
+    assert again.session == "s-kept" and again.after_reset
+    assert Conversation.load(other.id).session == "" and not Conversation.load(other.id).after_reset
+    assert engine._outside().check("6.8.0-45-generic")                   # still known: the session holds it
+    # the sandbox is back: the chat's next turn puts its session and files back, and tells the assistant
+    engine.workspace = {"state": "running", "image": "localhost/davibemanager-workspace:test"}
+    engine.conv = again
+    note = await engine._after_reset()
+    assert note.startswith("[From the app: the user reset your sandbox") and "You remember this chat" in note
+    assert sb.files[f"{backup.SESSIONS}/-work/s-kept.jsonl"] == b'{"kept": true}\n'
+    assert sb.files["/work/.dvm/from-user/notes.txt"] == b"step one\n"
+    assert not (data_dir() / "restored-sessions").exists()

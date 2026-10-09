@@ -155,6 +155,8 @@ def create_app(token: str, make_engine: Callable[[Callable[[dict], None]], Engin
     @app.post("/api/settings")
     async def save_settings(body: dict, e: Engine = Depends(auth)):
         e.save_settings(body)
+        if any(k in body for k in ("container_memory", "container_cpus", "container_pids")):
+            return {"ok": True, "limits": await e.apply_limits()}     # "now", or "next start"
         return {"ok": True}
 
     # ------------------------------------------------------------ the conversation

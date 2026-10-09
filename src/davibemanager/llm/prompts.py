@@ -399,6 +399,13 @@ computer; the user chose it.]
 was built, and how.
 Find out why it doesn't work here (the user will tell you what they see), then send_findings."""
 
+AFTER_RESET_NOTE = """\
+[From the app: the user reset your sandbox since your last message. Everything in it was deleted: your \
+files in /work, the tools and packages you installed, your downloads. You remember this chat. Files the \
+user attached are back where they were. Install again what you need, as you need it. Work you hadn't \
+delivered is gone: if you were in the middle of something, tell the user plainly, and do it again only \
+if they want.]"""
+
 NEW_APP_CHAT_NOTE = """\
 [From the app, for you: this chat is about the app the user calls "{name}". DA Vibe Manager hasn't \
 built it for them before.]"""

@@ -79,6 +79,9 @@ def fake_sandbox(monkeypatch, tmp_path):
     async def has_mount(name, destination):
         return script.get("mirrors", True)
 
+    async def limits(name):
+        return script.get("limits") or podman.wanted_limits("8g", "4", 4096)     # the settings' defaults
+
     async def recreate(name):
         calls.append("recreate")
 
@@ -97,7 +100,7 @@ def fake_sandbox(monkeypatch, tmp_path):
 
     async def logs(name, lines=30):
         return "socat: no such file"
-    for fn in (build_image, gateway_source, has_mount, recreate, ensure_running, sees_gateway, stop, inspect_image, logs):
+    for fn in (build_image, gateway_source, has_mount, limits, recreate, ensure_running, sees_gateway, stop, inspect_image, logs):
         monkeypatch.setattr(podman, fn.__name__, fn)
     return calls, script
 
@@ -133,6 +136,40 @@ async def test_a_sandbox_made_before_the_mirrors_had_a_volume_is_made_again_once
     await e._start_workspace()
     assert "recreate" not in calls
     await e.gateway.stop()
+
+
+async def test_new_limits_apply_at_once_and_stay_when_the_sandbox_starts_again(fake_sandbox, tmp_path, no_real_podman):
+    """Podman changes a running container's limits but gives it the ones it was made with when it starts
+    again: so they're applied at once, and the sandbox is made again with them (its files kept) at its next start."""
+    calls, script = fake_sandbox
+    script["source"] = str(tmp_path / "gw")
+    e = await _engine(tmp_path)
+    assert e.cfg.settings.container_memory == "8g"
+    await e._start_workspace()
+    assert e.workspace["state"] == "running" and "recreate" not in calls      # as it was made: nothing to do
+    e.cfg.settings.container_memory, e.cfg.settings.container_cpus = "2g", "2"
+    assert await e.apply_limits() == "now"
+    update = no_real_podman[-1]
+    assert update[1:2] == ["update"] and update[-1] == "dvm-sandbox"
+    assert update[update.index("--memory") + 1] == str(2 << 30) and update[update.index("--cpus") + 1] == "2"
+    assert update[update.index("--memory-swap") + 1] == str(4 << 30) and update[update.index("--pids-limit") + 1] == "4096"
+    await e.gateway.stop()
+    calls.clear()
+    script["limits"] = podman.wanted_limits("8g", "4", 4096)                  # what it was made with
+    e2 = await _engine(tmp_path)
+    e2.cfg.settings.container_memory, e2.cfg.settings.container_cpus = "2g", "2"
+    await e2._start_workspace()
+    assert calls[0] == "recreate"                                              # made again with them
+    e2.workspace = {"state": "stopped"}
+    assert await e2.apply_limits() == "next start"
+    await e2.gateway.stop()
+
+
+def test_limits_are_read_as_podman_records_them():
+    assert podman.wanted_limits("8g", "4", 4096) == {"memory": 8 << 30, "cpus": 4_000_000_000, "pids": 4096}
+    assert podman.wanted_limits("4096m", "2.5", 512) == {"memory": 4 << 30, "cpus": 2_500_000_000, "pids": 512}
+    with pytest.raises(podman.PodmanError):
+        podman.wanted_limits("8g; rm -rf /", "4", 1)
 
 
 async def test_a_sandbox_that_cant_see_the_gateway_is_restarted(fake_sandbox, tmp_path):
