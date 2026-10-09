@@ -16,9 +16,9 @@ from pathlib import Path
 
 import uvicorn
 
-from . import config
+from . import config, omarchy
 from .engine import Engine
-from .hostenv import set_for_self
+from .hostenv import HOST_TYPELIB_DIRS, set_for_self
 from .server.app import create_app, runtime_dir
 
 
@@ -93,10 +93,6 @@ class Desktop:
 
 WEBKIT_INSTALL = ("Ubuntu, Mint, Debian: sudo apt install gir1.2-webkit2-4.1 · Fedora: sudo dnf install webkit2gtk4.1 · "
                   "Arch, CachyOS: sudo pacman -S webkit2gtk-4.1")
-
-
-HOST_TYPELIB_DIRS = ("/usr/lib64/girepository-1.0", "/usr/lib/x86_64-linux-gnu/girepository-1.0",
-                     "/usr/lib/girepository-1.0")
 
 
 def desktop_id() -> str:
@@ -199,12 +195,16 @@ def window_problem() -> str | None:
     return None
 
 
-def launch_command() -> str:
-    """How to start this app again (for the autostart entry)."""
+def launch_argv() -> list[str]:
+    """How to start this app again (for the autostart and Omarchy menu entries)."""
     appimage = os.environ.get("APPIMAGE")
     if appimage:
-        return shlex.quote(appimage)
-    return f"{shlex.quote(sys.executable)} -m davibemanager"
+        return [appimage]
+    return [sys.executable, "-m", "davibemanager"]
+
+
+def launch_command() -> str:
+    return shlex.join(launch_argv())
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -253,8 +253,9 @@ def main(argv: list[str] | None = None) -> None:
     def make_engine(emit):
         engine = Engine(cfg, emit, runtime, notify=desktop.notify if desktop else None)
         engine.ui_notice = notice
-        engine.launch_command = launch_command()
+        engine.launch_command, engine.launch_argv = launch_command(), launch_argv()
         tray_mod.refresh_autostart(engine.launch_command)
+        omarchy.refresh_self_entry(engine.launch_argv, tray_mod.ICON)
         holder["engine"] = engine
         return engine
 

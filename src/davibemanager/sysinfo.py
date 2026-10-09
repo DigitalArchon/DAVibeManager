@@ -54,6 +54,9 @@ def system() -> list[tuple[str, str]]:
     if based:
         line += f" (based on {based})"
     out = [("System", line), ("Kernel", f"{platform.release()} ({platform.machine()})")]
+    from . import omarchy
+    if found := omarchy.detect():
+        out.append(("Omarchy", f"{found['version'] or 'version unknown'} (apps go in its own menu, Hyprland desktop)"))
     desktop = os.environ.get("XDG_CURRENT_DESKTOP", "").removeprefix("X-").replace(":", ", ")
     session = os.environ.get("XDG_SESSION_TYPE", "")
     if desktop or session:

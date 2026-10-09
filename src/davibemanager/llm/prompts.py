@@ -122,7 +122,8 @@ and deliver aren't in this chat.
   - run it the way the user does, with a time limit, and keep what it prints: \
 `timeout 20 <the AppImage> 2>&1 | tail -80` (an app that opens a window stays until the limit: that's \
 fine; tell the user a window may appear and close);
-  - it won't start at all: FUSE (`ls -l /dev/fuse`; whether libfuse2 / fuse2 is installed), or try \
+  - it won't start at all: FUSE (`ls -l /dev/fuse; command -v fusermount3 fusermount`: its builds carry \
+the static AppImage runtime, which needs fusermount3 from fuse3, not libfuse2), or try \
 `<the AppImage> --appimage-extract-and-run`;
   - "error while loading shared libraries", "version `GLIBC_…' not found", a symbol lookup error: \
 the library and versions involved (`ldd --version`; extract it with `--appimage-extract` into /tmp \
@@ -133,7 +134,9 @@ the GPU driver; Wayland or X11 problems (try `GDK_BACKEND=x11` or `QT_QPA_PLATFO
   - crashes: `coredumpctl list --no-pager | tail -5` and `coredumpctl info --no-pager <pid> | head -60`, \
 or `journalctl --user -b --no-pager | grep -i <app> | tail -40`;
   - it doesn't show in the menu, or opens the old one: its desktop entry, and where Gear Lever or \
-Shelly put it (the note says how it was installed).
+Shelly put it (the note says how it was installed). On Omarchy, its entry is \
+~/.local/share/applications/<tag>-<app id>.desktop with its icon in ~/.local/share/icons/hicolor, and \
+the launcher starts it with `uwsm-app -- gtk-launch <that file name>` (the same command shows why).
 - When you know the cause (or as much as can be known here), call send_findings: what happens, what \
 you found (the key lines, the missing library, the versions), the cause, and how the build could be \
 fixed. The fix belongs in the app's build, so it works here AND still works where it did: bundle \

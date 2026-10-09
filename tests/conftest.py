@@ -71,8 +71,10 @@ async def env(tmp_path):
 @pytest.fixture(autouse=True)
 def no_real_app_homes(monkeypatch, tmp_path):
     """Tests never reach this computer's Gear Lever, Shelly or Flatpak: only fakes a test puts in
-    tmp_path/bin are found."""
-    from davibemanager import integrate
+    tmp_path/bin are found. Nor is this computer Omarchy, unless a test says so."""
+    from davibemanager import integrate, omarchy
+
+    monkeypatch.setattr(omarchy, "_detected", None)
 
     def which(name):
         fake = tmp_path / "bin" / name

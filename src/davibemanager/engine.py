@@ -33,6 +33,7 @@ from . import creds
 from . import delivery as delivery_mod
 from . import hostrun
 from . import integrate as integrate_mod
+from . import omarchy
 from . import podmansetup
 from . import share as share_mod
 from . import sysinfo
@@ -240,6 +241,7 @@ class Engine:
         self._guard: subprocess.Popen | None = None   # stops the sandbox if this process dies (_guard_sandbox)
         self._first_start = True
         self._podman_install: dict = {}       # installing Podman from the window: {"state": "installing" | "failed", ...}
+        self._omarchy_install: dict = {}      # the same, for what Omarchy lacks (omarchy.py)
         self._told_podman = False
         self.workspace: dict = {"state": "stopped"}
         self._workspace_task: asyncio.Task | None = None
@@ -247,6 +249,7 @@ class Engine:
         self.builder_client_factory = None     # tests: a fake ClaudeSDKClient
         self.loop: asyncio.AbstractEventLoop | None = None
         self.launch_command = "davibemanager"   # how autostart starts the app (app.launch_command)
+        self.launch_argv = ["davibemanager"]     # the same, as a command (app.launch_argv)
         self.outside: OutsideData | None = None   # what came from this computer: never in a web search
         self.search_http = None                # httpx client override (tests)
         self._searches: dict[str, int] = {}    # conversation id -> web searches made in it
@@ -388,6 +391,7 @@ class Engine:
             "activity": self.activity,
             "workspace": self.workspace,
             "podman": self.podman_view(),
+            "omarchy": self.omarchy_view(),
             "assistant": self.assistant_status(),
             "deliveries": self.deliveries(),
             "apps": self.app_manager.apps(),
@@ -1464,19 +1468,28 @@ class Engine:
         self._changed()
         self._spawn(self._install_podman(p))
 
-    async def _install_podman(self, p: dict) -> None:
-        app_log("podman_install", command=p["command"])
+    async def _install_as_admin(self, command: str) -> tuple[str, str]:
+        """Run one of the app's own fixed install commands as administrator (the desktop asks for the
+        password). Returns ("", its output) when it finished, else (what went wrong, its output)."""
         try:
-            res = await hostrun.run(p["command"], as_root=True, timeout=self.PODMAN_INSTALL_TIMEOUT)
+            res = await hostrun.run(command, as_root=True, timeout=self.PODMAN_INSTALL_TIMEOUT)
         except OSError as e:
-            return self._podman_failed(f"It couldn't be started: {e}", "")
+            return f"It couldn't be started: {e}", ""
         out = redact(res.output)[0] if res.output else ""
         if res.timed_out:
-            return self._podman_failed("The install took too long and was stopped.", out)
+            return "The install took too long and was stopped.", out
         if res.exit_code == 126:
-            return self._podman_failed("The password prompt was closed, so nothing was installed.", "")
+            return "The password prompt was closed, so nothing was installed.", ""
         if res.exit_code != 0:
-            return self._podman_failed(f"The install didn't finish (it ended with code {res.exit_code}).", out)
+            return f"The install didn't finish (it ended with code {res.exit_code}).", out
+        app_log("installed_as_admin", command=command, seconds=res.seconds)
+        return "", out
+
+    async def _install_podman(self, p: dict) -> None:
+        app_log("podman_install", command=p["command"])
+        error, out = await self._install_as_admin(p["command"])
+        if error:
+            return self._podman_failed(error, out)
         still = podmansetup.missing()
         if still:
             return self._podman_failed(f"It finished, but {', '.join(still)} still isn't there.", out)
@@ -1484,7 +1497,7 @@ class Engine:
         if problem:
             return self._podman_failed("Podman is installed, but it doesn't run for your user yet. Restarting the "
                                        "computer often fixes this.", problem)
-        app_log("podman_installed", seconds=res.seconds)
+        app_log("podman_installed")
         self._podman_install = {}
         self._changed()
         self.emit("toast", level="ok", text="Podman is installed. The assistant's sandbox is being prepared (a few minutes the first time).")
@@ -1493,6 +1506,61 @@ class Engine:
     def _podman_failed(self, error: str, output: str) -> None:
         app_log("podman_install_failed", error=error, output=output[-2000:])
         self._podman_install = {"state": "failed", "error": error, "output": output[-4000:]}
+        self._changed()
+
+    # ---------------------------------------------------------------- Omarchy (omarchy.py)
+
+    def omarchy_view(self) -> dict | None:
+        """What the window shows on Omarchy: what's missing and how it's installed, and whether this
+        app is in Omarchy's menu. None elsewhere."""
+        found = omarchy.detect()
+        if not found:
+            return None
+        return {**found, "setup": omarchy.plan(), "install": self._omarchy_install,
+                "self_entry": omarchy.has_self_entry()}
+
+    def install_omarchy_setup(self) -> None:
+        """Install what Omarchy lacks for this app and its apps (the user's click), as administrator."""
+        if not omarchy.detect():
+            raise UserError("This computer isn't running Omarchy.")
+        p = omarchy.plan()
+        if not p:
+            return
+        if self._omarchy_install.get("state") == "installing":
+            raise UserError("It's being installed already.")
+        if not p["can_install"]:
+            raise UserError(f"This app can't install it here: in a terminal, run {p['terminal']}")
+        self._omarchy_install = {"state": "installing", "command": p["command"], "started": time.time()}
+        self._changed()
+        self._spawn(self._install_omarchy_setup(p))
+
+    async def _install_omarchy_setup(self, p: dict) -> None:
+        app_log("omarchy_setup", command=p["command"])
+        error, out = await self._install_as_admin(p["command"])
+        still = omarchy.missing()
+        if not error and still:
+            error = f"It finished, but {', '.join(still)} still isn't there."
+        if error:
+            app_log("omarchy_setup_failed", error=error, output=out[-2000:])
+            self._omarchy_install = {"state": "failed", "error": error, "output": out[-4000:]}
+            return self._changed()
+        app_log("omarchy_setup_done", packages=p["packages"])
+        self._omarchy_install = {}
+        self._changed()
+        own = [x for x in p["packages"] if x != "fuse3"]
+        self.emit("toast", level="ok", text="Installed. " + (
+            "Quit DA Vibe Manager and start it again for its window and its icon in the top bar." if own
+            else "Your apps can start now."))
+
+    def add_omarchy_entry(self) -> None:
+        """Put this app in Omarchy's menu (the user's click)."""
+        if not omarchy.detect():
+            raise UserError("This computer isn't running Omarchy.")
+        try:
+            omarchy.add_self_entry(self.launch_argv, tray_mod.ICON)
+        except OSError as e:
+            raise UserError(f"It couldn't be added to the menu: {e}") from None
+        app_log("omarchy_self_entry", exec=omarchy.self_exec(self.launch_argv))
         self._changed()
 
     async def apply_limits(self) -> str:

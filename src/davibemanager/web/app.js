@@ -799,7 +799,7 @@ function questionCard(q) {
 // ---- a delivered app
 
 const KIND_LABEL = { appimage: "app", source: "source code", addon: "add-on" };
-const HOME_LABEL = { gearlever: "Gear Lever", shelly: "Shelly", menu: "your apps menu", files: "" };
+const HOME_LABEL = { gearlever: "Gear Lever", shelly: "Shelly", menu: "your apps menu", omarchy: "the Omarchy menu", files: "" };
 const deliveryOf = (id) => (S.state.deliveries || []).find((x) => x.id === id);
 const appOf = (d) => (S.state.apps || []).find((a) => a.id === d.app);
 
@@ -1257,6 +1257,11 @@ function appCard(a, inList = false) {
     importedEl(a),
     releaseEl(a),
     scheduleEl(a));
+  if (inst && a.entry_missing) card.append(h("div", { class: "warnbox small" },
+    h("b", {}, `${a.name} isn't in ${HOME_LABEL[inst.via] || "your apps menu"} any more. `),
+    "It was removed there, but the app itself is still installed. Put it back, or remove it from My apps to uninstall it for good.",
+    h("div", { class: "actions" }, h("button", { class: "small primary", onclick: () => guarded(async () => {
+      await api("POST", `/api/deliveries/${inst.build}/install`); toast(`${a.name} is back in ${HOME_LABEL[inst.via] || "your apps menu"}.`, "ok"); }) }, "Put it back"))));
   const btns = h("div", { class: "actions" });
   btns.append(h("button", { class: "small", onclick: () => guarded(() => startChat({ mode: "app", app: a.id })) }, "Improve this app"));
   if (a.upstream || a.changes?.length) btns.append(h("button", { class: "small ghost", onclick: () => startAgain(a) }, "Start again, cleanly"));
@@ -1283,9 +1288,10 @@ async function installDelivery(d) {
   const before = (S.state.deliveries || []).find((x) => x.id !== d.id && x.app && x.app === d.app && x.status === "installed");
   const home = S.state.app_homes || {};
   const choice = S.state.config.settings.app_home || "auto";
-  const lives = choice !== "auto" ? choice : home.shelly ? "shelly" : home.gearlever ? "gearlever" : "menu";
+  const lives = choice !== "auto" ? choice : home.omarchy ? "omarchy" : home.shelly ? "shelly" : home.gearlever ? "gearlever" : "menu";
   const where = {
     appimage: (lives === "menu" ? `It's copied to ${S.state.config.settings.install_dir}, with an entry in your apps menu.`
+      : lives === "omarchy" ? `It's copied to ${S.state.config.settings.install_dir}, and it's in the Omarchy menu (Super + Space) with your other apps.`
       : `It's added to ${HOME_LABEL[lives]}, with your other apps.`) + ` Your own ${d.name.replace(/ \(DVM\)$/, "")} from your distribution stays as it is, and nothing starts until you open it.`,
     source: `The source code is copied to ${S.state.config.settings.install_dir}/src.`,
     addon: `${(d.files || []).length > 1 ? "Its files are" : "It's"} copied into ${d.install_to}, where the app finds ${(d.files || []).length > 1 ? "them" : "it"} the next time it starts. If you already have a file of the same name there, it's kept, renamed.`,
@@ -1363,6 +1369,40 @@ function podmanBox(p) {
       ins.output ? h("details", {}, h("summary", {}, "What it printed"), h("pre", { class: "small mono" }, ins.output)) : null) : null);
 }
 
+// on Omarchy: what it lacks for this app and its apps (usually nothing), and this app in its menu
+function omarchyBox(o) {
+  const ins = o.install || {};
+  const setup = o.setup;
+  const parts = [];
+  if (setup || ins.state === "failed") {
+    const list = (setup?.missing || []).map((m) => h("li", {}, h("code", {}, m.package), ` ${m.for}`));
+    let how;
+    if (ins.state === "installing") {
+      how = [h("div", {}, h("span", { class: "spinner" }), " Installing…"),
+        h("div", { class: "small muted" }, "If Omarchy asks for your password, that's this install.")];
+    } else if (setup?.can_install) {
+      how = [h("div", { class: "small muted" }, "This runs, as administrator:"), h("pre", { class: "small mono cmd" }, setup.command),
+        h("div", { class: "actions" }, h("button", { class: "primary", onclick: () => guarded(() => api("POST", "/api/omarchy/install")) }, "Install")),
+        h("div", { class: "small muted" }, "Omarchy asks for your password; this app never sees it. Or run it yourself in a terminal: ",
+          h("code", { class: "mono" }, setup.terminal))];
+    } else if (setup) {
+      how = [h("div", {}, "Run this in a terminal:", h("pre", { class: "small mono cmd" }, setup.terminal))];
+    }
+    parts.push(setup ? h("div", {}, h("b", {}, "Omarchy needs a little more for your apps:")) : null,
+      list.length ? h("ul", { class: "small" }, list) : null, ...(how || []),
+      ins.state === "failed" ? h("div", { class: "err small" }, ins.error,
+        ins.output ? h("details", {}, h("summary", {}, "What it printed"), h("pre", { class: "small mono" }, ins.output)) : null) : null);
+  }
+  if (!o.self_entry) {
+    parts.push(h("div", { class: "small" }, "Put DA Vibe Manager in the Omarchy menu, so you can start it with Super + Space like your other apps."),
+      h("div", { class: "actions" }, h("button", { class: setup ? "small" : "small primary", onclick: () => guarded(async () => {
+        await api("POST", "/api/omarchy/self-entry"); toast("DA Vibe Manager is in the Omarchy menu.", "ok"); }) }, "Add it to the Omarchy menu")));
+  }
+  if (!parts.length) return null;
+  return h("div", { class: "card podman" },
+    h("div", { class: "small muted" }, `Omarchy ${o.version || ""}: apps built here go in the Omarchy menu, with your other apps.`), ...parts);
+}
+
 function setupScreen() {
   const key = h("input", { type: "password", placeholder: "Your NanoGPT API key", autocomplete: "off" });
   const go = h("button", { class: "primary", onclick: () => guarded(async () => {
@@ -1419,6 +1459,11 @@ function chatsPanel() {
 }
 
 function appsPanel() {
+  const omarchy = S.state.omarchy ? omarchyBox(S.state.omarchy) : null;
+  return omarchy ? [omarchy, ...appsList()] : appsList();
+}
+
+function appsList() {
   const list = S.state.apps || [];
   const imp = h("div", { class: "row small" }, h("span", { class: "muted" }, "Someone shared an app with you?"),
     h("button", { class: "small", onclick: importApp }, "Import an app…"));
@@ -1620,7 +1665,7 @@ function appsSettings(s, save) {
   const homes = S.state.app_homes || {};
   const select = (key, options) => h("select", { onchange: (e) => save({ [key]: e.target.value }) },
     options.map(([v, label]) => h("option", { value: v, selected: (s[key] || options[0][0]) === v }, label)));
-  const auto = homes.shelly ? "Shelly" : homes.gearlever ? "Gear Lever" : "your apps menu";
+  const auto = homes.omarchy ? "the Omarchy menu" : homes.shelly ? "Shelly" : homes.gearlever ? "Gear Lever" : "your apps menu";
   return h("div", { class: "section" }, h("h3", {}, "Your apps"),
     h("div", { class: "field" }, h("span", {}, "Look for new versions of my apps"),
       select("check_every", [["day", "Every day"], ["week", "Every week"], ["month", "Every month"], ["manual", "Only when I ask"]]),
@@ -1637,8 +1682,9 @@ function appsSettings(s, save) {
       h("div", {}, h("div", {}, "Build on battery too"), h("div", { class: "small muted" }, "Off: a laptop on its battery waits until it's plugged in."))),
     h("div", { class: "field" }, h("span", {}, "Where installed apps live"),
       select("app_home", [["auto", `Automatic (${auto})`], ["gearlever", `Gear Lever${homes.gearlever ? "" : " (not installed)"}`],
-        ["shelly", `Shelly${homes.shelly ? "" : " (not installed)"}`], ["menu", "Your apps menu (this app adds them)"]]),
-      !homes.gearlever && !homes.shelly ? h("span", { class: "small muted" }, homes.flatpak
+        ["shelly", `Shelly${homes.shelly ? "" : " (not installed)"}`], ["menu", "Your apps menu (this app adds them)"],
+        ...(homes.omarchy || s.app_home === "omarchy" ? [["omarchy", `The Omarchy menu${homes.omarchy ? "" : " (not Omarchy)"}`]] : [])]),
+      !homes.gearlever && !homes.shelly && !homes.omarchy ? h("span", { class: "small muted" }, homes.flatpak
         ? "Tip: Gear Lever (from Flathub, in your Software Manager) keeps all your AppImages in one place. Once it's installed, apps built here go there."
         : "Apps built here are added to your apps menu.") : null));
 }

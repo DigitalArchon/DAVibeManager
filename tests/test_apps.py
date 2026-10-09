@@ -836,3 +836,88 @@ async def test_an_app_installed_under_its_old_dla_names_is_replaced_not_doubled(
     assert sorted(p.name for p in apps_dir.glob("*.desktop")) == ["dvm-gthumb.desktop"]
     assert sorted(p.name for p in (home / "Applications").iterdir()) == ["gThumb-dvm.AppImage"]
     assert not old_icon.exists() and new_icon.exists()
+
+
+# ---------------------------------------------------------------- on Omarchy
+
+def as_omarchy(monkeypatch, tmp_path, fuse=True):
+    from davibemanager import omarchy
+    monkeypatch.setattr(omarchy, "_detected", {"version": "4.0.4-1", "path": "/usr/share/omarchy"})
+    if fuse:
+        fake_cli(tmp_path, monkeypatch, "fusermount3", "")
+
+
+async def test_on_omarchy_an_app_goes_in_its_menu_the_way_its_own_apps_do(gthumb, tmp_path, monkeypatch):
+    engine, sb, fake, told = gthumb
+    as_omarchy(monkeypatch, tmp_path)
+    fake_cli(tmp_path, monkeypatch, "shelly", SHELLY)               # Omarchy's own way first, even so
+    engine.cfg.settings.app_home = "auto"
+    meta = engine.install_delivery("D1")
+    app_file = tmp_path / "home/Applications/gThumb-dvm.AppImage"
+    entry = tmp_path / "data/applications/dvm-gthumb.desktop"            # its launcher reads XDG_DATA_HOME's
+    icon = tmp_path / "data/icons/hicolor/256x256/apps/dvm-gthumb.png"
+    assert meta["installed_via"] == "omarchy" and meta["installed_to"] == str(app_file)
+    assert f"Exec={app_file} %U" in entry.read_text() and "\nIcon=dvm-gthumb\n" in entry.read_text()
+    assert icon.read_bytes().startswith(b"\x89PNG") and not (tmp_path / "shelly.log").exists()
+    assert not [v for v in engine.app_manager.apps() if v["entry_missing"]]
+    # the update replaces it in place: one entry, one icon
+    engine.cfg.settings.changelog_summary = "manual"
+    await engine.app_manager.check("gthumb")
+    sb.appimage = sb.rebuilt = make_appimage(b"app v2")
+    did = await engine.app_manager.rebuild("gthumb")
+    engine.install_delivery(did)
+    assert app_file.read_bytes() == make_appimage(b"app v2")
+    assert [p.name for p in entry.parent.glob("*.desktop")] == ["dvm-gthumb.desktop"]
+    assert [p.name for p in (tmp_path / "data/icons/hicolor").rglob("*.png")] == ["dvm-gthumb.png"]
+    # and removed, all of it goes
+    assert engine.app_manager.remove("gthumb") == {"left": ""}
+    assert not app_file.exists() and not entry.exists() and not icon.exists()
+
+
+async def test_on_omarchy_without_fuse_an_app_isnt_installed_to_not_start(gthumb, tmp_path, monkeypatch):
+    engine, sb, fake, told = gthumb
+    as_omarchy(monkeypatch, tmp_path, fuse=False)
+    engine.cfg.settings.app_home = "auto"
+    with pytest.raises(appmanager.UserError, match="needs FUSE.*Omarchy card"):
+        engine.install_delivery("D1")
+    assert not (tmp_path / "home/Applications/gThumb-dvm.AppImage").exists() and apps.load("gthumb").get("installed") is None
+
+
+async def test_an_app_in_our_own_menu_entry_moves_to_omarchys_way_in_place(gthumb, tmp_path, monkeypatch):
+    engine, sb, fake, told = gthumb
+    engine.install_delivery("D1")                                       # "menu", before Omarchy was known
+    old_entry = tmp_path / "home/.local/share/applications/dvm-gthumb.desktop"
+    old_icon = Path(old_entry.read_text().split("Icon=")[1].split()[0])
+    as_omarchy(monkeypatch, tmp_path)
+    engine.cfg.settings.app_home = "auto"
+    engine.install_delivery("D1")
+    assert not old_entry.exists() and not old_icon.exists()
+    assert (tmp_path / "data/applications/dvm-gthumb.desktop").exists()
+    assert apps.load("gthumb")["installed"]["via"] == "omarchy"
+
+
+async def test_an_entry_removed_in_omarchys_launcher_is_offered_back(gthumb, tmp_path, monkeypatch):
+    engine, sb, fake, told = gthumb
+    as_omarchy(monkeypatch, tmp_path)
+    engine.cfg.settings.app_home = "auto"
+    engine.install_delivery("D1")
+    entry = tmp_path / "data/applications/dvm-gthumb.desktop"
+    entry.unlink()                                      # what Omarchy's Remove does: the entry only
+    view = next(v for v in engine.app_manager.apps() if v["id"] == "gthumb")
+    assert view["entry_missing"] and view["installed"]["build"] == "D1"
+    engine.install_delivery("D1")                       # "Put it back"
+    assert entry.exists() and not next(v for v in engine.app_manager.apps() if v["id"] == "gthumb")["entry_missing"]
+    assert apps.load("gthumb").get("previous") is None                 # the same build, not a step back to undo
+
+
+async def test_going_back_says_why_it_couldnt(gthumb, tmp_path, monkeypatch):
+    engine, sb, fake, told = gthumb
+    engine.install_delivery("D1")
+    engine.cfg.settings.changelog_summary = "manual"
+    await engine.app_manager.check("gthumb")
+    sb.appimage = sb.rebuilt = make_appimage(b"app v2")
+    engine.install_delivery(await engine.app_manager.rebuild("gthumb"))
+    as_omarchy(monkeypatch, tmp_path, fuse=False)
+    engine.cfg.settings.app_home = "omarchy"
+    with pytest.raises(appmanager.UserError, match="Could not go back to it: Omarchy needs FUSE"):
+        engine.app_manager.rollback("gthumb")

@@ -264,6 +264,17 @@ def create_app(token: str, make_engine: Callable[[Callable[[dict], None]], Engin
         e.install_podman()
         return {"ok": True}
 
+    @app.post("/api/omarchy/{action}")
+    async def omarchy_action(action: str, e: Engine = Depends(auth)):
+        """On Omarchy: install what it lacks (omarchy.py), as administrator, or put this app in its menu."""
+        if action == "install":
+            e.install_omarchy_setup()
+        elif action == "self-entry":
+            e.add_omarchy_entry()
+        else:
+            raise HTTPException(404)
+        return {"ok": True}
+
     @app.get("/api/deliveries/{did}")
     async def delivery(did: str, e: Engine = Depends(auth)):
         return e.delivery_detail(did)

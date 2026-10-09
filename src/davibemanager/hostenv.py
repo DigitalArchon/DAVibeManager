@@ -7,6 +7,9 @@ from __future__ import annotations
 
 import os
 
+# where the system keeps its GObject introspection typelibs (Fedora, Debian/Ubuntu, Arch)
+HOST_TYPELIB_DIRS = ("/usr/lib64/girepository-1.0", "/usr/lib/x86_64-linux-gnu/girepository-1.0",
+                     "/usr/lib/girepository-1.0")
 APPIMAGE_VARS = ("APPIMAGE", "APPDIR", "ARGV0", "OWD", "APPIMAGE_EXTRACT_AND_RUN")
 # variables DA Vibe Manager changed for itself, with their values before (None: they weren't set)
 ORIGINAL: dict[str, str | None] = {}

@@ -134,6 +134,7 @@ class AppManager:
                         "building": self.building.get(a["id"]),
                         "unshareable": share.exportable(a),
                         "export_build": self.export_build(a, builds),
+                        "entry_missing": self.entry_missing(a),
                         "reshare": share.reshare(a),
                         "works_on": share.works_on(a) if a.get("share") else [],
                         "works_here": share.this_system() in (share.works_on(a) if a.get("share") else []),
@@ -144,6 +145,15 @@ class AppManager:
                                      "own": {"check_every": a.get("check_every", ""), "build_when": a.get("build_when", "")},
                                      "waiting": self.waiting(a)}})
         return out
+
+    def entry_missing(self, a: dict) -> bool:
+        """Whether the menu entry we made for the installed app is gone (Omarchy's launcher has a
+        Remove of its own, which deletes only the entry): the card offers it back."""
+        inst = a.get("installed") or {}
+        if inst.get("via") not in ("menu", "omarchy") or not inst.get("build"):
+            return False
+        s = self.e.cfg.settings
+        return not integrate.by_key(inst["via"], Path(s.install_dir), data_dir() / "icons").present(inst)
 
     def changed(self) -> None:
         self.e.emit("apps", apps=self.apps())
@@ -1273,6 +1283,9 @@ class AppManager:
         prev = (a.get("previous") or {}).get("build")
         if not prev:
             raise UserError("There's no earlier version to go back to.")
-        meta = self.install(prev)
+        try:
+            meta = self.install(prev)
+        except (OSError, delivery_mod.DeliveryError, appimage.AppImageError, integrate.IntegrationError) as e:
+            raise UserError(f"Could not go back to it: {e}") from e
         self.e.log("rolled_back", app=app_id, to=prev)
         return meta
