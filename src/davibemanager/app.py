@@ -296,6 +296,7 @@ def main(argv: list[str] | None = None) -> None:
                 thread.join(0.5)
         else:
             import webview
+            from gi.repository import GLib      # the window's signal handlers (on_started)
 
             window = webview.create_window("DA Vibe Manager", url + "&desktop=1", width=460, height=720,
                                            min_size=(380, 480), hidden=args.hidden, text_select=True,
