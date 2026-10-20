@@ -152,6 +152,9 @@ class Settings:
     theme: str = "dark"
     # "window" (the app window, needs WebKitGTK) or "browser" (the default web browser); next launch
     ui_mode: str = "window"
+    # the app window's size as the user last left it (app.py); 0: the default
+    window_width: int = 0
+    window_height: int = 0
 
 
 @dataclass

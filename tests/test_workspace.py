@@ -1,5 +1,6 @@
 """The workspace container's run command: no network, no host paths, no capabilities."""
 
+import asyncio
 import re
 from pathlib import Path
 
@@ -458,6 +459,33 @@ async def test_a_refused_setting_never_stays_in_the_running_settings(env):
         assert engine.ready
     engine.save_settings({"install_dir": "~/Apps", "container_memory": "4096m", "container_cpus": "2.5", "ui_mode": "browser"})
     assert (s.install_dir, s.container_memory, s.container_cpus, s.ui_mode) == ("~/Apps", "4096m", "2.5", "browser")
+
+
+async def test_a_command_that_times_out_is_not_waited_for_through_what_it_left_running():
+    """asyncio's wait() ends only once the output pipe is closed too, and what a podman command starts
+    (conmon) can hold it open after the command is killed: a timeout must not become a hang."""
+    import time
+    started = time.monotonic()
+    with pytest.raises(asyncio.TimeoutError):
+        await asyncio.wait_for(podman.run(["/bin/sh", "-c", "sleep 20 & exec sleep 20"], timeout=0.5), 5)
+    assert time.monotonic() - started < 4
+
+
+async def test_the_windows_size_is_remembered_and_fitted_to_the_screen(env, tmp_path):
+    from davibemanager import app as app_mod
+    engine, _, _ = env
+    saved = []
+    engine._save_config = saved.append
+    engine.remember_window(700, 900)
+    assert (engine.cfg.settings.window_width, engine.cfg.settings.window_height) == (700, 900) and len(saved) == 1
+    engine.remember_window(700, 900)                                       # the same: nothing written
+    engine.remember_window(0, 0)                                           # nonsense: ignored
+    assert len(saved) == 1
+    assert app_mod.window_size(engine.cfg, screen=(1920, 1080)) == (700, 900)
+    assert app_mod.window_size(engine.cfg, screen=(1280, 720)) == (700, 620)     # fitted to a small screen
+    engine.cfg.settings.window_width = engine.cfg.settings.window_height = 0
+    assert app_mod.window_size(engine.cfg, screen=(1920, 1080)) == app_mod.WINDOW_SIZE
+    assert app_mod.window_size(engine.cfg, screen=(400, 300)) == app_mod.MIN_SIZE
 
 
 def test_trouble_reads_the_same_on_every_line_it_shows_on():

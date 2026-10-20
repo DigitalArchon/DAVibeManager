@@ -66,7 +66,7 @@ MAX_UPLOAD = 64 << 30
 KEEP_FREE = 1 << 30
 # this computer's own settings: kept when a backup from another one is restored
 OWN_SETTINGS = ("install_dir", "app_home", "container_memory", "container_cpus", "container_pids", "ui_mode",
-                "backup_dir", "backup_auto", "backup_keep")
+                "window_width", "window_height", "backup_dir", "backup_auto", "backup_keep")
 # what of the data folder goes in (besides each app's kept builds)
 DATA = ("apps", "conversations", "screens", "outside.json", "runtime-x86_64")
 

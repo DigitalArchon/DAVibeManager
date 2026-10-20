@@ -93,6 +93,30 @@ class Desktop:
 
 WEBKIT_INSTALL = ("Ubuntu, Mint, Debian: sudo apt install gir1.2-webkit2-4.1 · Fedora: sudo dnf install webkit2gtk4.1 · "
                   "Arch, CachyOS: sudo pacman -S webkit2gtk-4.1")
+# the window: tall enough for a build's card (its summary, what was tested, the checklist, screenshots
+# and buttons) on most screens, never larger than the screen, and as the user last left it after that
+WINDOW_SIZE = (540, 880)
+MIN_SIZE = (380, 480)
+SCREEN_MARGIN = (40, 100)            # for the panel, the title bar and some desk around it
+
+
+def window_size(cfg: config.Config, screen: tuple[int, int] | None = None) -> tuple[int, int]:
+    """The size to open the window at: as the user left it (Settings' window_width/height), else the
+    default, fitted to `screen` (its monitor's geometry: read here when not given)."""
+    s = cfg.settings
+    width, height = (s.window_width or WINDOW_SIZE[0]), (s.window_height or WINDOW_SIZE[1])
+    if screen is None:
+        try:
+            from gi.repository import Gdk
+            display = Gdk.Display.get_default()
+            monitor = display.get_primary_monitor() or display.get_monitor(0)
+            geometry = monitor.get_geometry()
+            screen = (geometry.width, geometry.height)
+        except Exception:  # noqa: BLE001 - no display to ask: the size as it is
+            screen = None
+    if screen:
+        width, height = min(width, screen[0] - SCREEN_MARGIN[0]), min(height, screen[1] - SCREEN_MARGIN[1])
+    return max(width, MIN_SIZE[0]), max(height, MIN_SIZE[1])
 
 
 def desktop_id() -> str:
@@ -266,6 +290,16 @@ def main(argv: list[str] | None = None) -> None:
         return engine
 
     holder: dict = {}
+    # the window's size as the user leaves it, remembered a moment after they stop resizing (and at quit)
+    size: dict = {"w": 0, "h": 0, "timer": None}
+
+    def remember_size():
+        engine = holder.get("engine")
+        if engine is not None and engine.loop is not None and size["w"] and size["h"]:
+            try:
+                engine.loop.call_soon_threadsafe(engine.remember_window, size["w"], size["h"])
+            except RuntimeError:
+                pass                            # the loop has closed: quitting
     app = create_app(token, make_engine, desktop, on_quit=lambda: quit_all())
     server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning",
                                            ws_max_size=16 * 1024 * 1024))
@@ -279,6 +313,9 @@ def main(argv: list[str] | None = None) -> None:
     url = f"http://127.0.0.1:{port}/?t={token}"
 
     def quit_all():
+        if size["timer"] is not None:
+            size["timer"].cancel()
+        remember_size()
         server.should_exit = True
         if desktop is not None and desktop._window is not None:
             from gi.repository import GLib
@@ -298,11 +335,21 @@ def main(argv: list[str] | None = None) -> None:
             import webview
             from gi.repository import GLib      # the window's signal handlers (on_started)
 
-            window = webview.create_window("DA Vibe Manager", url + "&desktop=1", width=460, height=720,
-                                           min_size=(380, 480), hidden=args.hidden, text_select=True,
+            width, height = window_size(cfg)
+            window = webview.create_window("DA Vibe Manager", url + "&desktop=1", width=width, height=height,
+                                           min_size=MIN_SIZE, hidden=args.hidden, text_select=True,
                                            background_color=config.WINDOW_BACKGROUND.get(cfg.settings.theme, "#111418"))
             desktop._window = window
             desktop.visible = not args.hidden
+
+            def on_resized(width, height):
+                size["w"], size["h"] = int(width), int(height)
+                if size["timer"] is not None:
+                    size["timer"].cancel()
+                size["timer"] = threading.Timer(1.0, remember_size)
+                size["timer"].daemon = True
+                size["timer"].start()
+            window.events.resized += on_resized
 
             def on_closing():
                 if desktop.tray and desktop.tray.available and server.started and not server.should_exit:

@@ -438,6 +438,7 @@ class Gateway:
     async def _proxy_client(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         started = time.monotonic()
         rec: dict = {"kind": "connect"}
+        up_writer = None
         try:
             try:
                 head = await asyncio.wait_for(reader.readuntil(b"\r\n\r\n"), 30)
@@ -498,6 +499,8 @@ class Gateway:
             if "host" in rec or rec["kind"] == "http":
                 self.on_event(rec)
             writer.close()
+            if up_writer is not None:
+                up_writer.close()           # half-closed by the pipes; closed for good here
 
     async def _refuse(self, writer: asyncio.StreamWriter, status: int, message: str, rec: dict) -> None:
         rec.update(status=status, refused=message)

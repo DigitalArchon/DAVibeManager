@@ -181,6 +181,12 @@ async def run(argv: list[str], *, timeout: float = 120, input: bytes | None = No
     except (asyncio.TimeoutError, asyncio.CancelledError):
         if proc.returncode is None:
             proc.kill()
+            # proc.wait() ends only once every pipe is closed too, and something the command started
+            # (conmon, a build's child) may hold them open after it: they are closed here, not waited for
+            for fd in (0, 1):
+                pipe = proc._transport.get_pipe_transport(fd)
+                if pipe is not None:
+                    pipe.close()
             await proc.wait()
         raise
     return rc, "".join(out)

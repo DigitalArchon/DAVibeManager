@@ -603,6 +603,15 @@ class Engine:
         self._save_config(self.cfg)
         self._changed()
 
+    def remember_window(self, width: int, height: int) -> None:
+        """The app window's size as the user left it (app.py): it opens at that size next time."""
+        s = self.cfg.settings
+        width, height = int(width), int(height)
+        if width < 100 or height < 100 or (s.window_width, s.window_height) == (width, height):
+            return
+        s.window_width, s.window_height = width, height
+        self._save_config(self.cfg)
+
     # ---------------------------------------------------------------- conversations
 
     def _open(self, conv: Conversation) -> None:
