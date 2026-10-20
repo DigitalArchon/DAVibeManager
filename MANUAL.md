@@ -36,7 +36,8 @@ the sandbox, which takes a few minutes. In Settings you can choose to have it st
 computer. With 4 GB of memory, set the sandbox to 2 GB and 2 CPUs (Settings → The sandbox).
 
 The window uses your system's WebKitGTK. Without it, or with no graphical display, DA Vibe Manager
-opens in your web browser instead and says what to install.
+opens in your web browser instead and says what to install. You can also choose the browser for
+good under **Settings → This app** (it applies from the next start).
 
 ## Chats
 

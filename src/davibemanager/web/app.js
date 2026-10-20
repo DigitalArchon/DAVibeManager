@@ -136,7 +136,7 @@ function modal({ title, body, buttons = [], onClose }) {
   }
   if (buttons.length) box.append(bar);
   overlay.addEventListener("mousedown", (e) => { if (e.target === overlay) close(); });
-  overlay.addEventListener("keydown", (e) => { if (e.key === "Escape") close(); });
+  overlay._close = close;                       // Escape, from anywhere on the page (init)
   $("#modal-root").append(overlay);
   return { close, box };
 }
@@ -160,13 +160,16 @@ function connect() {
 function handle(ev) {
   const st = S.state;
   switch (ev.type) {
-    case "state":
-      if (st && st.conversation?.id !== ev.state.conversation?.id && S.files.length) { S.files = []; renderFiles(); }
+    case "state": {
+      // a new chat (or the first state) scrolls to its end; anything else leaves the user where they read
+      const fresh = !st || st.conversation?.id !== ev.state.conversation?.id;
+      if (fresh && S.files.length) { S.files = []; renderFiles(); }
       S.state = ev.state;
       S.live = ev.state.live;
       S.activity = ev.state.activity;
-      render();
+      render(fresh);
       break;
+    }
     case "chat":
       st.chat.push(ev.entry);
       renderChat(true);
@@ -221,7 +224,7 @@ function handle(ev) {
     }
     case "backups":
       st.backups = ev.backups;
-      if (S.panel === "settings" && !document.activeElement?.closest?.("#panel")) openPanel("settings");
+      if (S.panel === "settings" && !typingInPanel()) openPanel("settings");
       break;
     case "apps":
       st.apps = ev.apps;
@@ -292,7 +295,15 @@ function renderStatus() {
     : w.state === "needs_podman" ? "Install Podman first (above)…"
     : w.state === "removed" ? "Write to make the sandbox again (a few minutes)…"
     : ["building", "starting"].includes(w.state) ? "Type away: it's sent as soon as the sandbox is ready…"
-    : "Ask anything about your computer…";
+    : modePlaceholder();
+}
+
+// what the box to write in asks for, in this kind of chat
+function modePlaceholder() {
+  const c = S.state.conversation || {};
+  return c.mode === "app" && c.remake ? "Anything to tell me before I start? Or “go ahead”."
+    : c.mode === "app" ? `What should ${chatAppName(c)} do better?`
+    : c.mode === "computer" ? (c.app ? `What goes wrong with ${chatAppName(c)}?` : "What's wrong?") : "Pick one above, or just ask…";
 }
 
 // this chat's cost: the tokens the app counted, at the provider's listed prices (Engine.spend)
@@ -311,7 +322,7 @@ function renderAppsCount() {
   $("#apps-count").textContent = list.length ? (news ? `${news} new` : String(list.length)) : "";
 }
 
-function render() {
+function render(scroll = true) {
   const st = S.state;
   applyTheme(st.config.settings.theme);
   $("#banner").textContent = st.keyring_error ? `⚠ ${st.keyring_error}` : st.ui_notice || "";
@@ -319,8 +330,23 @@ function render() {
   renderStatus();
   renderAppsCount();
   renderMode();
-  renderChat(true);
-  if (S.panel) openPanel(S.panel);
+  renderChat(scroll);
+  // a settings field the user is writing in isn't redrawn under them (the panel catches up afterwards)
+  if (S.panel && !(S.panel === "settings" && typingInPanel())) openPanel(S.panel);
+}
+
+// whether the user is writing in a field of the open panel (a redraw would wipe it)
+function typingInPanel() {
+  const a = document.activeElement;
+  return !!a?.closest?.("#panel") && (a.tagName === "TEXTAREA"
+    || (a.tagName === "INPUT" && !["checkbox", "radio", "file", "submit", "button"].includes(a.type)));
+}
+
+// a redraw keeps the <details> the user has opened (those with a data-key) open
+function keepOpen(root, redraw) {
+  const open = new Set([...root.querySelectorAll("details[data-key][open]")].map((d) => d.dataset.key));
+  redraw();
+  if (open.size) for (const d of root.querySelectorAll("details[data-key]")) if (open.has(d.dataset.key)) d.open = true;
 }
 
 // ------------------------------------------------------------------ chat
@@ -345,17 +371,18 @@ function renderChat(scroll) {
   const focus = document.activeElement;
   const keep = focus?.closest?.("#chat") && focus.dataset.key ? { key: focus.dataset.key, value: focus.value, pos: focus.selectionStart } : null;
   const typed = {};
-  for (const el of box.querySelectorAll("[data-key]")) typed[el.dataset.key] = el.value;
+  for (const el of box.querySelectorAll("input[data-key], textarea[data-key]")) typed[el.dataset.key] = el.value;
   if (!st.ready) { box.replaceChildren(st.keyring_wait ? keyringScreen() : setupScreen()); $("#composer").classList.add("hidden"); return; }
   $("#composer").classList.remove("hidden");
-  const items = st.chat.map((e) => entryEl(e, false));
-  if (S.live) items.push(entryEl(S.live, true));
+  const items = st.chat.map((e, i) => entryEl(e, false, i));
+  if (S.live) items.push(entryEl(S.live, true, "live"));
   // its turn has ended, but what it started (a build) goes on: the user can talk with it meanwhile
   else if (S.activity) items.push(h("div", { class: "msg assistant" }, h("div", { class: "muted small" },
     "Still running in its sandbox. You can keep talking: it's told when this finishes."), activityEl(S.activity, {})));
   const trouble = sandboxBox(st.workspace || {});
-  box.replaceChildren(...(st.podman ? [podmanBox(st.podman)] : []), ...(trouble ? [trouble] : []), ...(items.length ? items : [welcome()]));
-  for (const el of box.querySelectorAll("[data-key]")) if (el.dataset.key in typed) el.value = typed[el.dataset.key];
+  keepOpen(box, () => box.replaceChildren(...(st.podman ? [podmanBox(st.podman)] : []), ...(trouble ? [trouble] : []),
+    ...(items.length ? items : [welcome()])));
+  for (const el of box.querySelectorAll("input[data-key], textarea[data-key]")) if (el.dataset.key in typed) el.value = typed[el.dataset.key];
   if (keep) {
     const el = box.querySelector(`[data-key="${keep.key}"]`);
     if (el) { el.value = keep.value; el.focus(); try { el.selectionStart = el.selectionEnd = keep.pos; } catch { /* not text */ } }
@@ -391,7 +418,7 @@ async function startChat(body, wish = "") {
 // which app an app chat is about: one of theirs, or one they name
 function pickApp() {
   const list = [...(S.state.apps || [])].reverse();
-  const name = h("input", { type: "text", maxlength: "80", placeholder: "Its name, e.g. gThumb or mpv" });
+  const name = h("input", { type: "text", maxlength: "80", required: true, placeholder: "Its name, e.g. gThumb or mpv" });
   let m = null;
   const go = (body) => guarded(async () => { await startChat(body); m.close(); });
   const body = h("div", { class: "pick-app" },
@@ -464,9 +491,6 @@ function renderMode() {
   const text = c.mode === "computer" ? (c.app ? `🩺 Getting ${chatAppName(c)} working here` : "🩺 Your computer") : c.mode === "app" ? (c.remake ? `📦 ${chatAppName(c)}, made again cleanly` : `📦 Improving ${chatAppName(c)}`) : "";
   el.textContent = text;
   el.classList.toggle("hidden", !text);
-  $("#input").placeholder = c.mode === "app" && c.remake ? "Anything to tell me before I start? Or “go ahead”."
-    : c.mode === "app" ? `What should ${chatAppName(c)} do better?`
-    : c.mode === "computer" ? (c.app ? `What goes wrong with ${chatAppName(c)}?` : "What's wrong?") : "Pick one above, or just ask…";
 }
 
 // in a chat about the computer: what needs a change to an app is for an app chat, on the user's click
@@ -507,7 +531,7 @@ function pickTrouble() {
   m = modal({ title: "What isn't working?", body, buttons: [{ label: "Cancel" }] });
 }
 
-function entryEl(e, live) {
+function entryEl(e, live, idx = "") {
   if (e.kind === "note") return h("div", { class: "msg note" }, e.text,
     e.retry === "workspace" && S.state.workspace?.state === "failed"
       ? h("div", {}, h("button", { class: "small", onclick: () => guarded(() => api("POST", "/api/workspace/start")) }, "Try again")) : null);
@@ -515,7 +539,7 @@ function entryEl(e, live) {
     const msg = h("div", { class: `msg user${e.queued ? " queued" : ""}`, title: e.queued ? "Sent when the assistant is ready" : "" },
       e.text || null, filesEl(e.files));
     if (!e.shared) return msg;
-    return h("div", { class: "user-wrap" }, msg, h("details", { class: "shared small muted" },
+    return h("div", { class: "user-wrap" }, msg, h("details", { class: "shared small muted", "data-key": `shared-${idx}` },
       h("summary", {}, "Sent with it: about this computer (Settings)"), h("pre", {}, e.shared)));
   }
   // what the user wrote while it worked splits the entry where they wrote it
@@ -535,7 +559,7 @@ function entryEl(e, live) {
     // the model's thinking, shown as it goes (faint): Claude Code asks Opus to write it as progress
     // updates for the reader, and folded away it hid what Opus had to say
     else if (p.t === "thinking") box.append(h("div", { class: "reasoning md", title: "Its thinking", html: md(p.text) }));
-    else if (p.t === "steps") box.append(stepsEl(p.items, live && last));
+    else if (p.t === "steps") box.append(stepsEl(p.items, live && last, `steps-${idx}-${i}`));
     else if (p.t === "request") { const r = S.state.requests[p.id]; if (r) box.append(requestCard(r)); }
     else if (p.t === "question") { const q = S.state.questions[p.id]; if (q) box.append(questionCard(q)); }
     else if (p.t === "screenshot") box.append(h("div", { class: "shot" }, authImg(`/api/screens/${encodeURIComponent(p.file)}`), p.caption ? h("div", { class: "small muted" }, p.caption) : null));
@@ -641,17 +665,17 @@ const TOOL_LABEL = { Bash: "ran", Read: "read", Write: "wrote", Edit: "edited", 
   WebFetch: "read the page", WebSearch: "searched the web for", Task: "worked on", Agent: "worked on", TodoWrite: "planned",
   "mcp__host__install_packages": "installed", "mcp__host__web_search": "searched the web for" };
 
-function stepsEl(items, live) {
+function stepsEl(items, live, key = "") {
   const running = items.filter((i) => i.status === "running");
   const failed = items.filter((i) => i.status === "error").length;
   const cur = running[running.length - 1] || (live ? items[items.length - 1] : null);
-  return h("details", { class: "steps" },
+  return h("details", { class: "steps", "data-key": key || null },
     h("summary", {}, live && running.length ? h("span", { class: "spinner" }) : "🛠",
       h("span", {}, `${live ? "Working in its sandbox" : "Worked in its sandbox"} · ${items.length} step${items.length > 1 ? "s" : ""}${failed ? ` (${failed} didn't work)` : ""}`),
       cur && live ? h("span", { class: "now" }, `— ${TOOL_LABEL[cur.tool] || cur.tool} ${cur.summary}`) : null),
-    h("ol", {}, items.map((i) => h("li", { class: i.status },
+    h("ol", {}, items.map((i, n) => h("li", { class: i.status },
       h("span", { class: "tool" }, TOOL_LABEL[i.tool] || i.tool), " ", h("span", { class: "what" }, i.summary || ""),
-      i.output ? h("details", {}, h("summary", { class: "small" }, "output"), h("pre", {}, i.output)) : null))));
+      i.output ? h("details", { "data-key": key ? `${key}-${n}` : null }, h("summary", { class: "small" }, "output"), h("pre", {}, i.output)) : null))));
 }
 
 // ---- a request to run something on this computer
@@ -728,7 +752,7 @@ function requestCard(r) {
     const label = { sent: "✓ Sent to the assistant", withheld: "Ran it, kept the output private", declined: "Not run",
       cancelled: "Cancelled", failed: "Couldn't run" }[r.status];
     card.append(h("div", { class: "small muted" }, label, r.note && r.status !== "sent" ? ` — ${r.note}` : ""));
-    if (r.status === "sent") card.append(h("details", { class: "small" }, h("summary", {}, "What it got"), h("pre", { class: "outview" }, r.sent_text || "(no output)")));
+    if (r.status === "sent") card.append(h("details", { class: "small", "data-key": `got-${r.id}` }, h("summary", {}, "What it got"), h("pre", { class: "outview" }, r.sent_text || "(no output)")));
     if (r.status === "failed") card.append(h("pre", { class: "outview" }, r.output));
   }
   return card;
@@ -821,7 +845,7 @@ const DEPTH_WARNING = {
 
 function reportEl(d) {
   if (!d.tested && !d.not_tested) return null;
-  return h("details", { class: "report small", open: d.status === "new" }, h("summary", {}, "What was tested"),
+  return h("details", { class: "report small", open: d.status === "new", "data-key": `report-${d.id}` }, h("summary", {}, "What was tested"),
     d.tested ? h("div", {}, h("b", {}, "In the sandbox: "), d.tested) : null,
     d.not_tested ? h("div", {}, h("b", {}, "Not tested: "), d.not_tested) : null);
 }
@@ -832,17 +856,34 @@ function tryEl(d) {
   if (d.try_steps?.length) box.append(h("div", { class: "small" }, h("b", {}, d.tried ? "While you try it:" : "When you try it, check:")),
     h("ul", { class: "small" }, d.try_steps.map((t) => h("li", {}, t))));
   if (d.tried) {
-    const tell = (text) => guarded(async () => { await api("POST", "/api/send", { message: text }); });
     box.append(h("div", { class: "actions" },
       h("span", { class: "small muted" }, "How did it go?"),
       h("button", { class: "small", onclick: () => guarded(async () => {
-        await api("POST", `/api/deliveries/${d.id}/works`); await tell(`I tried ${d.name} ${d.version}: it works.`); }) }, "It works"),
-      h("button", { class: "small", onclick: () => {
-        const input = $("#input"); input.value = `I tried ${d.name} ${d.version} and `; input.focus(); autosize();
-      } }, "Something's wrong"),
+        await api("POST", `/api/deliveries/${d.id}/works`);
+        if (inAppChat(d)) await api("POST", "/api/send", { message: `I tried ${d.name} ${d.version}: it works.` });
+        else toast(`Noted: ${d.name} works on this computer.`, "ok", 2500); }) }, "It works"),
+      h("button", { class: "small", onclick: () => guarded(() => tellAppChat(d, `I tried ${d.name} ${d.version} and `)) }, "Something's wrong"),
       d.app ? h("button", { class: "small ghost", onclick: () => guarded(() => startChat({ mode: "computer", app: d.app })) }, "Look into it on this computer") : null));
   }
   return box;
+}
+
+// whether the chat open now is about this build's app (a build's card shows in My apps too, from any chat)
+const inAppChat = (d) => !!d.app && S.state.conversation?.mode === "app" && S.state.conversation?.app === d.app;
+
+// where to say how a try went: the chat open now if it's the app's, else the chat the build came
+// from, else a new chat about the app; `text` is put in the box, ready to finish and send
+async function tellAppChat(d, text) {
+  if (!inAppChat(d)) {
+    let opened = false;
+    if (d.conversation && S.state.conversation?.id !== d.conversation) {
+      try { await api("POST", "/api/chats/open", { id: d.conversation }); opened = true; }
+      catch (e) { if (!d.app || !/No conversation/.test(e.message)) throw e; }     // deleted: a new chat about the app
+    }
+    if (!opened && d.app) await api("POST", "/api/chats/new", { mode: "app", app: d.app });
+  }
+  closePanel();
+  const input = $("#input"); input.value = text; input.focus(); autosize();
 }
 
 function deliveryCard(d) {
@@ -919,7 +960,7 @@ function releaseEl(a) {
       port ? h("div", { class: "warnbox" }, failedChanges(a, port).length
         ? `${failedChanges(a, port).map((t) => `“${t}”`).join(" and ")} didn't fit the new version as ${failedChanges(a, port).length > 1 ? "they are" : "it is"}. The assistant can make ${failedChanges(a, port).length > 1 ? "them" : "it"} fit; the rest of your changes carried over by themselves.`
         : `${port.step === "error" ? "The build stopped with an error." : `Your changes didn't carry over by themselves (${STEP_LABEL[port.step] || port.step} failed).`} The assistant can finish it.`) : null,
-      port && port.step !== "apply" && port.log ? portLogEl(port) : null,
+      port && port.step !== "apply" && port.log ? portLogEl(port, `portlog-${a.id}`) : null,
       h("div", { class: "actions" },
         port && a.chat?.tag === u.latest ? chatButton(a, "primary")
           : port ? assistantButton(a)
@@ -1050,7 +1091,7 @@ function importedEl(a) {
     sharedReviewEl(imp.review, true),
     failed ? h("div", { class: "small" }, portWords(a.update.port),
       a.chat ? " The assistant was asked to finish it in a chat. Its build shows up here when it's done." : " The assistant can finish it in a chat.") : null,
-    failed && a.update.port.step !== "apply" && a.update.port.log ? portLogEl(a.update.port) : null,
+    failed && a.update.port.step !== "apply" && a.update.port.log ? portLogEl(a.update.port, `portlog-${a.id}`) : null,
     h("div", { class: "actions" },
       failed && a.chat ? chatButton(a, "primary") : null,
       failed && !a.chat ? assistantButton(a) : null,
@@ -1066,8 +1107,8 @@ function portWords(port) {
   if (port.step === "apply") return "Not all of the changes applied by themselves.";
   return `It didn't build by itself (${STEP_LABEL[port.step] || port.step} failed).`;
 }
-function portLogEl(port) {
-  return h("details", { class: "small" }, h("summary", {}, "What it said"), h("pre", { class: "outview small" }, port.log.slice(-3000)));
+function portLogEl(port, key = "") {
+  return h("details", { class: "small", "data-key": key || null }, h("summary", {}, "What it said"), h("pre", { class: "outview small" }, port.log.slice(-3000)));
 }
 function assistantButton(a) {
   return h("button", { class: "small primary", onclick: () => guarded(async () => { await appAct(a, "assistant"); closePanel(); }) }, "Let the assistant do it");
@@ -1195,7 +1236,7 @@ function scheduleEl(a) {
   const s = a.schedule || {}, own = s.own || {}, set = S.state.config.settings;
   const sel = (key, options) => h("select", { onchange: (e) => guarded(() => appAct(a, "schedule", { [key]: e.target.value })) },
     options.map(([v, label]) => h("option", { value: v, selected: (own[key] || "") === v }, label)));
-  return h("details", { class: "small schedule" },
+  return h("details", { class: "small schedule", "data-key": `schedule-${a.id}` },
     h("summary", {}, `Updates: looked for ${LOOK_LABEL[s.check_every] || s.check_every}, built ${buildLabel(s.build_when)}`),
     h("div", { class: "field" }, h("span", {}, "Look for new versions"),
       sel("check_every", [["", `Like my other apps (${LOOK_LABEL[set.check_every]})`], ["day", "Every day"], ["week", "Every week"],
@@ -1293,7 +1334,7 @@ function appCard(a, inList = false) {
   const builds = (a.builds || []).map(deliveryOf).filter(Boolean);
   const older = builds.filter((d) => d.id !== pending?.id && d.id !== inst?.build);
   return h("div", { class: "app-line" }, card, pending ? deliveryCard(pending) : null,
-    older.length ? h("details", { class: "small muted older" }, h("summary", {}, `Earlier builds (${older.length})`), [...older].reverse().map(deliveryCard)) : null);
+    older.length ? h("details", { class: "small muted older", "data-key": `older-${a.id}` }, h("summary", {}, `Earlier builds (${older.length})`), [...older].reverse().map(deliveryCard)) : null);
 }
 
 async function installDelivery(d) {
@@ -1464,7 +1505,8 @@ function openPanel(name) {
   $("#panel-title").textContent = { chats: "Chats", apps: "My apps", settings: "Settings", activity: "Sandbox activity" }[name];
   const scroll = body.scrollTop;
   // a section that has nothing to show is null: left out (replaceChildren would write "null")
-  body.replaceChildren(...{ chats: chatsPanel, apps: appsPanel, settings: settingsPanel, activity: activityPanel }[name]().filter((x) => x != null));
+  keepOpen(body, () => body.replaceChildren(
+    ...{ chats: chatsPanel, apps: appsPanel, settings: settingsPanel, activity: activityPanel }[name]().filter((x) => x != null)));
   body.scrollTop = scroll;
 }
 
@@ -1556,7 +1598,7 @@ function activityPanel() {
       h("div", { class: "small" }, { running: "Running.", building: "Being prepared…", starting: "Starting…", failed: "It couldn't start:", stopped: "Stopped.",
         needs_podman: "Waiting for Podman to be installed (see the chat).", removed: "Removed (Settings). It's made again when you start it." }[w.state] || w.state),
       w.state === "failed" && w.summary ? h("div", { class: "small err" }, w.summary) : null,
-      w.state === "failed" ? (w.summary ? h("details", {}, h("summary", { class: "small" }, "What the build printed"), h("pre", { class: "small mono" }, w.error))
+      w.state === "failed" ? (w.summary ? h("details", { "data-key": "build-log" }, h("summary", { class: "small" }, "What the build printed"), h("pre", { class: "small mono" }, w.error))
         : h("pre", { class: "small err" }, w.error)) : null,
       w.trouble && w.state === "building" ? h("div", { class: "warnbox" }, w.trouble) : null,
       w.unpinned_source ? h("div", { class: "small muted" }, `Its packages came from ${w.unpinned_source}, because Ubuntu's snapshot server was unavailable: they're Ubuntu's, but not the exact pinned versions.`) : null,
@@ -1944,6 +1986,10 @@ function settingsPanel() {
           [["dark", "Dark"], ["light", "Light"], ["system", "Match my system"]].map(([v, label]) => h("option", { value: v, selected: (s.theme || "dark") === v }, label)))),
       h("label", { class: "radio" }, h("input", { type: "checkbox", checked: st.autostart, onchange: (e) => save({ autostart: e.target.checked }, e.target.checked ? "It will start with your computer, in the tray." : "It won't start by itself.") }),
         h("div", {}, "Start with my computer (in the tray)")),
+      h("label", { class: "radio" }, h("input", { type: "checkbox", checked: s.ui_mode === "browser",
+        onchange: (e) => save({ ui_mode: e.target.checked ? "browser" : "window" }, "Saved: it applies from the next start.") }),
+        h("div", {}, h("div", {}, "Open in my web browser instead of the app window"),
+          h("div", { class: "small muted" }, "From the next start. The app window needs WebKitGTK; the browser works anywhere, and everything still stays on this computer. Starting it with --window or --browser overrides this once."))),
       h("div", { class: "field" }, h("span", {}, "Install apps it builds to"), h("div", { class: "row" }, dir, h("button", { class: "small", onclick: () => save({ install_dir: dir.value.trim() }) }, "Save")))),
     h("div", { class: "section", id: "settings-sandbox" }, h("h3", {}, "The sandbox"),
       h("div", { class: "row small" }, "Memory", mem, "CPUs", cpus, h("button", { class: "small", onclick: () => guarded(async () => {
@@ -2123,7 +2169,10 @@ function init() {
   });
   $("#panel-back").addEventListener("click", closePanel);
   document.addEventListener("keydown", (e) => {
-    if (e.key === "Escape" && S.panel && !document.querySelector(".overlay")) closePanel();
+    if (e.key !== "Escape") return;
+    const overlays = document.querySelectorAll("#modal-root .overlay");
+    if (overlays.length) overlays[overlays.length - 1]._close?.();      // the topmost modal, wherever the focus is
+    else if (S.panel) closePanel();
   });
   if (DESKTOP) document.body.classList.add("desktop");
   connect();

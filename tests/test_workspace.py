@@ -441,6 +441,25 @@ async def test_the_mirror_choice_needs_a_mirror(env):
     assert engine.cfg.settings.image_fallback == ""
 
 
+async def test_a_refused_setting_never_stays_in_the_running_settings(env):
+    """Settings are checked before anything is set: the window's user shouldn't land on the setup screen
+    (no model) or lose the sandbox (a memory limit that isn't one) over a slip in a field."""
+    from davibemanager.models import UserError
+    engine, _, _ = env
+    s = engine.cfg.settings
+    was = (s.builder_model, s.install_dir, s.container_memory, s.container_cpus)
+    for bad, why in [({"builder_model": "  "}, "needs a model"), ({"install_dir": ""}, "full path"),
+                     ({"install_dir": "Apps"}, "full path"), ({"install_dir": "~"}, "folder of their own"),
+                     ({"container_memory": "lots"}, "8g or 4096m"), ({"container_cpus": "two"}, "a number"),
+                     ({"ui_mode": "tty"}, "window or in the browser")]:
+        with pytest.raises(UserError, match=why):
+            engine.save_settings(bad)
+        assert (s.builder_model, s.install_dir, s.container_memory, s.container_cpus) == was
+        assert engine.ready
+    engine.save_settings({"install_dir": "~/Apps", "container_memory": "4096m", "container_cpus": "2.5", "ui_mode": "browser"})
+    assert (s.install_dir, s.container_memory, s.container_cpus, s.ui_mode) == ("~/Apps", "4096m", "2.5", "browser")
+
+
 def test_trouble_reads_the_same_on_every_line_it_shows_on():
     """apt says the same trouble twice (Err:, then E: Failed to fetch with the address): the window shouldn't flicker."""
     w = podman.BuildWatch()

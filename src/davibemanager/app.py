@@ -316,7 +316,10 @@ def main(argv: list[str] | None = None) -> None:
                 engine = holder.get("engine")
                 if engine is not None and engine.loop is not None:
                     import asyncio
-                    asyncio.run_coroutine_threadsafe(engine.new_chat(), engine.loop)
+                    fut = asyncio.run_coroutine_threadsafe(engine.new_chat(), engine.loop)
+                    # refused (the assistant is busy): the window says why, rather than nothing happening
+                    fut.add_done_callback(lambda f: not f.cancelled() and f.exception() is not None
+                                          and engine.emit("toast", level="error", text=str(f.exception())))
                 desktop.show()
 
             def on_started():

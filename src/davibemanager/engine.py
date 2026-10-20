@@ -495,6 +495,22 @@ class Engine:
 
     def save_settings(self, data: dict) -> None:
         s = self.cfg.settings
+        # checked first: a value that's refused must never stay in the settings the app runs with
+        if "builder_model" in data and not str(data["builder_model"]).strip():
+            raise UserError("The assistant needs a model: type one, or pick GLM 5.3, private GLM 5.3 or Claude Opus 5.5.")
+        if "install_dir" in data:
+            folder = str(data["install_dir"]).strip()
+            where = Path(os.path.expanduser(folder)) if folder else None
+            if where is None or not where.is_absolute():
+                raise UserError("Where apps are installed is a full path, such as ~/Applications.")
+            if where.resolve() == Path.home().resolve():
+                raise UserError("Apps go in a folder of their own, not straight in your home folder.")
+        if "container_memory" in data and not re.fullmatch(r"\d+[kmg]?", str(data["container_memory"]).strip().lower()):
+            raise UserError("The sandbox memory limit must look like 8g or 4096m.")
+        if "container_cpus" in data and not re.fullmatch(r"\d+(\.\d+)?", str(data["container_cpus"]).strip()):
+            raise UserError("The sandbox CPU limit must be a number, such as 4 or 2.5.")
+        if "ui_mode" in data and data["ui_mode"] not in ("window", "browser"):
+            raise UserError("The app opens in its own window or in the browser.")
         for key, (lo, hi) in self.SETTINGS_INT.items():
             if key in data:
                 try:
@@ -584,10 +600,6 @@ class Engine:
             tray_mod.set_autostart(bool(data["autostart"]), self.launch_command)
         if s.ui_mode not in ("window", "browser"):
             s.ui_mode = "window"
-        if not re.fullmatch(r"\d+[kmg]?", s.container_memory.lower()):
-            raise UserError("The sandbox memory limit must look like 8g or 4096m.")
-        if not re.fullmatch(r"\d+(\.\d+)?", s.container_cpus):
-            raise UserError("The sandbox CPU limit must be a number, such as 4 or 2.5.")
         self._save_config(self.cfg)
         self._changed()
 
