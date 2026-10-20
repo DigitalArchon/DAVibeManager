@@ -263,6 +263,7 @@ body.dropping #chat { outline: 2px dashed var(--accent); outline-offset: -6px; }
 #panel-body { flex: 1; overflow-y: auto; padding: 12px; display: flex; flex-direction: column; gap: 10px; }
 .section { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 10px 12px; }
 .section h3 { font-size: 14px; margin: 0 0 8px; }
+.section h4 { font-size: 13px; margin: 14px 0 6px; }
 .list-item { display: flex; align-items: center; gap: 8px; padding: 8px 0; border-top: 1px solid var(--border); }
 .list-item:first-child { border-top: none; }
 .list-item .grow { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }

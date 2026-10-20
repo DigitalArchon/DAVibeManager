@@ -127,3 +127,136 @@ def test_where_it_cant_be_installed_from_the_window_its_refused(no_podman, monke
     monkeypatch.setattr(podmansetup.shutil, "which", lambda n: None)      # no pkexec, no package manager
     with pytest.raises(UserError, match="can't install it here"):
         engine.install_podman()
+
+
+# ---- removing the sandbox, and Podman with it (Settings → The sandbox)
+
+@pytest.mark.parametrize("rel,tools,command", [
+    (UBUNTU, ("podman", "apt-get", "pkexec"), "apt-get remove -y podman"),
+    (FEDORA, ("podman", "dnf", "pkexec"), "dnf remove -y podman"),
+    (CACHYOS, ("podman", "pacman", "pkexec"), "pacman -Rs --noconfirm podman"),
+    (TUMBLEWEED, ("podman", "zypper", "pkexec"), "zypper --non-interactive remove --clean-deps podman"),
+])
+def test_each_distribution_gets_its_own_uninstall_command(rel, tools, command):
+    p = podmansetup.removal(rel, has(*tools))
+    assert p["command"] == command and p["can_remove"] and not p["installed_by_app"]
+    assert p["leaves_dependencies"] == (rel is UBUNTU)
+
+
+def test_uninstalling_takes_what_the_app_installed_and_nothing_that_was_there_before():
+    # pacman's install names passt even where it's there already (--needed skips it): it isn't new then
+    p = podmansetup.plan(CACHYOS, has("pacman", "pkexec", "pasta"))
+    assert p["packages"] == ["podman", "passt"] and p["new"] == ["podman"]
+    podmansetup.record_install(p["new"])
+    assert podmansetup.removal(CACHYOS, has("podman", "pacman", "pkexec"))["command"] == "pacman -Rs --noconfirm podman"
+    p = podmansetup.plan(CACHYOS, has("pacman", "pkexec"))
+    assert p["new"] == ["podman", "passt"]
+    podmansetup.record_install(p["new"])
+    r = podmansetup.removal(CACHYOS, has("podman", "pacman", "pkexec"))
+    assert r["command"] == "pacman -Rs --noconfirm passt podman" and r["installed_by_app"]
+    podmansetup.forget_install()
+    assert podmansetup.installed_by_app() is None
+    assert podmansetup.removal(CACHYOS, has("pacman")) is None          # no Podman: nothing to uninstall
+
+
+async def test_a_successful_install_is_written_down(no_podman, monkeypatch):
+    engine, state, started, _ = no_podman
+
+    async def run(command, **kw):
+        state["missing"] = []
+        return hostrun.RunResult(0, "", False, 1.0)
+
+    async def works():
+        return ""
+    monkeypatch.setattr(hostrun, "run", run)
+    monkeypatch.setattr(podman, "works", works)
+    engine.install_podman()
+    await wait_for(lambda: started, "the sandbox's start")
+    assert podmansetup.installed_by_app() == ["podman"]
+
+
+@pytest.fixture
+def removable(env, monkeypatch):
+    """An engine whose sandbox can be removed: Podman's side scripted."""
+    engine, _, events = env
+    did = {"ran": [], "others": [], "reset": 0, "podman": True}
+    monkeypatch.setattr(podmansetup.sysinfo, "_os_release", lambda: CACHYOS)
+    which = lambda n: f"/usr/bin/{n}" if n in ("pacman", "pkexec") or (n == "podman" and did["podman"]) else None
+    monkeypatch.setattr(podmansetup.shutil, "which", which)
+
+    async def remove_all(sandbox):
+        did["removed"] = sandbox
+        return ["dvm-sandbox", "localhost/davibemanager-workspace:abc"]
+
+    async def anything_else():
+        return did["others"]
+
+    async def reset_storage():
+        did["reset"] += 1
+        return 0, ""
+
+    async def run(command, *, as_root=False, timeout=0, cancel=None):
+        did["ran"].append((command, as_root))
+        did["podman"] = False
+        return hostrun.RunResult(0, "removing podman…", False, 2.0)
+    monkeypatch.setattr(podman, "remove_all", remove_all)
+    monkeypatch.setattr(podman, "anything_else", anything_else)
+    monkeypatch.setattr(podman, "reset_storage", reset_storage)
+    monkeypatch.setattr(hostrun, "run", run)
+    return engine, did
+
+
+async def test_removing_the_sandbox_leaves_podman_unless_asked(removable):
+    engine, did = removable
+    engine.remove_sandbox(False)
+    await wait_for(lambda: engine._removal.get("state") == "done", "the removal")
+    assert did["removed"] == "dvm-sandbox" and did["ran"] == [] and did["reset"] == 0
+    assert engine.workspace["state"] == "removed" and engine.snapshot()["podman"] is None
+
+
+async def test_removing_podman_too_uninstalls_it_as_administrator_and_wipes_only_an_empty_store(removable):
+    engine, did = removable
+    engine.remove_sandbox(True)
+    await wait_for(lambda: engine._removal.get("state") == "done", "the removal")
+    assert did["ran"] == [("pacman -Rs --noconfirm podman", True)] and did["reset"] == 1
+    assert engine._removal == {"state": "done", "podman": True, "kept": [], "leaves_dependencies": False}
+
+
+async def test_the_users_own_containers_keep_podmans_store(removable):
+    engine, did = removable
+    did["others"] = ["container my-db", "image docker.io/library/postgres:17"]
+    engine.remove_sandbox(True)
+    await wait_for(lambda: engine._removal.get("state") == "done", "the removal")
+    assert did["reset"] == 0 and engine._removal["kept"] == did["others"]
+
+
+async def test_an_uninstall_that_didnt_work_says_why(removable, monkeypatch):
+    engine, did = removable
+
+    async def refused(command, **kw):
+        return hostrun.RunResult(126, "", False, 1.0)
+    monkeypatch.setattr(hostrun, "run", refused)
+    engine.remove_sandbox(True)
+    await wait_for(lambda: engine._removal.get("state") == "failed", "the failure")
+    assert "nothing was uninstalled" in engine._removal["error"]
+
+
+async def test_removing_is_refused_while_the_assistant_works(removable):
+    engine, _ = removable
+    engine.builder = type("Busy", (), {"busy": True})()
+    with pytest.raises(UserError, match="Wait for the assistant"):
+        engine.remove_sandbox(True)
+    engine.builder = None
+
+
+async def test_a_removed_sandbox_isnt_made_again_at_launch_only_when_wanted(removable):
+    engine, did = removable
+    engine.remove_sandbox(False)
+    await wait_for(lambda: engine._removal.get("state") == "done", "the removal")
+    started = []
+    engine.start_workspace = lambda: started.append(1)
+    engine._start_workspace_at_launch()
+    assert not started and engine.workspace["state"] == "removed"
+    from davibemanager.engine import Engine
+    Engine.start_workspace(engine)                  # the user wants it: the marker goes
+    assert not engine._removed_marker().exists()

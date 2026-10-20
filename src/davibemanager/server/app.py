@@ -257,6 +257,13 @@ def create_app(token: str, make_engine: Callable[[Callable[[dict], None]], Engin
             raise HTTPException(404)
         return {"ok": True}
 
+    @app.post("/api/sandbox/remove")
+    async def sandbox_remove(body: dict, e: Engine = Depends(auth)):
+        """Remove the sandbox and everything of the app's in Podman, and Podman too if `podman` is true (as
+        administrator: the desktop asks for the password). It runs on; Settings follows its state."""
+        e.remove_sandbox(bool(body.get("podman")))
+        return {"ok": True}
+
     @app.post("/api/podman/install")
     async def podman_install(e: Engine = Depends(auth)):
         """Install Podman with the app's own command for this distribution (podmansetup.py), as

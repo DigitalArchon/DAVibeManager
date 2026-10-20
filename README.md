@@ -58,6 +58,9 @@ If Podman is missing, the first screen offers to install it for you. Then paste 
 few minutes. Set a spending limit on the key: building an app can cost from a few dollars to
 $50 or more on a model paid per use.
 
+To uninstall it, first use **Settings → The sandbox → Remove the sandbox…**: it deletes the
+sandbox and its images (a few GB), and can uninstall Podman too. Then remove the AppImage.
+
 Every release can be rebuilt from its commit to the same bytes: see
 [packaging/README.md](packaging/README.md). To run it from source instead, see the
 [manual](MANUAL.md#running-from-source).

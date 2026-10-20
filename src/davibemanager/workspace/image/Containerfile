@@ -7,25 +7,40 @@
 # app's gateway sockets (/run/dvm, bind-mounted) on loopback, and everything goes through them.
 ARG BASE_IMAGE
 FROM ${BASE_IMAGE}
-ARG APT_SNAPSHOT
+ARG APT_URI
 ARG APPIMAGETOOL_URL
 ARG APPIMAGETOOL_SHA256
 ARG RUNTIME_URL
 ARG RUNTIME_SHA256
 ARG CLAUDE_SHA256
 ENV DEBIAN_FRONTEND=noninteractive LANG=C.UTF-8 LC_ALL=C.UTF-8 TZ=UTC
+# APT_URI is the snapshot (pins.py), unless the user chose another source for when it's unavailable.
+# Ubuntu's snapshot server can be slow and refuse requests for minutes (503), and apt doesn't retry
+# those, so each apt step is tried again after a growing wait, saying so on a "dvm-retry:" line the
+# app shows as it happens. /var/cache/apt/archives is a folder of the app's mounted at build time:
+# what was downloaded before a failure is kept for the next try and the next build; docker-clean
+# (which empties it after every update) is set aside meanwhile, and a finished build empties it.
 RUN rm -f /etc/apt/sources.list && printf '%s\n' \
       'Types: deb' \
-      "URIs: https://snapshot.ubuntu.com/ubuntu/${APT_SNAPSHOT}/" \
+      "URIs: ${APT_URI}" \
       'Suites: noble noble-updates noble-security' \
       'Components: main universe' \
       'Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg' > /etc/apt/sources.list.d/ubuntu.sources \
  && echo 'Acquire::https::CaInfo "/hostca.crt";' > /etc/apt/apt.conf.d/99hostca \
- && apt-get update -o Acquire::Retries=3 \
- && apt-get install -y --no-install-recommends -o Acquire::Retries=3 \
+ && mv /etc/apt/apt.conf.d/docker-clean /etc/apt/docker-clean.off \
+ && retry() { try=1; delay=15; \
+      until "$@"; do \
+        [ "$try" -lt 8 ] || return 100; try=$((try + 1)); \
+        echo "dvm-retry: try $try of 8 in ${delay}s"; sleep "$delay"; echo "dvm-retry: try $try of 8 now"; \
+        delay=$((delay < 60 ? delay * 2 : 120)); \
+      done; } \
+ && retry apt-get update --error-on=any -o Acquire::Retries=3 \
+ && retry apt-get install -y --no-install-recommends -o Acquire::Retries=3 \
       ca-certificates curl git build-essential pkg-config patch file socat \
       xz-utils zstd unzip python3 python3-venv desktop-file-utils \
       xvfb xauth x11-utils xdotool imagemagick fonts-dejavu-core \
+ && apt-get clean \
+ && mv /etc/apt/docker-clean.off /etc/apt/apt.conf.d/docker-clean \
  && rm /etc/apt/apt.conf.d/99hostca \
  && rm -rf /var/lib/apt/lists/*
 

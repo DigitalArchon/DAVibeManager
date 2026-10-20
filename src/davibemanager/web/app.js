@@ -210,11 +210,15 @@ function handle(ev) {
       st.questions[ev.question.id] = ev.question;
       scheduleRender(); renderStatus();
       break;
-    case "workspace":
+    case "workspace": {
+      const was = st.workspace || {};
       st.workspace = ev.workspace;
       renderStatus();
+      // trouble while the sandbox is prepared shows in the chat as it happens (sandboxBox)
+      if ((was.trouble || "") !== (ev.workspace.trouble || "") || was.state !== ev.workspace.state) renderChat();
       if (S.panel === "activity") openPanel("activity");
       break;
+    }
     case "backups":
       st.backups = ev.backups;
       if (S.panel === "settings" && !document.activeElement?.closest?.("#panel")) openPanel("settings");
@@ -268,22 +272,25 @@ function renderStatus() {
   if (!st.ready) { cls = "wait"; msg = st.keyring_wait ? "Waiting for your keyring" : "Needs setting up"; }
   else if (w.state === "needs_podman") { cls = "wait"; msg = "Install Podman first"; }
   else if (w.state === "failed") { cls = "bad"; msg = "The sandbox couldn't start"; }
+  else if (w.state === "removed") { cls = ""; msg = "The sandbox is removed"; }
   else if (waitingOnUser()) { cls = "wait"; msg = "Waiting for you"; }
   else if (st.busy) { cls = "busy"; msg = "Working…"; }
   else if (S.activity?.tasks?.length) { cls = "busy"; msg = "Ready to talk · still working in its sandbox"; }
+  else if (w.state === "building" && w.trouble) { cls = "wait"; msg = "Preparing its sandbox: download trouble, still trying…"; }
   else if (w.state === "building") { cls = "busy"; msg = "Preparing its sandbox (first time: a few minutes)…"; }
   else if (w.state === "starting") { cls = "busy"; msg = "Starting its sandbox…"; }
   else if (w.state !== "running") { cls = ""; msg = "Sandbox stopped"; }
   el.className = `status ${cls}`;
   const [cost, costWhy] = spendText(st.spend);
   text.textContent = msg + cost;
-  el.title = [w.state === "failed" ? w.error : w.step || "", costWhy].filter(Boolean).join("\n\n");
+  el.title = [w.state === "failed" ? w.summary || w.error : [w.trouble, w.step].filter(Boolean).join("\n"), costWhy].filter(Boolean).join("\n\n");
   $("#stop-btn").classList.toggle("hidden", !st.busy);
   $("#send-btn").classList.toggle("hidden", st.busy && !$("#input").value.trim() && !S.files.length);
   $("#input").placeholder = !st.ready ? "Set up first…"
     : waitingOnUser() ? "Reply, or decide on the card above…"
     : st.busy ? "Write any time: it reads it with its next step…"
     : w.state === "needs_podman" ? "Install Podman first (above)…"
+    : w.state === "removed" ? "Write to make the sandbox again (a few minutes)…"
     : ["building", "starting"].includes(w.state) ? "Type away: it's sent as soon as the sandbox is ready…"
     : "Ask anything about your computer…";
 }
@@ -346,7 +353,8 @@ function renderChat(scroll) {
   // its turn has ended, but what it started (a build) goes on: the user can talk with it meanwhile
   else if (S.activity) items.push(h("div", { class: "msg assistant" }, h("div", { class: "muted small" },
     "Still running in its sandbox. You can keep talking: it's told when this finishes."), activityEl(S.activity, {})));
-  box.replaceChildren(...(st.podman ? [podmanBox(st.podman)] : []), ...(items.length ? items : [welcome()]));
+  const trouble = sandboxBox(st.workspace || {});
+  box.replaceChildren(...(st.podman ? [podmanBox(st.podman)] : []), ...(trouble ? [trouble] : []), ...(items.length ? items : [welcome()]));
   for (const el of box.querySelectorAll("[data-key]")) if (el.dataset.key in typed) el.value = typed[el.dataset.key];
   if (keep) {
     const el = box.querySelector(`[data-key="${keep.key}"]`);
@@ -1373,6 +1381,20 @@ function podmanBox(p) {
       ins.output ? h("details", {}, h("summary", {}, "What it printed"), h("pre", { class: "small mono" }, ins.output)) : null) : null);
 }
 
+// the sandbox being prepared, while its downloads meet trouble: what's wrong, as it happens
+function sandboxBox(w) {
+  if (w.state !== "building" || !w.trouble) return null;
+  const fallback = S.state.config?.settings?.image_fallback;
+  return h("div", { class: "card podman" },
+    h("div", {}, h("b", {}, "Preparing the assistant's sandbox is taking longer: its downloads are having trouble.")),
+    h("div", { class: "small" }, w.trouble),
+    w.step ? h("div", { class: "small mono muted" }, w.step) : null,
+    h("div", { class: "small muted" }, "It keeps trying by itself for about ten minutes, and says so here if it gives up. ",
+      fallback ? "If Ubuntu's snapshot server stays unavailable, it uses the other package source you chose in Settings."
+        : h("span", {}, "If Ubuntu's snapshot server is often unavailable, you can let it use another package source: ",
+          h("a", { href: "#", onclick: (e) => { e.preventDefault(); openPanel("settings"); $("#settings-sandbox")?.scrollIntoView(); } }, "Settings → The sandbox"), ".")));
+}
+
 // on Omarchy: what it lacks for this app and its apps (usually nothing), and this app in its menu
 function omarchyBox(o) {
   const ins = o.install || {};
@@ -1441,7 +1463,8 @@ function openPanel(name) {
   const body = $("#panel-body");
   $("#panel-title").textContent = { chats: "Chats", apps: "My apps", settings: "Settings", activity: "Sandbox activity" }[name];
   const scroll = body.scrollTop;
-  body.replaceChildren(...{ chats: chatsPanel, apps: appsPanel, settings: settingsPanel, activity: activityPanel }[name]());
+  // a section that has nothing to show is null: left out (replaceChildren would write "null")
+  body.replaceChildren(...{ chats: chatsPanel, apps: appsPanel, settings: settingsPanel, activity: activityPanel }[name]().filter((x) => x != null));
   body.scrollTop = scroll;
 }
 
@@ -1531,8 +1554,12 @@ function activityPanel() {
   return [
     h("div", { class: "section" }, h("h3", {}, "The sandbox"),
       h("div", { class: "small" }, { running: "Running.", building: "Being prepared…", starting: "Starting…", failed: "It couldn't start:", stopped: "Stopped.",
-        needs_podman: "Waiting for Podman to be installed (see the chat)." }[w.state] || w.state),
-      w.state === "failed" ? h("pre", { class: "small err" }, w.error) : null,
+        needs_podman: "Waiting for Podman to be installed (see the chat).", removed: "Removed (Settings). It's made again when you start it." }[w.state] || w.state),
+      w.state === "failed" && w.summary ? h("div", { class: "small err" }, w.summary) : null,
+      w.state === "failed" ? (w.summary ? h("details", {}, h("summary", { class: "small" }, "What the build printed"), h("pre", { class: "small mono" }, w.error))
+        : h("pre", { class: "small err" }, w.error)) : null,
+      w.trouble && w.state === "building" ? h("div", { class: "warnbox" }, w.trouble) : null,
+      w.unpinned_source ? h("div", { class: "small muted" }, `Its packages came from ${w.unpinned_source}, because Ubuntu's snapshot server was unavailable: they're Ubuntu's, but not the exact pinned versions.`) : null,
       w.step && w.state !== "running" ? h("div", { class: "small mono muted" }, w.step) : null,
       h("p", { class: "small muted" }, "The assistant lives in a sealed container: no access to your files, your network or this computer. It can reach public websites over HTTPS only, through this app, which lists every connection below."),
       w.state !== "running" ? h("button", { class: "small", onclick: () => guarded(() => api("POST", "/api/workspace/start")) }, "Start it") : null),
@@ -1918,16 +1945,59 @@ function settingsPanel() {
       h("label", { class: "radio" }, h("input", { type: "checkbox", checked: st.autostart, onchange: (e) => save({ autostart: e.target.checked }, e.target.checked ? "It will start with your computer, in the tray." : "It won't start by itself.") }),
         h("div", {}, "Start with my computer (in the tray)")),
       h("div", { class: "field" }, h("span", {}, "Install apps it builds to"), h("div", { class: "row" }, dir, h("button", { class: "small", onclick: () => save({ install_dir: dir.value.trim() }) }, "Save")))),
-    h("div", { class: "section" }, h("h3", {}, "The sandbox"),
+    h("div", { class: "section", id: "settings-sandbox" }, h("h3", {}, "The sandbox"),
       h("div", { class: "row small" }, "Memory", mem, "CPUs", cpus, h("button", { class: "small", onclick: () => guarded(async () => {
         const out = await api("POST", "/api/settings", { container_memory: mem.value.trim(), container_cpus: cpus.value.trim() });
         toast(out.limits === "now" ? "Saved: the sandbox has them now." : "Saved: the sandbox gets them when it next starts.", "ok", 3000); }) }, "Save")),
       h("p", { class: "small muted" }, "Resetting starts the sandbox afresh, clearing out what has built up in it: its downloads, installed tools and builds are deleted, and fetched or made again as they're needed, so things take longer for a while. The assistant remembers your chats, and your apps, their changes, the builds you have and your backups aren't touched. Only work the assistant hasn't delivered yet is lost."),
       h("button", { class: "small danger", onclick: () => guarded(async () => {
         if (!(await confirmModal("Reset the sandbox?", "Its downloads, tools and builds are deleted, and come back as they're needed. The assistant remembers your chats and carries on. Work it hasn't delivered yet is lost. Your apps and backups aren't touched.", "Reset", "danger"))) return;
-        await api("POST", "/api/workspace/reset"); toast("The sandbox is starting afresh.", "ok"); }) }, "Reset the sandbox…")),
+        await api("POST", "/api/workspace/reset"); toast("The sandbox is starting afresh.", "ok"); }) }, "Reset the sandbox…"),
+      imageSourceSettings(s, save, radio),
+      removalSettings(st.removal || {}, st.workspace || {})),
     h("div", { class: "small muted", style: "text-align:center" }, `${st.computer.os} · ${st.computer.desktop}`),
   ];
+}
+
+// where the sandbox's packages come from when Ubuntu's snapshot server is unavailable
+function imageSourceSettings(s, save, radio) {
+  const mirror = h("input", { type: "text", class: "mono", value: s.image_mirror || "", placeholder: "https://mirror.example.com/ubuntu/" });
+  const pick = (v) => save({ image_fallback: v }, "Saved.");
+  return h("div", {}, h("h4", {}, "If Ubuntu's snapshot server is unavailable"),
+    h("div", { class: "small muted" }, "The sandbox's packages come from Ubuntu's snapshot server, the archive as it was on one date, so every sandbox gets exactly the same versions. That server is sometimes slow or refuses downloads for a while. The app then keeps trying for about ten minutes; after that:"),
+    radio("imgsrc", "", s.image_fallback || "", "Stop and tell me (recommended)", "Nothing changes: try again later.", () => pick("")),
+    radio("imgsrc", "archive", s.image_fallback || "", "Use Ubuntu's live archive", "The current versions of the same packages, from archive.ubuntu.com. Still checked against Ubuntu's signing key, but not the pinned versions.", () => pick("archive")),
+    radio("imgsrc", "mirror", s.image_fallback || "", "Use my mirror of the Ubuntu archive", "For example one on your own network. Packages are still checked against Ubuntu's signing key. https, or http on your local network only.", () => {
+      if (!mirror.value.trim()) { toast("Enter the mirror's address, then Save.", "info", 3000); mirror.focus(); return; }
+      pick("mirror"); }),
+    h("div", { class: "row small" }, "Mirror:", mirror, h("button", { class: "small", onclick: () => save({ image_mirror: mirror.value.trim(), ...(mirror.value.trim() ? { image_fallback: "mirror" } : {}) }) }, "Save")));
+}
+
+// removing the sandbox, everything of the app's in Podman, and Podman itself (for uninstalling)
+function removalSettings(r, w) {
+  const st = r.state || {};
+  const p = r.podman;
+  const also = h("input", { type: "checkbox" });
+  let status = null;
+  if (st.state === "removing") status = h("div", { class: "small" }, h("span", { class: "spinner" }), ` ${st.step || "Removing…"}`,
+    st.podman ? h("div", { class: "small muted" }, "If your computer asks for your password, that's Podman's uninstall.") : null);
+  else if (st.state === "failed") status = h("div", { class: "err small" }, st.error,
+    st.output ? h("details", {}, h("summary", {}, "What it printed"), h("pre", { class: "small mono" }, st.output)) : null);
+  else if (st.state === "done") status = h("div", { class: "small" }, st.podman ? "The sandbox and Podman are removed." : "The sandbox is removed.",
+    st.kept?.length ? ` Podman's other containers, images or volumes were left alone (${st.kept.length}).` : "",
+    st.leaves_dependencies ? " The packages Podman needed are still installed: sudo apt autoremove removes them, with any others nothing needs." : "");
+  return h("div", {}, h("h4", {}, "Remove the sandbox"),
+    h("p", { class: "small muted" }, "Before uninstalling DA Vibe Manager, or to free the space: this deletes the sandbox, its files and its images (a few GB), and everything else this app put in Podman. Your apps, their changes, your builds, chats and backups aren't touched. It's made again if you use the assistant again."),
+    p ? h("label", { class: "radio" }, also, h("div", {}, h("div", {}, "Also uninstall Podman"),
+      h("div", { class: "small muted" }, p.installed_by_app ? `This app installed it (${p.packages.join(", ")}). ` : "Podman may have been installed before this app, and other programs may use it. ",
+        "Its other containers, images and volumes, if any, are left alone. This runs, as administrator: ", h("code", { class: "mono" }, p.command || p.terminal || "(nothing this app can run here)")))) : null,
+    status,
+    h("button", { class: "small danger", disabled: st.state === "removing" || (w.state === "removed" && !p), onclick: () => guarded(async () => {
+      const podmanToo = also.checked;
+      if (!(await confirmModal(podmanToo ? "Remove the sandbox and Podman?" : "Remove the sandbox?",
+        `The sandbox, its files and images are deleted${podmanToo ? ", then Podman is uninstalled (your computer asks for your password)" : ""}. Work the assistant hasn't delivered yet is lost. Your apps, chats and backups aren't touched.`,
+        "Remove", "danger"))) return;
+      await api("POST", "/api/sandbox/remove", { podman: podmanToo }); }) }, "Remove the sandbox…"));
 }
 
 // ------------------------------------------------------------------ composer & wiring

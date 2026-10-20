@@ -265,6 +265,36 @@ the files you attached are put back, each app's source is prepared again, and yo
 changes, the builds you have and your backups aren't touched. Only work the assistant hasn't
 delivered yet is lost.
 
+### When preparing it takes long, or fails
+
+The sandbox's packages come from Ubuntu's snapshot server: the Ubuntu archive as it was on one
+date, so every sandbox has exactly the same versions. That server is sometimes slow, or refuses
+downloads for a while (503 Service Unavailable). Preparing the sandbox then says so as it happens,
+in the chat and the status bar: which server, what it answered, and when it tries again. It keeps
+trying for about ten minutes, keeping what it has downloaded so far, and if it still can't, it
+says why and offers **Try again**. Nothing is wrong with your computer when this happens.
+
+Under **If Ubuntu's snapshot server is unavailable** you can choose what happens after those ten
+minutes: stop and say so (the default), use **Ubuntu's live archive**, or use **your own mirror**
+of the Ubuntu archive, for example one on your network (https, or http on your local network
+only). Either way apt checks every package against Ubuntu's signing key, but the versions are the
+current ones rather than the pinned ones; the Activity panel says when the sandbox was built that
+way.
+
+### Removing it
+
+**Remove the sandbox…** deletes the sandbox, its files and its images (a few GB), and everything
+else DA Vibe Manager put in Podman, but nothing else of yours there. Do this before uninstalling
+DA Vibe Manager, or to free the space. Your apps, chats and backups aren't touched, and the
+sandbox is made again if you use the assistant again.
+
+Tick **Also uninstall Podman** to remove Podman as well, with your distribution's package manager
+as administrator (the command is shown first). If DA Vibe Manager installed Podman, it removes
+what it installed; otherwise just Podman, since other programs may use it. If you have other
+containers, images or volumes in Podman, they're left alone. On Ubuntu, Mint and Debian, the
+packages Podman needed stay installed: `sudo apt autoremove` removes them, along with any others
+nothing needs.
+
 ## How it stays safe
 
 The assistant runs **inside a sealed Podman container on your computer, not on your computer

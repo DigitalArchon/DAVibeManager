@@ -24,6 +24,8 @@ CLAUDE_MODEL = "anthropic/claude-opus-5.5"
 CHECK_EVERY = ("day", "week", "month", "manual")
 # when a new release is built with the user's changes: when they say so, at the quiet time, or at once
 REBUILD = ("ask", "scheduled", "auto")
+# where the sandbox's image gets its packages if the snapshot server is unavailable (Settings.image_fallback)
+IMAGE_FALLBACKS = ("", "archive", "mirror")
 # the window's colours; "system" follows the desktop's light or dark preference
 THEMES = ("dark", "light", "system")
 WINDOW_BACKGROUND = {"dark": "#111418", "light": "#f4f6f9", "system": "#111418"}
@@ -106,6 +108,12 @@ class Settings:
     container_memory: str = "8g"
     container_cpus: str = "4"
     container_pids: int = 4096
+    # where the sandbox's image gets its packages when Ubuntu's snapshot server (the pinned, dated archive)
+    # is unavailable: "" (nowhere else: the build waits and says why), "archive" (Ubuntu's live archive)
+    # or "mirror" (image_mirror: a mirror of the Ubuntu archive, https, or http on the local network).
+    # Either way apt checks every package against Ubuntu's key; only the snapshot gives the pinned versions
+    image_fallback: str = ""
+    image_mirror: str = ""
     # where Install puts delivered apps
     install_dir: str = "~/Applications"
     # how often (from the sandbox) to ask an app's official source for new releases: "day", "week",

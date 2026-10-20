@@ -19,13 +19,16 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import os
 import re
 import shutil
 import tempfile
 from pathlib import Path
 from typing import Callable
+from urllib.parse import urlparse
 
 from .. import podmansetup
+from ..config import data_dir
 from . import pins
 
 IMAGE_REPO = "localhost/davibemanager-workspace"
@@ -61,6 +64,16 @@ class PodmanError(RuntimeError):
     pass
 
 
+class BuildError(PodmanError):
+    """The image's build failed: `summary` says why in a sentence or two, `kind` what sort of trouble
+    ("server": the package server refused, "network": it couldn't be reached, "certificate", or
+    "other"), `host` where, and the exception's text adds the last of what the build printed."""
+
+    def __init__(self, summary: str, details: str, *, kind: str = "other", host: str = ""):
+        super().__init__(f"{summary}\n\nWhat the build printed last:\n{details}" if details else summary)
+        self.summary, self.details, self.kind, self.host = summary, details, kind, host
+
+
 def podman() -> str:
     path = shutil.which("podman")
     if not path:
@@ -94,6 +107,20 @@ def image_tag() -> str:
         h.update((IMAGE_DIR / f).read_bytes())
     h.update(Path(pins.__file__).read_bytes())
     return f"{IMAGE_REPO}:{h.hexdigest()[:12]}"
+
+
+# Where the image's packages come from: the dated snapshot (pins.py), or, only when the user chose it for
+# when the snapshot server is unavailable, Ubuntu's live archive or a mirror of it. Either way apt checks
+# every package against Ubuntu's signing key; only the snapshot gives the exact pinned versions.
+SNAPSHOT_URI = f"https://snapshot.ubuntu.com/ubuntu/{pins.APT_SNAPSHOT}/"
+ARCHIVE_URI = "https://archive.ubuntu.com/ubuntu/"
+SOURCE_LABEL = "au.com.digitalarchon.davibemanager.apt-source"
+
+
+def apt_cache_dir() -> Path:
+    """apt's downloads while the image is built (mounted at /var/cache/apt/archives): what a failed
+    build fetched is kept for the next one; a finished build empties it."""
+    return data_dir() / "image-apt-cache"
 
 
 def bundled_cli() -> Path:
@@ -164,8 +191,9 @@ async def image_exists(tag: str) -> bool:
     return rc == 0
 
 
-async def build_image(on_line: Callable[[str], None] | None = None) -> str:
-    """Build the workspace image if this exact one doesn't exist yet. Returns its tag."""
+async def build_image(on_line: Callable[[str], None] | None = None, *, source: str = SNAPSHOT_URI) -> str:
+    """Build the workspace image if this exact one doesn't exist yet, its packages from `source`.
+    Returns its tag. A failed build raises BuildError, saying why."""
     tag = image_tag()
     if await image_exists(tag):
         return tag
@@ -174,6 +202,8 @@ async def build_image(on_line: Callable[[str], None] | None = None) -> str:
     if digest != pins.CLAUDE_SHA256:
         raise PodmanError(f"The Claude Code CLI bundled with claude-agent-sdk ({digest[:16]}…) isn't the pinned one "
                           f"({pins.CLAUDE_SHA256[:16]}…). Update workspace/pins.py deliberately with the SDK.")
+    cache = apt_cache_dir()
+    cache.mkdir(parents=True, exist_ok=True, mode=0o700)
     with tempfile.TemporaryDirectory(prefix="dvm-image-") as ctx:
         for f in ("Containerfile", "dvm-entry"):
             shutil.copy2(IMAGE_DIR / f, Path(ctx) / f)
@@ -182,15 +212,199 @@ async def build_image(on_line: Callable[[str], None] | None = None) -> str:
         except OSError:
             await asyncio.to_thread(shutil.copy2, cli, Path(ctx) / "claude")
         argv = [podman(), "build", "-t", tag, "-v", f"{_ca_bundle()}:/hostca.crt:ro,Z",
-                "--label", f"{LABEL}=image"]
-        for key in ("BASE_IMAGE", "APT_SNAPSHOT", "APPIMAGETOOL_URL", "APPIMAGETOOL_SHA256", "RUNTIME_URL",
+                "-v", f"{cache}:/var/cache/apt/archives:Z", "--label", f"{LABEL}=image", "--label", f"{SOURCE_LABEL}={source}",
+                "--build-arg", f"APT_URI={source}"]
+        for key in ("BASE_IMAGE", "APPIMAGETOOL_URL", "APPIMAGETOOL_SHA256", "RUNTIME_URL",
                     "RUNTIME_SHA256", "CLAUDE_SHA256"):
             argv += ["--build-arg", f"{key}={getattr(pins, key)}"]
         argv += ["-f", str(Path(ctx) / "Containerfile"), ctx]
-        rc, out = await run(argv, timeout=3600, on_line=on_line)
+        before, scratch = await build_containers(), _build_scratch()
+        rc = None
+        try:
+            rc, out = await run(argv, timeout=3600, on_line=on_line)
+        finally:
+            if rc != 0:
+                # a build that failed, or was stopped, leaves a Buildah container for each step it began,
+                # and its scratch folders (one holds a copy of the build's files, the CLI's 200 MB among
+                # them); stopping it gently doesn't help. Only those it made are removed. Its finished
+                # steps' layers stay, so the next build starts from them
+                await asyncio.shield(_remove_build_debris(before, scratch))
     if rc != 0:
-        raise PodmanError("Building the workspace image failed:\n" + out[-3000:])
+        raise build_failure(out)
     return tag
+
+
+async def build_containers() -> dict[str, str]:
+    """Buildah's containers (builds' working containers, which `podman ps` shows only with --external):
+    {id: its image's id}."""
+    rc, out = await run([podman(), "ps", "-a", "--external", "--no-trunc", "--format", "{{.ID}}|{{.ImageID}}|{{.Status}}"])
+    found = {}
+    for line in out.splitlines() if rc == 0 else []:
+        cid, _, rest = line.partition("|")
+        image, _, status = rest.partition("|")
+        if status.strip() == "Storage":
+            found[cid] = image
+    return found
+
+
+UNMOUNT_AND_REMOVE = r"""
+for d; do
+  for m in "$d"/overlay/*/merge; do [ -d "$m" ] && umount "$m" 2>/dev/null; done
+  rm -rf -- "$d"
+done
+"""
+
+
+def _build_scratch() -> set[Path]:
+    """Buildah's scratch folders (in TMPDIR, else /var/tmp, as Buildah chooses)."""
+    tmp = Path(os.environ.get("TMPDIR") or "/var/tmp")
+    try:
+        return {p for p in tmp.glob("buildah*") if p.is_dir() and not p.is_symlink()}
+    except OSError:
+        return set()
+
+
+async def _remove_build_debris(containers: dict[str, str], scratch: set[Path]) -> None:
+    """What a failed or stopped build left, of its own: what wasn't there before it began."""
+    await _remove_containers([c for c in await build_containers() if c not in containers])
+    new = sorted(str(p) for p in _build_scratch() - scratch)
+    if new:
+        # in Podman's user namespace: what the build's steps wrote there belongs to this user's subordinate
+        # ids, and the build context's overlay is still mounted there
+        await run([podman(), "unshare", "sh", "-c", UNMOUNT_AND_REMOVE, "sh", *new], timeout=120)
+
+
+async def _remove_containers(ids: list[str]) -> None:
+    if ids:
+        await run([podman(), "rm", "-f", *ids], timeout=120)
+
+
+async def image_source(tag: str) -> str:
+    """Where an image's packages came from (SOURCE_LABEL): "" if it doesn't say."""
+    rc, out = await run([podman(), "image", "inspect", "--format", '{{index .Labels "%s"}}' % SOURCE_LABEL, tag])
+    value = out.strip() if rc == 0 else ""
+    return "" if value == "<no value>" else value
+
+
+class BuildWatch:
+    """A build's output, read as it comes: how far apt's downloads are, and any trouble it meets,
+    in words for the window. The same reading explains a build that failed (build_failure)."""
+
+    _GET = re.compile(r"^Get:(\d+) ")
+    _TOTAL = re.compile(r"\b(\d+) newly installed\b")
+    _FAILED = re.compile(r"^(?:Err:\d+|E: Failed to fetch|W: Failed to fetch) +(\S+)")
+    _STATUS = re.compile(r"\b([1-5]\d\d) +([A-Za-z][A-Za-z -]*?) *\[IP: ")
+    _RETRY = re.compile(r"^dvm-retry: try (\d+) of (\d+) (?:in (\d+)s|now)")
+    _HOST = re.compile(r"(?:resolving|connect to|lookup) '?([A-Za-z0-9.-]+\.[A-Za-z]{2,})")
+    _NETWORK = ("Temporary failure resolving", "Could not resolve", "Could not connect", "Connection timed out",
+                "Connection failed", "Network is unreachable", "No route to host", "no such host", "i/o timeout")
+    _CERT = ("Certificate verification failed", "certificate verify failed", "x509:")
+
+    def __init__(self) -> None:
+        self.got = self.total = self.failures = 0
+        self.host = self.status = ""
+        self.kind = ""               # the latest trouble: "server", "network", "certificate" or "http"
+        self.retry: tuple[int, int, int] | None = None     # (try, of, seconds it waits before it; 0 once it's begun)
+        self.step = ""
+
+    def feed(self, line: str) -> None:
+        text = line.strip()
+        if line.startswith("STEP "):
+            self.step, self.kind, self.retry = line, "", None
+            self.got = self.total = self.failures = 0
+            return
+        if m := self._RETRY.match(text):
+            self.retry = (int(m.group(1)), int(m.group(2)), int(m.group(3) or 0))
+            if not m.group(3):
+                self.got = self.failures = 0     # a new try: apt counts afresh
+            return
+        if m := self._GET.match(text):
+            self.got = int(m.group(1))
+        elif m := self._TOTAL.search(text):
+            self.total = int(m.group(1))
+        if m := self._FAILED.match(text):
+            self.failures += 1 if text.startswith("Err:") else 0
+            self.host = urlparse(m.group(1)).hostname or self.host
+        if m := self._STATUS.search(text):
+            code = int(m.group(1))
+            self.status = f"{code} {m.group(2).strip()}"
+            self.kind = "server" if code >= 500 or code == 429 else "http"
+        elif any(x in text for x in self._CERT):
+            self.kind, self.status = "certificate", self._reason(text, self._CERT)
+        elif any(x in text for x in self._NETWORK):
+            self.kind, self.status = "network", self._reason(text, self._NETWORK)
+            if m := self._HOST.search(text):
+                self.host = m.group(1)
+
+    @staticmethod
+    def _reason(text: str, phrases: tuple) -> str:
+        """Why, without the address apt puts before it (the same trouble reads the same on every line)."""
+        at = min(i for i in (text.find(x) for x in phrases) if i >= 0)
+        return text[at:].strip()[:160]
+
+    def where(self) -> str:
+        if self.host == urlparse(SNAPSHOT_URI).hostname:
+            return f"Ubuntu's snapshot server ({self.host})"
+        if self.host == urlparse(ARCHIVE_URI).hostname:
+            return f"Ubuntu's archive ({self.host})"
+        return f"the package server {self.host}" if self.host else "the package server"
+
+    def progress(self) -> str:
+        """What the build is doing, in a few words."""
+        if self.got:
+            return f"Downloading packages: {self.got} of {self.total}" if self.total >= self.got else \
+                f"Downloading packages: {self.got} so far"
+        return ""
+
+    def trouble(self) -> str:
+        """The trouble the build is meeting, while it carries on: "" when there's none."""
+        if not self.kind:
+            return ""
+        what = {"server": f"{self.where()} is busy or down ({self.status})",
+                "http": f"{self.where()} refused a download ({self.status})",
+                "network": f"{self.where()} can't be reached ({self.status})",
+                "certificate": f"the connection to {self.where()} couldn't be verified"}[self.kind]
+        if self.failures > 1 and self.kind in ("server", "http"):
+            what += f": {self.failures} downloads failed"
+        if self.retry:
+            n, of, secs = self.retry
+            then = f"Waiting {secs} s before trying again (try {n} of {of})…" if secs else f"Trying again (try {n} of {of})…"
+            return f"{what[0].upper()}{what[1:]}. {then}"
+        return f"{what[0].upper()}{what[1:]}. It will be tried again…"
+
+
+def _details(out: str, lines: int = 25) -> str:
+    """The end of a build's output, without the RUN command podman repeats when a step fails (it's
+    long, and says nothing of why)."""
+    keep = []
+    for line in out.splitlines():
+        if line.startswith("Error: building at STEP"):
+            m = re.search(r"(while running runtime: .*)$", line)
+            line = "Error: the build step failed" + (f" ({m.group(1)})" if m else "")
+        if line.strip():
+            keep.append(line)
+    return "\n".join(keep[-lines:])[-3000:]
+
+
+def build_failure(out: str) -> BuildError:
+    """Why a build failed, from what it printed."""
+    w = BuildWatch()
+    for line in out.splitlines():
+        w.feed(line)
+    details = _details(out)
+    if w.kind == "server":
+        tried = " It was tried again for about ten minutes." if w.retry else ""
+        return BuildError(f"{w.where()} is busy or down: it answered {w.status}.{tried} Nothing is wrong with "
+                          "your computer. Try again later.", details, kind="server", host=w.host)
+    if w.kind == "network":
+        return BuildError(f"{w.where()} couldn't be reached ({w.status}). Check that this computer is online, "
+                          "then try again.", details, kind="network", host=w.host)
+    if w.kind == "certificate":
+        return BuildError(f"The connection to {w.where()} couldn't be verified (its certificate wasn't accepted), "
+                          "so nothing was downloaded from it.", details, kind="certificate", host=w.host)
+    if w.kind == "http":
+        return BuildError(f"{w.where()} refused a download ({w.status}).", details, kind="other", host=w.host)
+    return BuildError("Building the sandbox's image failed.", details)
 
 
 def _check_limit(value: str, pattern: str, what: str) -> str:
@@ -458,3 +672,102 @@ async def list_containers() -> list[dict]:
         return json.loads(out or "[]")
     except ValueError:
         return []
+
+
+# ---------------------------------------------------------------- removing it all (Settings → The sandbox)
+
+async def remove_all(sandbox: str = APP_SANDBOX) -> list[str]:
+    """Everything of the app's in Podman: its containers (the sandbox, its clean one, any other with the
+    app's label) and their volumes, its images and the one they're built on, and the build's download
+    cache. Nothing else of the user's. Returns what was removed."""
+    removed = []
+    # (rm -f succeeds for a name that isn't there: only what was there is said to be removed)
+    names = {n for c in await list_containers() for n in c.get("Names") or []}
+    names |= {n for n in (sandbox, check_name(sandbox)) if await state(n) != "missing"}
+    rc, out = await run([podman(), "volume", "ls", "--format", "{{.Name}}"])
+    volumes = set(out.split()) if rc == 0 else set()
+    for name in sorted(names | {sandbox}):
+        if (await run([podman(), "rm", "-f", "-t", "5", name], timeout=60))[0] == 0 and name in names:
+            removed.append(name)
+        for vol in (*volume_names(name), mirrors_volume(name)):
+            if vol in volumes and (await run([podman(), "volume", "rm", "-f", vol], timeout=60))[0] == 0:
+                removed.append(vol)
+    rc, out = await run([podman(), "images", "--format", "{{.Repository}}:{{.Tag}}", IMAGE_REPO])
+    for tag in [t for t in out.split() if t.startswith(f"{IMAGE_REPO}:")] if rc == 0 else []:
+        if (await run([podman(), "image", "rm", "-f", tag], timeout=120))[0] == 0:
+            removed.append(tag)
+    removed += await _remove_build_leftovers()
+    if (await run([podman(), "image", "rm", pins.BASE_IMAGE], timeout=120))[0] == 0:     # not forced: if in use, kept
+        removed.append(pins.BASE_IMAGE.split("@")[0])
+    if await clear_apt_cache():
+        removed.append(str(apt_cache_dir()))
+    return removed
+
+
+async def _remove_build_leftovers() -> list[str]:
+    """What builds of the app's image left: the untagged images of their steps, and the Buildah containers
+    of steps a stopped build had begun. Theirs alone: each is built on the pinned base image, which is
+    found by following their parents (nothing of the user's is built on that exact image by chance)."""
+    rc, out = await run([podman(), "image", "inspect", "--format", "{{.Id}}", pins.BASE_IMAGE])
+    base = out.strip() if rc == 0 else ""
+    if not base:
+        return []
+    rc, out = await run([podman(), "images", "-a", "--no-trunc", "--format", "{{.ID}}|{{.Repository}}:{{.Tag}}"])
+    tags = {}
+    for line in out.splitlines() if rc == 0 else []:
+        iid, _, tag = line.partition("|")
+        tags[iid.removeprefix("sha256:")] = tag
+    parents = {}
+    if tags:
+        rc, out = await run([podman(), "image", "inspect", "--format", "{{.Id}}|{{.Parent}}", *tags])
+        for line in out.splitlines() if rc == 0 else []:
+            iid, _, parent = line.partition("|")
+            parents[iid] = parent.removeprefix("sha256:")
+
+    def depth(iid: str) -> int:
+        """How many steps above the base image `iid` is: 0 if it isn't built on it."""
+        for n in range(1, 200):
+            iid = parents.get(iid, "")
+            if not iid:
+                return 0
+            if iid == base:
+                return n
+        return 0
+    removed = []
+    stale = [c for c, image in (await build_containers()).items() if image == base or depth(image)]
+    await _remove_containers(stale)
+    removed += [f"build container {c[:12]}" for c in stale]
+    ours = sorted((i for i, tag in tags.items() if tag == "<none>:<none>" and depth(i)), key=depth, reverse=True)
+    for iid in ours:                    # the last steps first: an image with others built on it can't go
+        if (await run([podman(), "image", "rm", iid], timeout=120))[0] == 0:
+            removed.append(f"build layer {iid[:12]}")
+    return removed
+
+
+async def clear_apt_cache() -> bool:
+    """Delete the build's download cache. What apt wrote there as its own user belongs to one of this
+    user's subordinate ids, so it's deleted inside Podman's user namespace."""
+    cache = apt_cache_dir()
+    if not cache.exists():
+        return False
+    await run([podman(), "unshare", "rm", "-rf", "--", str(cache)], timeout=120)
+    return not cache.exists()
+
+
+async def anything_else() -> list[str]:
+    """What else this user has in Podman, once the app's things are gone: containers (Podman's and
+    Buildah's), images and volumes. [] means Podman's storage holds nothing but leftovers."""
+    found = []
+    for what, argv in (("container", ["ps", "-a", "--external", "--format", "{{.Names}}"]),
+                       ("image", ["images", "--format", "{{.Repository}}:{{.Tag}}"]),
+                       ("volume", ["volume", "ls", "--format", "{{.Name}}"])):
+        rc, out = await run([podman(), *argv], timeout=60)
+        if rc != 0:
+            return [f"Podman couldn't list its {what}s: {out.strip()[-200:]}"]
+        found += [f"{what} {x}" for x in out.split() if x != "<none>:<none>"]
+    return found
+
+
+async def reset_storage() -> tuple[int, str]:
+    """Delete all of this user's Podman storage (only when anything_else() found nothing of theirs)."""
+    return await run([podman(), "system", "reset", "--force"], timeout=600)

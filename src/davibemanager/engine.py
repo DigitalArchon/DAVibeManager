@@ -23,6 +23,7 @@ import time
 from contextlib import AsyncExitStack, asynccontextmanager
 from pathlib import Path
 from typing import Callable
+from urllib.parse import urlparse
 
 from . import appimage as appimage_mod
 from . import appmanager as appmanager_mod
@@ -243,6 +244,7 @@ class Engine:
         self._first_start = True
         self._podman_install: dict = {}       # installing Podman from the window: {"state": "installing" | "failed", ...}
         self._omarchy_install: dict = {}      # the same, for what Omarchy lacks (omarchy.py)
+        self._removal: dict = {}              # removing the sandbox (and Podman) from Settings: {"state": ...}
         self._told_podman = False
         self.workspace: dict = {"state": "stopped"}
         self._workspace_task: asyncio.Task | None = None
@@ -273,7 +275,7 @@ class Engine:
         except FileNotFoundError:
             self._open(Conversation.create())
         if self.ready:
-            self.start_workspace()
+            self._start_workspace_at_launch()
         elif self.keyring_wait:
             self._spawn(self._wait_for_keyring())
         self.app_manager.migrate()
@@ -392,6 +394,7 @@ class Engine:
             "activity": self.activity,
             "workspace": self.workspace,
             "podman": self.podman_view(),
+            "removal": self.removal_view(),
             "omarchy": self.omarchy_view(),
             "assistant": self.assistant_status(),
             "deliveries": self.deliveries(),
@@ -554,6 +557,25 @@ class Engine:
             if not isinstance(parts, list) or any(x not in sysinfo.PARTS for x in parts):
                 raise UserError(f"What's shared is a list of: {', '.join(sysinfo.PARTS)}.")
             s.share_about = [x for x in sysinfo.PARTS if x in parts]
+        if "image_mirror" in data:
+            url = str(data["image_mirror"]).strip()
+            if url:
+                try:
+                    url = check_url(url, "The mirror's address")
+                except InsecureURL as e:
+                    raise UserError(str(e)) from None
+                if not re.fullmatch(r"[A-Za-z0-9:/._~%+@\[\]-]+", url):
+                    raise UserError("The mirror's address has characters an address can't have (spaces, quotes).")
+                url = url if url.endswith("/") else url + "/"
+            s.image_mirror = url
+            if not url and s.image_fallback == "mirror":
+                s.image_fallback = ""
+        if "image_fallback" in data:
+            if data["image_fallback"] not in config_mod.IMAGE_FALLBACKS:
+                raise UserError("If the snapshot server is unavailable, the app waits, uses Ubuntu's archive, or a mirror.")
+            if data["image_fallback"] == "mirror" and not s.image_mirror:
+                raise UserError("Enter the mirror's address first.")
+            s.image_fallback = data["image_fallback"]
         if "theme" in data:
             if data["theme"] not in config_mod.THEMES:
                 raise UserError("The colours are dark, light, or the system's.")
@@ -1328,21 +1350,56 @@ class Engine:
         self.workspace = state
         self.emit("workspace", workspace=state)
 
+    def _start_workspace_at_launch(self) -> None:
+        """The app starting the sandbox by itself, which it doesn't after the user removed it (Settings):
+        it's made again when they want it (start_workspace)."""
+        if self._removed_marker().exists():
+            self._set_workspace(state="removed")
+        else:
+            self.start_workspace()
+
     def start_workspace(self) -> None:
+        """Start the sandbox, building its image first if need be."""
+        if self._removal.get("state") == "removing":
+            return
+        self._removed_marker().unlink(missing_ok=True)
         if self._workspace_task and not self._workspace_task.done():
             return
         if self.workspace.get("state") == "running":
             return
         self._workspace_task = asyncio.ensure_future(self._start_workspace())
 
+    def _image_fallback(self) -> tuple[str, str]:
+        """Where the image's packages come from when the snapshot server is unavailable, as Settings
+        say: (its address, its name for the user), or ("", "") for nowhere else."""
+        s = self.cfg.settings
+        if s.image_fallback == "archive":
+            return podman.ARCHIVE_URI, "Ubuntu's live archive"
+        if s.image_fallback == "mirror" and s.image_mirror:
+            return s.image_mirror, f"your mirror ({urlparse(s.image_mirror).hostname})"
+        return "", ""
+
     async def _start_workspace(self) -> None:
-        lines = 0
+        watch = podman.BuildWatch()
+        shown = {"at": 0.0, "what": None, "trouble": ""}
 
         def progress(line: str) -> None:
-            nonlocal lines
-            lines += 1
-            if line.startswith("STEP") or lines % 10 == 0:
-                self._set_workspace(state="building", step=line[-160:])
+            # what the build is doing, and any trouble it meets, as it happens: a new kind of trouble (or a
+            # new try) at once, anything else (counts, downloads) at most twice a second
+            watch.feed(line)
+            trouble = watch.trouble()
+            what = (watch.kind, watch.status, watch.retry)
+            now = time.monotonic()
+            if what == shown["what"] and not line.startswith("STEP") and now - shown["at"] < 0.5:
+                return
+            if what != shown["what"] and trouble:
+                app_log("sandbox_build_trouble", trouble=trouble)
+                if not shown["trouble"]:
+                    self.emit("toast", level="info", text=f"Preparing the sandbox: {trouble}")
+            # while there's trouble, its lines (and the build's retry lines) say what `trouble` says in words
+            step = watch.progress() or ("" if trouble else line[-160:])
+            shown.update(at=now, what=what, trouble=trouble)
+            self._set_workspace(state="building", step=step, trouble=trouble)
         need = podmansetup.plan()
         if need:
             # nothing to retry: the user installs it (from the window, or a terminal), then it starts
@@ -1353,11 +1410,12 @@ class Engine:
                 self.notify("DA Vibe Manager needs Podman", "Open the app to install it: it's the sandbox the assistant works in.")
             self._changed()
             return
-        error = ""
+        error, failure, started = "", None, False
+        source = podman.SNAPSHOT_URI
         for attempt in (1, 2):
             try:
                 self._set_workspace(state="building", step="Checking the sandbox…")
-                image = await podman.build_image(progress)
+                image = await podman.build_image(progress, source=source)
                 self._set_workspace(state="starting", step="Starting the sandbox…")
                 if self.gateway is None:
                     self.gateway = Gateway(self._gateway_dir(), self._builder_upstream, on_event=self._network_event,
@@ -1411,23 +1469,45 @@ class Engine:
                 if rc != 0:
                     raise podman.PodmanError(f"The sandbox's copies of official sources couldn't be set up: {out.strip()[-300:]}")
                 self._guard_sandbox()
+                # an image built from somewhere else than the snapshot (Settings) says so in Settings
+                built_from = await podman.image_source(image)
                 self._set_workspace(state=st, image=image,
-                                    outdated=(await podman.inspect_image(SANDBOX)) not in ("", image))
+                                    outdated=(await podman.inspect_image(SANDBOX)) not in ("", image),
+                                    unpinned_source=built_from if built_from not in ("", podman.SNAPSHOT_URI) else "")
+                started = True
                 break
             except asyncio.CancelledError:
                 raise
+            except podman.BuildError as e:
+                error, failure = str(e)[:4000], e
+                app_log("sandbox_start_failed", attempt=attempt, error=error, kind=e.kind, host=e.host, source=source)
+                other, name = self._image_fallback()
+                if attempt == 1 and source == podman.SNAPSHOT_URI and other and e.kind in ("server", "network"):
+                    source = other
+                    watch = podman.BuildWatch()
+                    shown.update(at=0.0, what=None, trouble="")
+                    app_log("sandbox_image_fallback", source=other)
+                    if self.conv:
+                        self._note(f"{e.summary} As Settings say, the sandbox is being built from {name} instead.")
+                    continue
+                break           # it waited and tried again already: once more now would fail the same way
             except Exception as e:  # noqa: BLE001 - shown to the user as-is
                 error = f"{type(e).__name__}: {e}" if not str(e) else str(e)
-                app_log("sandbox_start_failed", attempt=attempt, error=error[-4000:])
+                error = error[-3000:]
+                app_log("sandbox_start_failed", attempt=attempt, error=error)
                 if attempt == 1:
                     # often a race with the previous run still stopping it: once more, a moment later
                     self._set_workspace(state="starting", step="Trying again…")
                     await asyncio.sleep(4)
-        else:
-            self._set_workspace(state="failed", error=error[-3000:])
+        if not started:
+            summary = failure.summary if failure else error[-400:]
+            if failure and failure.kind in ("server", "network") and not self._image_fallback()[0]:
+                summary += (" If this keeps happening, the app can use another package source when it does: "
+                            "Settings → The sandbox.")
+            self._set_workspace(state="failed", error=error, summary=summary)
             if self.conv:
-                self._note(f"The sandbox couldn't start: {error[-400:]}", retry="workspace")
-            self.notify("The assistant's sandbox couldn't start", error[-200:])
+                self._note(f"The sandbox couldn't start: {summary}", retry="workspace")
+            self.notify("The assistant's sandbox couldn't start", summary[:200])
             return
         app_log("sandbox_started", image=image)
         if SANDBOX == podman.APP_SANDBOX:       # the app's own sandbox, never a test's: its images are the app's
@@ -1449,6 +1529,8 @@ class Engine:
 
     def podman_view(self) -> dict | None:
         """What the window shows while Podman is missing (podmansetup.py): None once it's there."""
+        if self.workspace.get("state") == "removed":
+            return None             # the user removed it: nothing is asked of them until they want the sandbox again
         p = podmansetup.plan()
         if not p and self._podman_install.get("state") != "installing":
             return None
@@ -1469,21 +1551,21 @@ class Engine:
         self._changed()
         self._spawn(self._install_podman(p))
 
-    async def _install_as_admin(self, command: str) -> tuple[str, str]:
-        """Run one of the app's own fixed install commands as administrator (the desktop asks for the
-        password). Returns ("", its output) when it finished, else (what went wrong, its output)."""
+    async def _install_as_admin(self, command: str, what: str = "install") -> tuple[str, str]:
+        """Run one of the app's own fixed install (or uninstall) commands as administrator (the desktop asks
+        for the password). Returns ("", its output) when it finished, else (what went wrong, its output)."""
         try:
             res = await hostrun.run(command, as_root=True, timeout=self.PODMAN_INSTALL_TIMEOUT)
         except OSError as e:
             return f"It couldn't be started: {e}", ""
         out = redact(res.output)[0] if res.output else ""
         if res.timed_out:
-            return "The install took too long and was stopped.", out
+            return f"The {what} took too long and was stopped.", out
         if res.exit_code == 126:
-            return "The password prompt was closed, so nothing was installed.", ""
+            return f"The password prompt was closed, so nothing was {what}ed.", ""
         if res.exit_code != 0:
-            return f"The install didn't finish (it ended with code {res.exit_code}).", out
-        app_log("installed_as_admin", command=command, seconds=res.seconds)
+            return f"The {what} didn't finish (it ended with code {res.exit_code}).", out
+        app_log("installed_as_admin" if what == "install" else "ran_as_admin", command=command, seconds=res.seconds)
         return "", out
 
     async def _install_podman(self, p: dict) -> None:
@@ -1499,6 +1581,7 @@ class Engine:
             return self._podman_failed("Podman is installed, but it doesn't run for your user yet. Restarting the "
                                        "computer often fixes this.", problem)
         app_log("podman_installed")
+        podmansetup.record_install(p["new"])        # so uninstalling takes these again, and only these
         self._podman_install = {}
         self._changed()
         self.emit("toast", level="ok", text="Podman is installed. The assistant's sandbox is being prepared (a few minutes the first time).")
@@ -1578,18 +1661,18 @@ class Engine:
                 applied=rc == 0, **({} if rc == 0 else {"error": out.strip()[-300:]}))
         return "now" if rc == 0 else "next start"
 
-    async def reset_workspace(self) -> None:
-        """Start the sandbox afresh: everything in it is deleted (downloads, tools, builds, the official
-        sources' copies), and comes back as it's needed. For the user it carries on as before: their apps,
-        builds, chats and backups live outside it, every chat's session is kept and put back (the assistant
-        remembers, and is told once what happened), and the files they attached are put back too. Only work
-        the assistant hadn't delivered is lost."""
+    def _sandbox_idle(self) -> None:
+        """Nothing may be using the sandbox while it's deleted: says what to wait for."""
         if self.busy:
             raise UserError("Wait for the assistant to finish (or stop it) first.")
         if self.app_manager.building or self._check_lock.locked():
             raise UserError("Wait for the app that's being built to finish first.")
         if self.backups.running:
             raise UserError("Wait for the backup to finish first.")
+
+    async def _clear_sandbox(self) -> int:
+        """Delete the sandbox and its files, every chat's session kept outside it first (so the assistant
+        remembers when one is made again). Returns how many sessions couldn't be kept."""
         await self._close_builder()
         kept: set[str] = set()
         if self.workspace.get("state") == "running":
@@ -1612,13 +1695,100 @@ class Engine:
             elif conv.session:
                 conv.after_reset = True             # its next turn: told what happened, and the app's source prepared
             conv.save()
+        app_log("sandbox_cleared", sessions_kept=len(kept), sessions_lost=lost)
+        return lost
+
+    async def reset_workspace(self) -> None:
+        """Start the sandbox afresh: everything in it is deleted (downloads, tools, builds, the official
+        sources' copies), and comes back as it's needed. For the user it carries on as before: their apps,
+        builds, chats and backups live outside it, every chat's session is kept and put back (the assistant
+        remembers, and is told once what happened), and the files they attached are put back too. Only work
+        the assistant hadn't delivered is lost."""
+        self._sandbox_idle()
+        lost = await self._clear_sandbox()
         # what came from this computer stays known: the sessions that were kept hold it
         self._set_workspace(state="stopped")
-        app_log("sandbox_reset", sessions_kept=len(kept), sessions_lost=lost)
+        app_log("sandbox_reset", sessions_lost=lost)
         self._note("The sandbox was reset: it starts afresh, and what it needs is fetched again as it's needed."
                    + (" The assistant remembers your chats." if not lost else
                       f" {lost} chat{'s' if lost > 1 else ''} couldn't be kept, and start{'' if lost > 1 else 's'} afresh."))
         self.start_workspace()
+
+    # ---------------------------------------------------------------- removing the sandbox, and Podman
+
+    def removal_view(self) -> dict:
+        """Settings → The sandbox: how Podman would be uninstalled here, and how a removal is going."""
+        return {"podman": podmansetup.removal(), "state": self._removal}
+
+    def _removed_marker(self) -> Path:
+        # while it's there, the app doesn't make the sandbox again by itself when it starts
+        return data_dir() / "sandbox-removed"
+
+    def remove_sandbox(self, uninstall_podman: bool) -> None:
+        """Remove the sandbox and everything of the app's in Podman, and if asked, Podman too (as
+        administrator: the desktop asks for the password). Only ever on the user's click."""
+        self._sandbox_idle()
+        if self._removal.get("state") == "removing":
+            raise UserError("It's being removed already.")
+        if self._podman_install.get("state") == "installing":
+            raise UserError("Wait for Podman's install to finish first.")
+        self._removal = {"state": "removing", "step": "Removing the sandbox…", "podman": uninstall_podman}
+        self._changed()
+        self._spawn(self._remove_sandbox(uninstall_podman))
+
+    async def _remove_sandbox(self, uninstall_podman: bool) -> None:
+        try:
+            if self._workspace_task and not self._workspace_task.done():
+                self._workspace_task.cancel()           # a build, or a start, under way
+                try:
+                    await self._workspace_task
+                except (asyncio.CancelledError, Exception):  # noqa: BLE001 - it's being removed
+                    pass
+            removed: list[str] = []
+            if shutil.which("podman"):
+                await self._clear_sandbox()
+                removed = await podman.remove_all(SANDBOX)
+            self._removed_marker().parent.mkdir(parents=True, exist_ok=True)
+            self._removed_marker().touch()
+            self._set_workspace(state="removed")
+            app_log("sandbox_removed", removed=removed)
+            if not uninstall_podman:
+                self._removal = {"state": "done", "podman": False}
+                self.emit("toast", level="ok", text="The sandbox is removed. Podman is still installed.")
+                return
+            # Podman's own storage goes too, but only if nothing of the user's is left in it
+            others = await podman.anything_else() if shutil.which("podman") else []
+            if not others and shutil.which("podman"):
+                rc, out = await podman.reset_storage()
+                app_log("podman_storage_reset", ok=rc == 0, output=out.strip()[-500:])
+            p = podmansetup.removal()
+            if p is None:
+                self._removal = {"state": "done", "podman": True, "kept": others}
+                return
+            if not p["can_remove"]:
+                self._removal = {"state": "failed", "error": "This app can't uninstall Podman here. In a terminal, run: "
+                                 + (p["terminal"] or "your system's package manager"), "kept": others}
+                return
+            self._removal = {"state": "removing", "step": "Uninstalling Podman…", "podman": True, "command": p["command"]}
+            self._changed()
+            app_log("podman_uninstall", command=p["command"])
+            error, out = await self._install_as_admin(p["command"], what="uninstall")
+            if not error and shutil.which("podman"):
+                error = "It finished, but Podman is still there."
+            if error:
+                app_log("podman_uninstall_failed", error=error, output=out[-2000:])
+                self._removal = {"state": "failed", "error": error, "output": out[-4000:], "kept": others}
+                return
+            podmansetup.forget_install()
+            app_log("podman_uninstalled", packages=p["packages"])
+            self._removal = {"state": "done", "podman": True, "kept": others,
+                             "leaves_dependencies": p["leaves_dependencies"]}
+            self.emit("toast", level="ok", text="The sandbox and Podman are removed.")
+        except Exception as e:  # noqa: BLE001 - said in Settings, never left "removing"
+            app_log("sandbox_remove_failed", error=str(e))
+            self._removal = {"state": "failed", "error": str(e) or type(e).__name__}
+        finally:
+            self._changed()
 
     async def _after_reset(self) -> str:
         """The first turn of a chat after the sandbox was reset: its session back in place, the files the

@@ -9,14 +9,19 @@ Debian's, Ubuntu's and Fedora's Podman usually bring one; Arch's leaves passt op
 The install command is the app's own, fixed here per package manager: never the AI's. The user
 sees it in full and runs it with one click, as administrator through pkexec (the desktop asks
 for the password; the app never sees it), or copies it into a terminal.
+
+Uninstalling it is the same, the other way: what the app installed is written down
+(podman-installed.json), so removing it takes those packages, and leaves alone what was there before.
 """
 
 from __future__ import annotations
 
+import json
 import shutil
 from typing import Callable
 
 from . import sysinfo
+from .config import data_dir
 
 # package manager -> (the binary that shows it's there, how it installs packages without asking)
 MANAGERS = {
@@ -25,6 +30,14 @@ MANAGERS = {
     # never -Sy alone: installing on a stale package list is a partial upgrade (Arch's rule)
     "pacman": ("pacman", "pacman -S --needed --noconfirm {pkgs}"),
     "zypper": ("zypper", "zypper --non-interactive install {pkgs}"),
+}
+# and how it removes them, with what only they needed (apt can't do that for some packages alone:
+# its autoremove takes every package nothing needs, so their dependencies stay; the window says so)
+REMOVE = {
+    "apt": "apt-get remove -y {pkgs}",
+    "dnf": "dnf remove -y {pkgs}",
+    "pacman": "pacman -Rs --noconfirm {pkgs}",
+    "zypper": "zypper --non-interactive remove --clean-deps {pkgs}",
 }
 # what os-release's ID or ID_LIKE says, for the manager it uses
 FAMILIES = {
@@ -72,15 +85,72 @@ def plan(rel: dict | None = None, which: Callable[[str], str | None] | None = No
     if manager == "pacman" and "podman" in pkgs and "passt" not in pkgs:
         pkgs.append("passt")       # Arch's Podman needs it to build anything, but doesn't bring it
     command = MANAGERS[manager][1].format(pkgs=" ".join(pkgs)) if manager else ""
-    name = rel.get("PRETTY_NAME") or " ".join(x for x in (rel.get("NAME"), rel.get("VERSION_ID")) if x) or "Linux"
     return {
         "missing": need,
         "packages": pkgs,
-        "distro": name,
+        # what this install adds (pacman's --needed skips a passt that's there already)
+        "new": [x for x in pkgs if x != "passt" or not which("pasta")],
+        "distro": _name(rel),
         "manager": manager,
         "command": command,
-        "terminal": f"sudo sh -c '{command}'" if "&&" in command else f"sudo {command}" if command else "",
+        "terminal": _terminal(command),
         "can_install": bool(command) and bool(which("pkexec")),
+    }
+
+
+def _name(rel: dict) -> str:
+    return rel.get("PRETTY_NAME") or " ".join(x for x in (rel.get("NAME"), rel.get("VERSION_ID")) if x) or "Linux"
+
+
+def _terminal(command: str) -> str:
+    return f"sudo sh -c '{command}'" if "&&" in command else f"sudo {command}" if command else ""
+
+
+def _record_path():
+    return data_dir() / "podman-installed.json"
+
+
+def record_install(packages: list[str]) -> None:
+    """Write down what the app installed, so uninstalling takes those (and only those) again."""
+    path = _record_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    had = installed_by_app() or []
+    path.write_text(json.dumps({"packages": sorted(set(had) | set(packages))}))
+
+
+def installed_by_app() -> list[str] | None:
+    """The packages the app installed, or None if it didn't install Podman here (or before it wrote it down)."""
+    try:
+        pkgs = json.loads(_record_path().read_text()).get("packages")
+    except (OSError, ValueError, AttributeError):
+        return None
+    return [p for p in pkgs if p in ("podman", "passt")] if isinstance(pkgs, list) else None
+
+
+def forget_install() -> None:
+    _record_path().unlink(missing_ok=True)
+
+
+def removal(rel: dict | None = None, which: Callable[[str], str | None] | None = None) -> dict | None:
+    """How Podman is uninstalled here, for the window; None when it isn't installed."""
+    which = which or shutil.which
+    if not which("podman"):
+        return None
+    rel = sysinfo._os_release() if rel is None else rel
+    manager = _manager(rel, which)
+    ours = installed_by_app()
+    pkgs = ours or ["podman"]       # passt only if the app put it there: something else may use it
+    command = REMOVE[manager].format(pkgs=" ".join(pkgs)) if manager else ""
+    return {
+        "packages": pkgs,
+        "installed_by_app": ours is not None,
+        "distro": _name(rel),
+        "manager": manager,
+        "command": command,
+        "terminal": _terminal(command),
+        "can_remove": bool(command) and bool(which("pkexec")),
+        # apt removes the packages named, not what only they needed
+        "leaves_dependencies": manager == "apt",
     }
 
 
