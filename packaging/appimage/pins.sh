@@ -4,7 +4,7 @@
 # Ubuntu 24.04 base image, by digest; GLib 2.80 here is the oldest GLib the AppImage runs on
 BASE_IMAGE="docker.io/library/ubuntu:24.04@sha256:008173c23f95b170204355c12626cb5a965d779a7e1283b09e9cffbb1bf33ca3"
 # build tools come from the Ubuntu archive as it was at this moment (snapshot.ubuntu.com)
-APT_SNAPSHOT="20260930T000000Z"
+APT_SNAPSHOT="20261022T000000Z"
 
 # Python, from python-build-standalone (relocatable, built for old glibc)
 PBS_URL="https://github.com/astral-sh/python-build-standalone/releases/download/20260929/cpython-3.12.14%2B20260929-x86_64-unknown-linux-gnu-install_only_stripped.tar.gz"

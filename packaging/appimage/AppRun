@@ -2,4 +2,19 @@
 # DAVibeManager AppImage entry point. The bundled Python runs isolated (-I: no PYTHONPATH or user
 # site-packages from the host); GTK and WebKitGTK come from the host (see packaging/README.md).
 HERE="$(dirname "$(readlink -f "$0")")"
+# TLS trust: the host's own CA store first, so its distrust decisions (emSign ECC Root CA - G3,
+# the eMudhra root, Oct 2026) stand for httpx and the openai client (SSL_CERT_FILE) and for
+# requests, which tinfoil's attestation uses (REQUESTS_CA_BUNDLE); the bundled certifi is the
+# fallback. The bundled Python's own ssl module looks in /etc/ssl already.
+if [ -z "${SSL_CERT_FILE:-}" ]; then
+    for bundle in /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/certs/ca-bundle.crt /etc/ssl/cert.pem; do
+        if [ -r "$bundle" ]; then
+            export SSL_CERT_FILE="$bundle"
+            break
+        fi
+    done
+fi
+if [ -n "${SSL_CERT_FILE:-}" ] && [ -z "${REQUESTS_CA_BUNDLE:-}" ]; then
+    export REQUESTS_CA_BUNDLE="$SSL_CERT_FILE"
+fi
 exec "$HERE/usr/python/bin/python3" -I -m davibemanager "$@"

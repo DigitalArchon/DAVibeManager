@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+from pathlib import Path
 
 import httpx
 import pytest
@@ -9,9 +10,10 @@ from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey
 from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 
 from davibemanager.llm.client import LLMClient, detect_tier
+from davibemanager.llm import private_mode as _private_mode
 from davibemanager.llm.private_mode import (
-    Attestation, Enclave, PrivateModeClient, PrivateModeError, Verified, _NonEmptyBodyTransport,
-    offers_private_mode, relay_url, sealing_transport)
+    Attestation, Enclave, ModelRetired, PrivateModeClient, PrivateModeError, Verified, _NonEmptyBodyTransport,
+    offered, offers_private_mode, relay_url, sealing_transport)
 
 BASE = "https://nano-gpt.com/api/v1"
 RELAY = "https://nano-gpt.com/api/v1/private/tinfoil"
@@ -42,11 +44,16 @@ TOOL_REPLY = (chunk({"role": "assistant", "content": "Checking."})
               + chunk({}, "tool_calls") + "data: [DONE]\n\n")
 
 
+LISTED = ["private/gemma4-31b:thinking", "private/glm-5-3", "private/kimi-k3"]   # as the relay lists them (sorted)
+
+
 class Relay:
-    def __init__(self, replies=None, private_header="tinfoil"):
+    def __init__(self, replies=None, private_header="tinfoil", listed=LISTED, preflight_status=200):
         self.replies = list(replies or [(200, TOOL_REPLY)])
         self.private_header = private_header
-        self.preflights, self.requests, self.keys, self.verifies = [], [], [], 0
+        self.listed = listed                    # the relay's public list of Private Mode models
+        self.preflight_status = preflight_status
+        self.preflights, self.requests, self.keys, self.verifies, self.lists = [], [], [], 0, 0
 
     def verifier(self, relay, secret):
         assert relay == RELAY and len(secret) == 64
@@ -54,8 +61,16 @@ class Relay:
         return verified()
 
     def preflight(self, request):
+        if request.url.path.endswith("/private/tinfoil/models"):
+            assert request.method == "GET" and "authorization" not in request.headers   # public: no key sent
+            self.lists += 1
+            if self.listed is None:
+                return httpx.Response(503, text="down")
+            return httpx.Response(200, json={"data": [{"id": m} for m in self.listed] + [{"id": "TEE/glm-5.3"}]})
         assert request.url.path.endswith("/private/tinfoil/preflight")
         self.preflights.append((json.loads(request.content), request.headers["authorization"]))
+        if self.preflight_status >= 400:
+            return httpx.Response(self.preflight_status, json={"error": {"message": "nope"}})
         return httpx.Response(200, json={"cacheScope": SCOPE, "upstreamModel": "glm-5-3"})
 
     def transport(self, key):
@@ -220,3 +235,121 @@ async def test_second_opinions_from_a_private_reviewer_go_sealed_after_attestati
         assert "lsblk" not in json.dumps(relay.preflights)     # the preflight carries no content
     finally:
         await engine.stop()
+
+
+def test_a_model_off_the_relays_list_is_known_to_be_retired():
+    assert offered("private/glm-5-3", LISTED) is True
+    assert offered("private/glm-5.3", LISTED) is True, "NanoGPT's dotted alias"
+    assert offered("private/glm-5-3-flash", LISTED) is False
+    assert offered("private/gemma4-31b", LISTED) is False, ":thinking is its own model"
+    assert offered("private/glm-5-3-flash", []) is None, "a list that couldn't be read"
+
+
+async def test_nothing_is_sent_to_a_retired_model():
+    relay = Relay()
+    client = relay.client()
+    with pytest.raises(ModelRetired, match="no longer offered.*choose another end-to-end encrypted model") as caught:
+        await collect(client, model="private/glm-5-3-flash")
+    assert caught.value.model == "private/glm-5-3-flash"
+    assert caught.value.offered == LISTED                          # what to carry on with (private/ only)
+    assert relay.lists == 1 and relay.verifies == 0 and relay.preflights == [] and relay.requests == []
+    with pytest.raises(ModelRetired):
+        await client.attest("private/glm-5-3-flash")               # not attested either
+    assert relay.verifies == 0
+    assert await client.attest("private/glm-5-3") == verified().attestation
+    assert relay.lists == 1, "the list is kept, like the attestation"
+
+
+async def test_the_private_list_is_read_again_once_it_is_old():
+    relay = Relay(replies=[(200, TOOL_REPLY)] * 4)
+    now = [1000.0]
+    client = relay.client(Enclave(RELAY, verifier=relay.verifier, clock=lambda: now[0]))
+    await collect(client)
+    await collect(client)
+    assert relay.lists == 1
+    now[0] += 301
+    await collect(client)
+    assert relay.lists == 2
+    relay.listed = ["private/kimi-k3"]                              # retired meanwhile: found at the next read
+    await collect(client)
+    now[0] += 301
+    with pytest.raises(ModelRetired):
+        await collect(client)
+
+
+async def test_a_preflight_refusal_for_a_retired_model_says_so():
+    """Every path's backstop: a model retired since the list was read."""
+    relay = Relay(preflight_status=400)
+    client = relay.client()
+    with pytest.raises(PrivateModeError, match=r"refused the Private Mode request \(HTTP 400\)") as plain:
+        await collect(client)                                       # still listed: NanoGPT's own refusal
+    assert not isinstance(plain.value, ModelRetired)
+    relay.listed = ["private/kimi-k3"]                              # gone, but the kept list still has it
+    with pytest.raises(ModelRetired) as caught:
+        await collect(client)
+    assert caught.value.status_code == 400 and caught.value.offered == ["private/kimi-k3"]
+    assert relay.requests == [], "nothing sealed was sent"
+    # The list can't be read: nothing is claimed about the model.
+    down = Relay(preflight_status=400, listed=None)
+    with pytest.raises(PrivateModeError) as unknown:
+        await collect(down.client())
+    assert not isinstance(unknown.value, ModelRetired) and down.lists == 2
+
+
+ENCRYPTION_STACK = ("tinfoil", "tinfoil-ehbp", "pyhpke")
+
+
+def test_the_encryption_stack_is_pinned_exactly_and_alike_everywhere():
+    """A source install (pip install -e .) reads pyproject.toml, not the AppImage lock, and
+    tinfoil accepts any tinfoil-ehbp>=0.3.0: unpinned, a source install took 0.4.0 the day it
+    came out (Oct 6 2026), a new request framing never run against the enclave here, and this
+    app's Oct 9 lock shipped it. The lock is made from pyproject.toml, so the pin there is what
+    holds a relock to the same version."""
+    import re
+    import tomllib
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parent.parent
+    deps = tomllib.loads((root / "pyproject.toml").read_text())["project"]["dependencies"]
+    lock = (root / "packaging/appimage/requirements.lock").read_text()
+    for name in ENCRYPTION_STACK:
+        locked = re.search(rf"^{re.escape(name)}==(\S+) \\$", lock, re.MULTILINE)
+        assert locked, f"{name} is not in the AppImage lock"
+        pin = f"{name}=={locked.group(1)}"
+        assert pin in deps, f"pyproject.toml must pin {pin} exactly"
+        block = re.split(r"(?m)^(?=\S)", lock[locked.end():], 1)[0]     # its hashes and "via" lines
+        assert "davibemanager (./pyproject.toml)" in block, f"the lock must record {name} as pyproject.toml's own pin"
+
+MODULE = _private_mode
+
+PROXY_CONTRACT = Path(__file__).resolve().parent / "data" / "nanogpt_private_mode_proxy.json"
+
+
+def test_the_client_stays_within_the_reviewed_proxys_contract():
+    """NanoGPT's own client, @nanogpt/private-mode on npm, is the reference for the relay's
+    contract, and tests/data/nanogpt_private_mode_proxy.json records the release last read
+    (SealedLoreDocs/tools/private_mode_check compares it with npm's latest and refreshes the
+    record). This holds our side to it: every field we may seal is one the proxy lets through,
+    every x-nanogpt header we name is one it sends or reads, the preflight's fields and the
+    relay's paths are its."""
+    import inspect
+    import re
+
+    proxy = json.loads(PROXY_CONTRACT.read_text())
+    assert re.fullmatch(r"\d+\.\d+\.\d+", proxy["reviewed_version"])
+    fields = set(proxy["body_fields"])
+    assert MODULE.ALLOWED_FIELDS <= fields, MODULE.ALLOWED_FIELDS - fields
+    # The router-only cache field goes inside the sealed body (Tinfoil's SDK puts it there for
+    # the proxy, we put it there ourselves); it is not a field NanoGPT's filter sees.
+    assert MODULE.CACHE_SECRET_FIELD not in proxy["body_fields"]
+    source = inspect.getsource(MODULE)
+    headers = set(re.findall(r'"(x-nanogpt-[a-z-]+)"', source))
+    assert headers, "the client names no x-nanogpt header"
+    assert headers <= set(proxy["request_headers"]) | set(proxy["reply_headers"]), headers
+    assert f'"{proxy["reply_header_private_mode_value"]}"' in source
+    preflight = set(re.findall(r'"(cacheScope|upstreamModel|requestBodyBytes|operation)"', source))
+    known = set(proxy["preflight_request_fields"]) | set(proxy["preflight_reply_fields"])
+    assert preflight <= known
+    assert proxy["relay_paths"]["preflight"] == MODULE.RELAY_PATH + "/preflight"
+    assert proxy["relay_paths"]["chat"] == MODULE.RELAY_PATH + "/v1/chat/completions"
+

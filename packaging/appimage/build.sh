@@ -39,7 +39,13 @@ V="$W/venv/bin"
 export PATH="$V:$PATH"      # meson and ninja for the source builds
 
 if [ "$mode" = lock ]; then
-    "$V/pip" install -q "pip-tools==7.6.1"
+    # The resolver's own TLS trust while it reads PyPI: the container's CA store (the snapshot's
+    # ca-certificates, which blacklists emSign ECC Root CA - G3 since 20260816ubuntu0.24.04.1),
+    # never pip's vendored certifi, which pip reads beside the system store; pip 26.2.2 is the
+    # first with the root gone from its own copy too. The build itself needs none of this: every
+    # package it installs is checked against the lock's hashes.
+    export PIP_CERT=/etc/ssl/certs/ca-certificates.crt
+    "$V/pip" install -q "pip==26.2.2" "pip-tools==7.6.1"
     cd "$P"
     "$V/pip-compile" -q --generate-hashes --allow-unsafe --no-strip-extras --output-file /out/requirements.lock \
         "$W/src/pyproject.toml"

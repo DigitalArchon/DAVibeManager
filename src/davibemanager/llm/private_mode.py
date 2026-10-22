@@ -9,7 +9,8 @@ and usage.
 NanoGPT ships this as a Node proxy (`@nanogpt/private-mode`) run with `npx ...@latest`, so the
 code holding the plaintext would come from, and be updated by, the party the encryption is
 meant to keep out. Instead this module does what the proxy does using Tinfoil's own Python SDK,
-pinned exactly in pyproject.toml. The design follows SealedLore's providers/private_mode.py:
+pinned exactly in pyproject.toml. One copy with DAToolkit's llm/private_mode.py (DAToolkit's is
+the source; port changes there first), after SealedLore's providers/private_mode.py:
 
 1. **Attest** (`Enclave.current`): Tinfoil's `SecureClient.verify` fetches the attestation
    bundle through NanoGPT's relay and checks it against the hardware vendor's roots (AMD SEV-SNP
@@ -26,6 +27,15 @@ pinned exactly in pyproject.toml. The design follows SealedLore's providers/priv
 
 The attestation is redone once it is five minutes old, and once more if the enclave says the
 key has changed.
+
+**Retired models.** The enclave is Tinfoil's router whatever the model, so a `private/` model
+NanoGPT no longer offers (private/glm-5-3-flash, Oct 2026) attests fine, and its first message
+would come back as a bare "HTTP 4xx" from the preflight. So before a model is attested or
+sent to, it is looked up in the relay's public list of Private Mode models (no key is sent;
+the list is kept five minutes, like the attestation): a model that is gone raises
+`ModelRetired`, which names the end-to-end encrypted models the list still has, and nothing
+is sent. A preflight refusal for a model off the list says so too, on every path. A list that
+can't be read claims nothing: the preflight still refuses a model that is gone.
 """
 
 from __future__ import annotations
@@ -36,12 +46,13 @@ import json
 import secrets
 import time
 from dataclasses import asdict, dataclass
-from typing import AsyncIterator, Callable
+from typing import AsyncIterator, Awaitable, Callable
 from urllib.parse import urlparse
 
 import httpx
 from openai.types.chat import ChatCompletionChunk
 
+from .capabilities import norm_id
 from .client import StreamAccumulator, is_private_mode
 
 RELAY_PATH = "/api/v1/private/tinfoil"
@@ -69,6 +80,34 @@ class PrivateModeError(Exception):
         super().__init__(message)
         self.status_code = status_code
         self.body = body
+
+
+class ModelRetired(PrivateModeError):
+    """NanoGPT no longer offers this Private Mode model, so nothing was sent to it. `offered`:
+    the private/ models the relay's list does have, to choose from instead."""
+
+    def __init__(self, model: str, offered: list[str] = (), status_code: int | None = None, body: str = ""):
+        super().__init__(f"{model} is no longer offered by NanoGPT's Private Mode; "
+                         f"choose another end-to-end encrypted model", status_code, body)
+        self.model = model
+        self.offered = [m for m in offered if m != model]
+
+
+def private_ids_in(body: object) -> list[str]:
+    """The private/ model ids in the relay's list, as JSON."""
+    items = body.get("data") if isinstance(body, dict) else None
+    return sorted(str(m["id"]) for m in items or []
+                  if isinstance(m, dict) and isinstance(m.get("id"), str) and is_private_mode(m["id"]))
+
+
+def offered(model_id: str, ids: list[str]) -> bool | None:
+    """Whether the relay's list still has `model_id`: NanoGPT retires Private Mode models
+    (private/glm-5-3-flash, Oct 2026). Its dotted alias is the same model, a :thinking one is
+    not. None when the list is empty, which is a list that couldn't be read."""
+    if not ids:
+        return None
+    key = norm_id(model_id)
+    return any(norm_id(i) == key for i in ids)
 
 
 def offers_private_mode(base_url: str) -> bool:
@@ -178,6 +217,11 @@ class Enclave:
         self._lock = asyncio.Lock()
         self._verified: Verified | None = None
         self._at = 0.0
+        # The relay's list of Private Mode models, read when a model is first attested or sent
+        # to and kept as long as an attestation is: a retired model never reaches the preflight.
+        self._ids: list[str] = []
+        self._ids_at = 0.0
+        self._ids_lock = asyncio.Lock()
 
     @property
     def attestation(self) -> Attestation | None:
@@ -201,6 +245,16 @@ class Enclave:
     def invalidate(self, verified: Verified | None = None) -> None:
         if verified is None or self._verified is verified:
             self._verified = None
+
+    async def private_ids(self, read: Callable[[], Awaitable[list[str]]], fresh: bool = False) -> list[str]:
+        """The relay's Private Mode list, read with `read` once it is MAX_AGE_SECONDS old (or
+        `fresh`, after the relay refused a model). [] when it couldn't be read, and that is
+        not kept: the next call reads again."""
+        async with self._ids_lock:
+            if fresh or not self._ids or not 0 <= self._clock() - self._ids_at < MAX_AGE_SECONDS:
+                self._ids = await read()
+                self._ids_at = self._clock()
+            return self._ids
 
 
 def sealing_transport(public_key_hex: str) -> httpx.AsyncBaseTransport:
@@ -259,8 +313,34 @@ class PrivateModeClient:
     def _headers(self) -> dict[str, str]:
         return {"Authorization": f"Bearer {self._api_key}"}
 
-    async def attest(self) -> Attestation:
+    async def attest(self, model: str = "") -> Attestation:
+        """Attest the enclave. With `model`, first make sure NanoGPT still offers it: the enclave
+        is Tinfoil's router whatever the model, so a retired one would attest."""
+        if model:
+            await self.check_offered(model)
         return (await self.enclave.current()).attestation
+
+    async def _read_private_ids(self) -> list[str]:
+        """NanoGPT's list of Private Mode models: public, so no key is sent. [] when it can't
+        be read."""
+        client = self._plain or httpx.AsyncClient(timeout=PREFLIGHT_TIMEOUT_SECONDS)
+        try:
+            resp = await client.get(self.enclave.relay + "/models", headers={"Accept": "application/json"})
+            return private_ids_in(resp.json()) if resp.status_code < 400 else []
+        except (httpx.HTTPError, ValueError):
+            return []
+        finally:
+            if self._plain is None:
+                await client.aclose()
+
+    async def check_offered(self, model: str, fresh: bool = False, status_code: int | None = None,
+                            body: str = "") -> None:
+        """Raise ModelRetired, naming what is offered instead, if NanoGPT has retired `model`.
+        A list that can't be read claims nothing: the preflight still refuses a model that is
+        gone."""
+        ids = await self.enclave.private_ids(self._read_private_ids, fresh=fresh)
+        if offered(model, ids) is False:
+            raise ModelRetired(model, ids, status_code, body)
 
     async def _preflight(self, model: str, body_bytes: int) -> tuple[str, str]:
         client = self._plain or httpx.AsyncClient(timeout=PREFLIGHT_TIMEOUT_SECONDS)
@@ -274,6 +354,9 @@ class PrivateModeClient:
             if self._plain is None:
                 await client.aclose()
         if resp.status_code >= 400:
+            # Every path's backstop (a model retired since the list was read): say why, not
+            # just that it was refused.
+            await self.check_offered(model, fresh=True, status_code=resp.status_code, body=resp.text)
             raise PrivateModeError(f"NanoGPT refused the Private Mode request (HTTP {resp.status_code}): "
                                    f"{resp.text[:300]}", resp.status_code, resp.text)
         try:
@@ -289,15 +372,16 @@ class PrivateModeClient:
     async def stream(self, model: str, messages: list[dict], tools: list[dict] | None = None,
                      params: dict | None = None) -> AsyncIterator[tuple[str, object]]:
         """Yield ("text"|"reasoning", str) deltas, then ("done", TurnResult)."""
-        from ehbp import EHBPError, KeyConfigMismatchError
-
         if not is_private_mode(model):
             raise PrivateModeError(f"{model} isn't a Private Mode model; nothing was sent")
+        await self.check_offered(model)
         for attempt in (0, 1):
             started = False
-            verified = None
+            verified = await self.enclave.current()  # attested before anything, even the charge
+            # Loaded already, by the verifier on its thread (tinfoil imports ehbp): nothing of
+            # the SDK is imported on the event loop.
+            from ehbp import EHBPError, KeyConfigMismatchError
             try:
-                verified = await self.enclave.current()  # attested before anything, even the charge
                 async for event in self._one_request(model, messages, tools, verified, params):
                     started = True
                     yield event
@@ -373,7 +457,7 @@ async def list_private_models(base_url: str, http: httpx.AsyncClient | None = No
     try:
         resp = await client.get(relay_url(base_url) + "/models", headers={"Accept": "application/json"})
         resp.raise_for_status()
-        return sorted(m["id"] for m in resp.json().get("data", []) if is_private_mode(str(m.get("id", ""))))
+        return private_ids_in(resp.json())
     finally:
         if http is None:
             await client.aclose()

@@ -14,8 +14,14 @@ import httpx
 EFFORTS = ["none", "minimal", "low", "medium", "high", "xhigh", "max"]
 
 
-def _norm(model_id: str) -> str:
+def norm_id(model_id: str) -> str:
+    """A model id without its provider prefix, dots and underscores as dashes: NanoGPT names the
+    same model glm-5.3 in one list and glm-5-3 in another. A :thinking suffix stays: that is
+    another model."""
     return re.sub(r"[._]", "-", model_id.split("/")[-1].lower())
+
+
+_norm = norm_id
 
 
 def parse(items: list[dict]) -> dict[str, dict]:
