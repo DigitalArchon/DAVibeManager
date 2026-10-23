@@ -114,6 +114,23 @@ PY="$W/AppDir/usr/python/bin/python3"
 "$PY" -m pip install -q --no-compile --no-deps --require-hashes --only-binary :all: -r "$W/binary.lock"
 "$PY" -m pip install -q --no-compile --no-deps "$W/wheels"/*.whl
 "$PY" -m pip uninstall -q -y pip                  # nothing is installed at run time
+# Pillow's font module (PIL/_imagingft) is the only thing that loads the FreeType, HarfBuzz
+# and Brotli it bundles (FreeType reads WOFF2 fonts with Brotli), and nothing here draws text
+# with Pillow. Brotli 1.2.0 has CVE-2026-111497, an out-of-bounds write in its decoder (Oct
+# 2026), and Pillow 13.0.0 is the newest, so the font module and those libraries are left out.
+# Pillow still imports, reads and writes every format, and ImageFont.load_default() falls back
+# to its built-in bitmap font. Take this out once a Pillow release bundles Brotli 1.2.1.
+for site in "$W"/AppDir/usr/python/lib/python3.*/site-packages; do
+    rm -f "$site"/PIL/_imagingft.*.so "$site"/pillow.libs/libfreetype-*.so* \
+        "$site"/pillow.libs/libharfbuzz-*.so* "$site"/pillow.libs/libbrotli*.so*
+done
+left="$(find "$W/AppDir" -type f -name '*.so*' -exec readelf -d {} + 2>/dev/null \
+    | grep -E 'NEEDED.*\[lib(freetype|harfbuzz|brotlidec|brotlicommon)-[0-9a-f]{8}\.' || true)"
+if [ -n "$left" ]; then
+    echo "Something still needs the libraries left out with Pillow's font module:" >&2
+    echo "$left" >&2
+    exit 1
+fi
 # girepository-2.0 for hosts that don't have it (Debian/Ubuntu split it out of GLib); loaded only
 # when missing (app._bundled_girepository), so Fedora and Arch use their own
 install -D -m 644 "$(readlink -f /usr/lib/x86_64-linux-gnu/libgirepository-2.0.so.0)" \
