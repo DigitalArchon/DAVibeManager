@@ -156,6 +156,8 @@ class Upstream:
     # the vision helper for models that can't see: (data URL, context) -> description
     describe: bridge.Describe | None = None
     vision_model: str = ""
+    # whether a translated model reads images itself (then it gets them, not descriptions)
+    sees: Callable[[str], Awaitable[bool]] | None = None
     reasoning: str = "low"           # reasoning effort for translated models (never "none": see config)
     # which of NanoGPT's hosts runs a translated model: model id -> its route, or None for
     # NanoGPT's own choice (llm/routes.py)
@@ -364,7 +366,8 @@ class Gateway:
             self._images = bridge.ImageDescriber(up.describe, up.vision_model)
         started = time.monotonic()
         try:
-            messages, tools, params = await bridge.to_openai(data, self._images)
+            native = bool(up.sees and await up.sees(model))
+            messages, tools, params = await bridge.to_openai(data, self._images, native=native)
             params["reasoning_effort"] = up.reasoning or "low"
             route = None if private else up.route(model)
             params.update(routes.body(route))      # which of NanoGPT's hosts runs it, if the user chose
@@ -376,7 +379,8 @@ class Gateway:
         estimate = bridge.estimate_tokens(data)
         rec = {"kind": "model", "path": path, "model": model, "asked_for": asked if asked != model else "",
                "status": 200, "provider": up.provider, "tier": "e2ee" if private else up.tier, "private": private,
-               "bytes_out": size, **({"route": routes.describe(route)} if route else {})}
+               "bytes_out": size, **({"route": routes.describe(route)} if route else {}),
+               **({"sees": True} if native else {})}
         events = client.stream(model, messages, tools, params)
         if not data.get("stream"):
             try:

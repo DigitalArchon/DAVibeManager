@@ -1,14 +1,16 @@
 """Private models in the sandbox: Claude Code's Anthropic requests as sealed chat completions,
-with images described by a vision helper."""
+with images described by a vision helper (or sent as they are, to a model that sees)."""
 
 import json
 
 import httpx
 import pytest
 
+from davibemanager.config import Config, Provider
 from davibemanager.gateway import Gateway, Upstream
 from davibemanager.llm import anthropic_bridge as bridge
 from davibemanager.llm.client import ToolCall, TurnResult
+from davibemanager.models import Models
 
 PNG = b"\x89PNG\r\n\x1a\n fake"
 
@@ -55,6 +57,47 @@ async def test_without_a_vision_helper_the_model_is_told_it_cant_see():
     messages, _, _ = await bridge.to_openai({"messages": [{"role": "user", "content": [bridge.b64_image(PNG)]}]},
                                             bridge.ImageDescriber(None))
     assert "can't see images" in messages[0]["content"]
+
+
+async def test_a_model_that_sees_gets_the_images_themselves():
+    seen = Seen()
+    body = {"messages": [
+        {"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_1", "name": "Bash", "input": {"command": "shot"}}]},
+        {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "toolu_1", "content": [
+            {"type": "text", "text": "saved"}, bridge.b64_image(PNG)]}, {"type": "text", "text": "and?"}]},
+        {"role": "user", "content": [bridge.b64_image(PNG)]},
+        {"role": "user", "content": [{"type": "image", "source": {"type": "url", "url": "https://example.com/a.png"}}]},
+    ]}
+    messages, _, _ = await bridge.to_openai(body, bridge.ImageDescriber(seen.describe, "private/glm-5-3-flash"), native=True)
+    tool, after, alone, by_url = messages[1:]
+    # a tool message holds text: its image comes right after the tool results, labelled with the call
+    assert tool["role"] == "tool" and "saved" in tool["content"] and "next message" in tool["content"]
+    assert after["role"] == "user" and [p["type"] for p in after["content"]] == ["text", "image_url", "text"]
+    assert "toolu_1" in after["content"][0]["text"] and after["content"][2]["text"] == "and?"
+    assert after["content"][1]["image_url"]["url"].startswith("data:image/png;base64,")
+    assert alone["content"][0]["type"] == "image_url"
+    assert by_url["content"] == "[An image was here, but it couldn't be read.]"     # never fetched
+    assert not seen.calls                                                          # nothing described
+
+
+async def test_a_model_sees_by_its_override_else_by_what_the_provider_reports(tmp_path):
+    listing = {"data": [{"id": "moonshotai/kimi-k3", "capabilities": {"vision": True}},
+                        {"id": "TEE/kimi-k3", "capabilities": {"vision": True}},
+                        {"id": "z-ai/glm-5.3", "capabilities": {"vision": False}}]}
+    asked = []
+
+    def handler(request):
+        asked.append(request)
+        return httpx.Response(200, json=listing)
+    prov = Provider("NanoGPT", "https://nano-gpt.com/api/v1", vision_overrides={"z-ai/glm-5.3": "yes", "TEE/kimi-k3": "no"})
+    m = Models(Config(providers=[prov]), save_config=lambda c: None, emit=lambda *a, **k: None, log=lambda *a, **k: None)
+    m.key = lambda p: "sk"
+    m.caps_http = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    assert await m.sees(prov, "private/kimi-k3")              # its public twin's, the list loaded first
+    assert await m.sees(prov, "moonshotai/kimi-k3")
+    assert await m.sees(prov, "z-ai/glm-5.3") and not await m.sees(prov, "TEE/kimi-k3")     # the overrides
+    assert not await m.sees(prov, "someone/unknown-model")
+    assert len(asked) == 1                                    # the list is loaded once
 
 
 async def events(text="", calls=(), reasoning=0):
@@ -178,5 +221,30 @@ async def test_every_non_anthropic_model_is_translated_and_a_tee_model_checked_f
             await c.post("/v1/messages", headers=h, json={"model": "anthropic/claude-opus-5.5", **msg})
             assert upstream == ["anthropic/claude-opus-5.5"]          # Claude goes straight through
         assert guarded == ["z-ai/glm-5.3", "TEE/glm-5.3"] and len(fake.calls) == 1
+    finally:
+        await g.stop()
+
+
+async def test_the_gateway_sends_images_to_a_model_that_sees_and_describes_them_for_one_that_doesnt(tmp_path):
+    fake, seen, log = FakePrivate(), Seen(), []
+
+    async def sees(model):
+        return model == "private/kimi-k3"
+    g = Gateway(tmp_path / "gw", lambda: Upstream("https://nano-gpt.com/api/v1", "bearer", lambda: "sk", ("private/kimi-k3", "private/glm-5-3"),
+                                                 provider="NanoGPT", tier="e2ee", chat=lambda m: fake, describe=seen.describe,
+                                                 vision_model="private/glm-5-3-flash", sees=sees),
+                on_event=log.append, http=httpx.AsyncClient(transport=httpx.MockTransport(lambda r: pytest.fail("no plaintext request"))))
+    await g.start()
+    try:
+        async with httpx.AsyncClient(transport=httpx.AsyncHTTPTransport(uds=str(g.model_socket)), base_url="http://gw") as c:
+            h = {"authorization": f"Bearer {g.token}"}
+            msg = {"stream": True, "messages": [{"role": "user", "content": [{"type": "text", "text": "what is on screen?"},
+                                                                             bridge.b64_image(PNG)]}]}
+            await c.post("/v1/messages", headers=h, json={"model": "private/kimi-k3", **msg})
+            assert fake.calls[-1][1][-1]["content"][1]["type"] == "image_url" and not seen.calls
+            assert log[-1]["sees"]
+            await c.post("/v1/messages", headers=h, json={"model": "private/glm-5-3", **msg})
+            assert "zoom box" in fake.calls[-1][1][-1]["content"] and seen.calls
+            assert "sees" not in log[-1]
     finally:
         await g.stop()

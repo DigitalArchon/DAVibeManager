@@ -3,10 +3,11 @@ models speak OpenAI chat completions, sealed on this machine by llm/private_mode
 translates between the two, in the gateway, so the assistant in the sandbox can run on a
 private model while its requests are sealed to an attested enclave before they leave.
 
-Images in a request (screenshots the assistant took, PNGs it read) are not sent to a text-only
-model: a vision helper, a private model too, describes each one for what the assistant is
-doing, and the description takes the image's place. Descriptions are cached by the image's hash,
-since the whole conversation, images included, is sent again with every request.
+Images in a request (screenshots the assistant took, PNGs it read) go as they are to a model that
+can see (`native`). A text-only model never gets them: a vision helper, a private model too,
+describes each one for what the assistant is doing, and the description takes the image's place.
+Descriptions are cached by the image's hash, since the whole conversation, images included, is
+sent again with every request.
 """
 
 from __future__ import annotations
@@ -70,8 +71,22 @@ class ImageDescriber:
         return f"[Image, described for you by a vision model ({self.model}):]\n{self._cache[digest]}"
 
 
-async def to_openai(body: dict, images: ImageDescriber) -> tuple[list[dict], list[dict] | None, dict]:
-    """An Anthropic Messages request as (messages, tools, params) for a chat-completions model."""
+def _image_part(block: dict) -> dict | None:
+    """An Anthropic image block as a chat-completions content part (None: it has no data to send)."""
+    url = _data_url(block)
+    return {"type": "image_url", "image_url": {"url": url}} if url else None
+
+
+def _user_content(parts: list) -> str | list[dict]:
+    """A user message's content: plain text, or text and image parts when it carries images."""
+    if all(isinstance(p, str) for p in parts):
+        return "\n\n".join(parts)
+    return [{"type": "text", "text": p} if isinstance(p, str) else p for p in parts]
+
+
+async def to_openai(body: dict, images: ImageDescriber, native: bool = False) -> tuple[list[dict], list[dict] | None, dict]:
+    """An Anthropic Messages request as (messages, tools, params) for a chat-completions model;
+    `native`: the model reads images itself, so they go as image parts, not descriptions."""
     messages: list[dict] = []
     system = _text_of(body.get("system"))
     if system:
@@ -101,8 +116,9 @@ async def to_openai(body: dict, images: ImageDescriber) -> tuple[list[dict], lis
             context = (msg["content"] or context)[-1500:]
             continue
         # a user message: tool results become "tool" messages (OpenAI wants them right after the
-        # call), and everything else one user message after them
-        rest: list[str] = []
+        # call), and everything else one user message after them. A tool message holds text only,
+        # so a model that sees gets a tool result's images in that user message, each labelled
+        rest: list[str | dict] = []
         for b in content or []:
             kind = b.get("type")
             if kind == "tool_result":
@@ -111,7 +127,12 @@ async def to_openai(body: dict, images: ImageDescriber) -> tuple[list[dict], lis
                     texts = []
                     for p in parts:
                         if p.get("type") == "image":
-                            texts.append(await images.text_for(p, context))
+                            part = _image_part(p) if native else None
+                            if part:
+                                texts.append("[An image: it follows the tool results, in the next message.]")
+                                rest += [f"[The image from the result of {b.get('tool_use_id', 'the tool call')}:]", part]
+                            else:
+                                texts.append(await images.text_for(p, context))
                         elif p.get("type") == "text":
                             texts.append(p.get("text", ""))
                     out = "\n".join(texts)
@@ -123,11 +144,12 @@ async def to_openai(body: dict, images: ImageDescriber) -> tuple[list[dict], lis
             elif kind == "text":
                 rest.append(b.get("text", ""))
             elif kind == "image":
-                rest.append(await images.text_for(b, context))
+                part = _image_part(b) if native else None
+                rest.append(part or await images.text_for(b, context))
             elif kind == "document":
                 rest.append("[A document was attached here; it can't be shown to this model.]")
         if rest:
-            messages.append({"role": "user", "content": "\n\n".join(rest)})
+            messages.append({"role": "user", "content": _user_content(rest)})
     tools = [{"type": "function", "function": {"name": t["name"], "description": t.get("description", ""),
                                                "parameters": t.get("input_schema") or {"type": "object"}}}
              for t in body.get("tools") or [] if t.get("name")]

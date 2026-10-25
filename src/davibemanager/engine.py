@@ -1838,6 +1838,7 @@ class Engine:
                         models=(model, small), provider=prov.name, tier=tier, chat=chat,
                         guard=lambda m: self.models.tee_guard(prov, m),
                         describe=self._describe_image if vision and prov.base_url else None, vision_model=vision,
+                        sees=lambda m: self.models.sees(prov, m),
                         reasoning=self.cfg.settings.builder_reasoning, route=lambda m: self.models.route(prov, m))
 
     async def _describe_image(self, data_url: str, context: str) -> str:

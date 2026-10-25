@@ -1930,7 +1930,7 @@ function settingsPanel() {
   const customBox = h("div", { class: preset === "custom" ? "" : "hidden" },
     h("div", { class: "field" }, h("span", {}, "Model"), h("div", { class: "row" }, model, pickInto(model, "The assistant's model"))),
     h("div", { class: "field" }, h("span", {}, "For quick background tasks"), h("div", { class: "row" }, small, pickInto(small, "Quick tasks"))),
-    h("div", { class: "field" }, h("span", {}, "Describes images to private models"), h("div", { class: "row" }, vision, pickInto(vision, "Vision helper"))),
+    h("div", { class: "field" }, h("span", {}, "Describes images to models that can't see"), h("div", { class: "row" }, vision, pickInto(vision, "Vision helper"))),
     h("button", { class: "small", onclick: () => save({ builder_model: model.value.trim(), builder_small_model: small.value.trim(), builder_vision_model: vision.value.trim() }) }, "Save"));
   const reviewer = s.review_model ? s.review_model.split("|")[1] : "";
   const timeout = h("input", { type: "number", min: 5, max: 1800, value: s.command_timeout, style: "width:90px" });

@@ -185,6 +185,16 @@ class Models:
         except Exception:  # noqa: BLE001 - models still work; their limits are just unknown
             self._caps.setdefault(prov.name, {})
 
+    async def sees(self, prov: Provider, model: str) -> bool:
+        """Whether `model` reads images itself: the provider's vision_overrides, else what the
+        provider reports (its list loaded first if it hasn't been); unknown is no."""
+        override = (prov.vision_overrides or {}).get(model)
+        if override in ("yes", "no"):
+            return override == "yes"
+        if self.known_caps(prov) is None:
+            await self.load_caps(prov)
+        return bool((capabilities.lookup(self._caps.get(prov.name, {}), model) or {}).get("vision"))
+
     def known_caps(self, prov: Provider) -> dict[str, dict] | None:
         """The provider's model list with capabilities and prices, once loaded (None: not yet)."""
         return self._caps.get(prov.name)
