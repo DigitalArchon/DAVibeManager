@@ -556,3 +556,21 @@ async def test_a_terminal_app_is_tried_and_opened_in_a_terminal_window(workspace
     with pytest.raises(UserError, match="runs in a terminal"):
         engine.try_delivery("D1")
     assert len(ran) == 2 and launch.is_terminal_app(delivery.root_dir() / "D1" / "desktop")
+
+
+def test_an_addons_folder_goes_into_the_users_folder_of_that_name_beside_their_files(tmp_path):
+    """mpv's scripts/ of the user's own: the add-on's scripts/ joined it, never set the whole of it aside
+    (their own scripts stopped loading). Removed, only what it added goes, and what it set aside comes back."""
+    home = tmp_path / "home"
+    scripts = home / ".config/mpv/scripts"
+    (scripts / "lib").mkdir(parents=True)
+    (scripts / "mine.lua").write_text("-- the user's own\n")
+    (scripts / "burst.lua").write_text("-- the user's own burst\n")
+    d, meta = _quarantined(tmp_path, "D1", "~/.config/mpv", {"scripts/burst.lua": "-- v1\n", "scripts/burst/helper.lua": "-- h\n"})
+    out = delivery.install(d, meta, tmp_path / "apps", home=home)
+    assert (scripts / "mine.lua").read_text() == "-- the user's own\n" and (scripts / "lib").is_dir()
+    assert (scripts / "burst.lua").read_text() == "-- v1\n" and (scripts / "burst.lua.before-D1").exists()
+    assert sorted(out["installed_files"]) == [str(scripts / "burst.lua"), str(scripts / "burst/helper.lua")]
+    delivery.uninstall(out)
+    assert sorted(p.name for p in scripts.iterdir()) == ["burst.lua", "lib", "mine.lua"]
+    assert (scripts / "burst.lua").read_text() == "-- the user's own burst\n"

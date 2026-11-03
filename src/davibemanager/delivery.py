@@ -165,6 +165,15 @@ def _remove(target: Path) -> None:
         target.unlink()
 
 
+def _remove_empty(folders) -> None:
+    """The folders an add-on made in a folder of the user's, once nothing of it (or theirs) is in them."""
+    for d in sorted(folders, key=lambda x: -len(Path(x).parts)):
+        try:
+            Path(d).rmdir()
+        except OSError:
+            pass                            # not empty, or gone already
+
+
 def _put_back(backups, only: set[str] | None = None) -> None:
     """The user's own files set aside for an add-on (name.before-D<n>) back where they were, if that's free
     (`only`: just those that were at these paths)."""
@@ -244,6 +253,7 @@ def uninstall(meta: dict, backups: list[str] = ()) -> str:
         for f in meta.get("installed_files", []):
             _remove(Path(f))
         _put_back([*meta.get("backups", []), *backups])
+        _remove_empty(meta.get("installed_dirs", []))
         return ""
     path = Path(meta.get("installed_to") or "")
     if meta.get("kind") == "appimage":
@@ -322,23 +332,45 @@ def install(dir_: Path, meta: dict, install_dir: Path, home: Path | None = None,
         ours = set((previous or {}).get("installed_files", []))
         # all checked before anything is changed
         items = [(item, addon_target(dest, item.name, home)) for item in sorted(src.iterdir())]
-        for _, target in items:
+        # a folder of the add-on's where the user has a folder of that name (their own scripts/): its files go
+        # into it, beside theirs, never in place of the whole of it
+        merged = {str(t) for item, t in items if item.is_dir() and t.is_dir() and not t.is_symlink() and str(t) not in ours}
+        files = [(f, t / f.relative_to(item)) for item, t in items if str(t) in merged
+                 for f in sorted(item.rglob("*")) if f.is_file()]
+        for target in [t for _, t in items] + [t for _, t in files]:
             if str(target) in others:
                 raise DeliveryError(f"{target} is another of your apps' add-on: remove that app (My apps) first, "
                                     "or install this one somewhere else.")
         dest.mkdir(parents=True, exist_ok=True)
-        installed, backups = [], []
-        for item, target in items:
+        installed, backups, made = [], [], []
+
+        def set_aside(target: Path) -> None:
+            # the user's own file of that name: kept, beside it
+            backup = target.with_name(f"{target.name}.before-{meta['id']}")
+            if backup.exists():
+                raise DeliveryError(f"{target} and {backup} both exist; move one away first.")
+            target.rename(backup)
+            backups.append(str(backup))
+        for f, target in files:
+            for folder in reversed(target.relative_to(dest).parents[:-1]):
+                if not (dest / folder).exists():
+                    (dest / folder).mkdir()
+                    made.append(str(dest / folder))
             if target.exists() or target.is_symlink():
                 if str(target) in ours:
-                    shutil.rmtree(target) if target.is_dir() and not target.is_symlink() else target.unlink()
+                    _remove(target)
                 else:
-                    # the user's own file of that name: kept, beside it
-                    backup = target.with_name(f"{target.name}.before-{meta['id']}")
-                    if backup.exists():
-                        raise DeliveryError(f"{target} and {backup} both exist; move one away first.")
-                    target.rename(backup)
-                    backups.append(str(backup))
+                    set_aside(target)
+            shutil.copy2(f, target)
+            installed.append(str(target))
+        for item, target in items:
+            if str(target) in merged:
+                continue
+            if target.exists() or target.is_symlink():
+                if str(target) in ours:
+                    _remove(target)
+                else:
+                    set_aside(target)
             if item.is_dir():
                 shutil.copytree(item, target)
             else:
@@ -349,8 +381,11 @@ def install(dir_: Path, meta: dict, install_dir: Path, home: Path | None = None,
         for f in gone:
             _remove(Path(f))
         _put_back([*(previous or {}).get("backups", []), *kept], only=gone)
+        made = list(dict.fromkeys([*made, *(d for d in (previous or {}).get("installed_dirs", []) if Path(d).is_dir())]))
+        _remove_empty(made)
         # installed again (gone back to): the user's files it set aside the first time are still its to put back
-        extra = {"installed_files": installed, "backups": list(dict.fromkeys([*meta.get("backups", []), *backups]))}
+        extra = {"installed_files": installed, "installed_dirs": [d for d in made if Path(d).is_dir()],
+                 "backups": list(dict.fromkeys([*meta.get("backups", []), *backups]))}
     elif meta["kind"] == "appimage":
         src = dir_ / meta["file"]
         if sha256_file(src) != meta["sha256"]:
