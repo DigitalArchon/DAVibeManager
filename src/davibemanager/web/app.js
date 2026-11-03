@@ -1320,7 +1320,8 @@ function appCard(a, inList = false) {
   if (a.upstream || a.changes?.length) btns.append(h("button", { class: "small ghost", onclick: () => startAgain(a) }, "Start again, cleanly"));
   if (inst) btns.append(h("button", { class: "small primary", onclick: () => guarded(() => api("POST", `/api/deliveries/${inst.build}/open`)) }, a.kind === "appimage" ? "Open it" : "Open the folder"));
   if (inst || a.builds?.length) btns.append(h("button", { class: "small", onclick: () => guarded(() => startChat({ mode: "computer", app: a.id })) }, "It doesn't work on this computer"));
-  if (a.previous && a.previous.build !== inst?.build && deliveryOf(a.previous.build)) {
+  // (source code: the earlier copy is still where it was put)
+  if (a.previous && a.previous.build !== inst?.build && deliveryOf(a.previous.build) && a.kind !== "source") {
     btns.append(h("button", { class: "small", onclick: () => guarded(async () => {
       if (!(await confirmModal(`Go back to ${a.previous.version}?`, `${a.name} ${a.previous.version} is put back where ${inst?.version || "the newer one"} is now.`, "Go back"))) return;
       await appAct(a, "rollback"); toast(`Back to ${a.previous.version}.`, "ok"); }) }, `Go back to ${a.previous.version}`));

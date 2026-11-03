@@ -2634,6 +2634,8 @@ class Engine:
                 (d / "addon").mkdir()
                 await podman.copy_out(SANDBOX, path, d / "addon" / delivery_mod.safe_name(Path(path).name, "addon"))
                 files = delivery_mod.check_addon_files(d / "addon")
+                for item in (d / "addon").iterdir():          # where it lands: said now, not at install
+                    delivery_mod.addon_target(delivery_mod.addon_dir(install_to, Path.home()), item.name, Path.home())
                 meta.update(size=sum(f.stat().st_size for f in files if f.is_file()),
                             files=[f.relative_to(d / "addon").as_posix() for f in files][:50],
                             sha256=await asyncio.to_thread(delivery_mod.tree_sha256, d / "addon"))
@@ -2913,8 +2915,12 @@ class Engine:
                 raise UserError(f"Could not install it: {e}") from e
         previous = next((m for m in reversed(self.deliveries()) if m["id"] != did and m.get("app") == meta.get("app")
                          and m.get("status") == "installed"), None) if meta.get("app") else None
+        mine = [m for m in self.deliveries() if meta.get("app") and m.get("app") == meta.get("app")]
+        others = {f for m in self.deliveries() if m["id"] != did and m.get("status") == "installed" and m not in mine
+                  for f in m.get("installed_files", [])}
         try:
-            meta = delivery_mod.install(d, meta, Path(self.cfg.settings.install_dir), previous=previous)
+            meta = delivery_mod.install(d, meta, Path(self.cfg.settings.install_dir), previous=previous, others=others,
+                                        kept=[b for m in mine for b in m.get("backups", [])])
         except (OSError, delivery_mod.DeliveryError) as e:
             raise UserError(f"Could not install it: {e}") from e
         if previous:

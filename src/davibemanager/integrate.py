@@ -162,7 +162,7 @@ class Shelly:
             items = listed if isinstance(listed, list) else next((v for v in listed.values() if isinstance(v, list)), [])
             for e in items:
                 if isinstance(e, dict) and Path(str(e.get("Path") or "")).name == staged.name:
-                    path = e["Path"]
+                    path = os.path.expanduser(str(e["Path"]))     # it says ~/.local/bin/…
                     desktop_id = f"{e['Name']}.desktop" if e.get("Name") else ""
         except IntegrationError:
             pass

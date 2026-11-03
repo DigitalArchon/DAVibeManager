@@ -1,6 +1,7 @@
 """Deliveries: what is copied out of the workspace, what is recorded with it, and installing."""
 
 import asyncio
+from pathlib import Path
 
 import pytest
 from fakesandbox import FakeSandbox, commit_patch, make_appimage, make_runtime, offered
@@ -286,6 +287,11 @@ async def test_an_addon_of_its_own_installs_into_the_apps_folder_keeping_the_use
     old, new = delivery.load(delivery.root_dir() / "D1"), delivery.load(delivery.root_dir() / "D2")
     assert old["status"] == "replaced" and old["replaced_by"] == "D2"
     assert new["app"] == old["app"] and new["replaces"] == "D1" and new["status"] == "installed"
+    # back to the version before ("Go back"), as an add-on is installed: its file in place of the newer one's
+    engine.app_manager.rollback(new["app"])
+    assert (scripts / "burst-screenshot.lua").read_text() == "-- burst v1\n"
+    assert apps.load(new["app"])["installed"]["build"] == "D1"
+    engine.install_delivery("D2")
 
     # removed from My apps: its file goes, and the user's own comes back (set aside by D1, kept by D2)
     (scripts / "keep-me.lua").write_text("-- not the add-on's\n")
@@ -293,6 +299,59 @@ async def test_an_addon_of_its_own_installs_into_the_apps_folder_keeping_the_use
     assert engine.app_manager.remove(new["app"]) == {"left": ""}
     assert sorted(p.name for p in scripts.iterdir()) == ["burst-screenshot.lua", "keep-me.lua"]
     assert (scripts / "burst-screenshot.lua").read_text() == "-- the user's own\n"
+
+
+def _quarantined(tmp_path, did: str, install_to: str, files: dict[str, str]) -> tuple[Path, dict]:
+    """An add-on delivery as quarantine keeps it: its files under addon/, its record."""
+    d = tmp_path / "q" / did
+    for rel, text in files.items():
+        (d / "addon" / rel).parent.mkdir(parents=True, exist_ok=True)
+        (d / "addon" / rel).write_text(text)
+    return d, {"id": did, "kind": "addon", "name": "x", "version": "1", "install_to": install_to,
+               "sha256": delivery.tree_sha256(d / "addon")}
+
+
+def test_an_addons_own_file_or_folder_never_lands_where_addons_cant_go(tmp_path):
+    """~/.local/share is a folder add-ons may go in, but what they put there is checked as a place of
+    its own: not its dbus-1 (D-Bus starts what's in it), the menu's folder, keyrings, or this app's data."""
+    home = tmp_path / "home"
+    (home / ".local/share").mkdir(parents=True)
+    dest = delivery.addon_dir("~/.local/share", home)
+    for name in ("dbus-1", "applications", "keyrings", "davibemanager", "systemd"):
+        with pytest.raises(delivery.DeliveryError, match="can't go"):
+            delivery.addon_target(dest, name, home)
+    assert delivery.addon_target(dest, "fonts", home) == dest / "fonts"
+    d, meta = _quarantined(tmp_path, "D1", "~/.local/share", {"dbus-1/services/x.service": "[D-BUS Service]\nExec=evil\n"})
+    with pytest.raises(delivery.DeliveryError, match="dbus-1"):
+        delivery.install(d, meta, tmp_path / "apps", home=home)
+    assert not (home / ".local/share/dbus-1").exists()
+
+
+def test_an_addon_never_takes_over_another_apps_addon_file(tmp_path):
+    home = tmp_path / "home"
+    scripts = home / ".config/mpv/scripts"
+    d1, m1 = _quarantined(tmp_path, "D1", "~/.config/mpv/scripts", {"main.lua": "-- app X\n"})
+    x = delivery.install(d1, m1, tmp_path / "apps", home=home)
+    d2, m2 = _quarantined(tmp_path, "D2", "~/.config/mpv/scripts", {"main.lua": "-- app Y\n"})
+    with pytest.raises(delivery.DeliveryError, match="another of your apps' add-on"):
+        delivery.install(d2, m2, tmp_path / "apps", home=home, others=set(x["installed_files"]))
+    assert (scripts / "main.lua").read_text() == "-- app X\n" and not (scripts / "main.lua.before-D2").exists()
+
+
+def test_an_addons_update_takes_away_what_the_version_before_put_there_and_it_doesnt(tmp_path):
+    """Its file renamed (burst-screenshot.lua became burst.lua): mpv would load both. The old one goes,
+    and the user's own file of that name, set aside for it, comes back."""
+    home = tmp_path / "home"
+    scripts = home / ".config/mpv/scripts"
+    scripts.mkdir(parents=True)
+    (scripts / "burst-screenshot.lua").write_text("-- the user's own\n")
+    d1, m1 = _quarantined(tmp_path, "D1", "~/.config/mpv/scripts", {"burst-screenshot.lua": "-- v1\n"})
+    v1 = delivery.install(d1, m1, tmp_path / "apps", home=home)
+    d2, m2 = _quarantined(tmp_path, "D2", "~/.config/mpv/scripts", {"burst.lua": "-- v2\n"})
+    v2 = delivery.install(d2, m2, tmp_path / "apps", home=home, previous=v1, kept=v1["backups"])
+    assert sorted(p.name for p in scripts.iterdir()) == ["burst-screenshot.lua", "burst.lua"]
+    assert (scripts / "burst-screenshot.lua").read_text() == "-- the user's own\n"
+    assert v2["installed_files"] == [str(scripts / "burst.lua")]
 
 
 async def test_a_tampered_or_symlinked_addon_is_not_installed(burst, monkeypatch, tmp_path):

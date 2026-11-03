@@ -50,7 +50,7 @@ ADDON_FORBIDDEN = (
     ".config/plasma-workspace", ".kde/Autostart", ".local/share/dbus-1", ".config/fish", ".config/nushell",
     ".config/zsh", ".zsh", ".oh-my-zsh", ".config/bash", ".local/share/bash-completion", ".bashrc.d",
     ".config/sway", ".config/i3", ".config/hypr", ".config/openbox", ".config/labwc", ".config/niri",
-    ".config/river", ".config/lxsession", ".config/xdg/autostart",
+    ".config/river", ".config/lxsession", ".config/xdg/autostart", ".config/uwsm",
     # programs found by name (on PATH in many setups, whatever this one's PATH says)
     ".local/bin", "bin", ".cargo/bin", "go/bin", ".go/bin", ".npm-global", ".deno/bin", ".bun/bin", ".pyenv",
     ".nix-profile", ".local/share/flatpak", ".config/flatpak",
@@ -143,6 +143,38 @@ def addon_dir(install_to: str, home: Path, path: str | None = None) -> Path:
     return dest
 
 
+def addon_target(dest: Path, name: str, home: Path, path: str | None = None) -> Path:
+    """Where one of an add-on's own files or folders lands in its folder `dest` (addon_dir), held to the
+    same rules as the folder: it's a place of its own (~/.local/share is a folder add-ons may go in,
+    its dbus-1 isn't, nor this app's own data folder)."""
+    target = dest / name
+    rel = PurePosixPath(target.relative_to(home.resolve()).as_posix())
+    if forbidden_place(rel):
+        raise DeliveryError(f"The add-on's {name} would be ~/{rel}, where add-ons can't go: things there run by "
+                            "themselves or hold secrets")
+    if on_path(rel, home, path):
+        raise DeliveryError(f"The add-on's {name} would be ~/{rel}, where this computer looks for programs to run "
+                            "(on PATH), so add-ons can't go there")
+    return target
+
+
+def _remove(target: Path) -> None:
+    if target.is_dir() and not target.is_symlink():
+        shutil.rmtree(target)
+    elif target.exists() or target.is_symlink():
+        target.unlink()
+
+
+def _put_back(backups, only: set[str] | None = None) -> None:
+    """The user's own files set aside for an add-on (name.before-D<n>) back where they were, if that's free
+    (`only`: just those that were at these paths)."""
+    for b in dict.fromkeys(backups):
+        backup = Path(b)
+        original = backup.with_name(re.sub(r"\.before-D\d+$", "", backup.name))
+        if original != backup and backup.exists() and not original.exists() and (only is None or str(original) in only):
+            backup.rename(original)
+
+
 def tree_sha256(root: Path) -> str:
     """One hash over a file or folder: every path and its content, in order."""
     h = hashlib.sha256()
@@ -210,16 +242,8 @@ def uninstall(meta: dict, backups: list[str] = ()) -> str:
     source code is left where it is. Returns what was left behind, in words ("" if nothing)."""
     if meta.get("kind") == "addon":
         for f in meta.get("installed_files", []):
-            target = Path(f)
-            if target.is_dir() and not target.is_symlink():
-                shutil.rmtree(target)
-            elif target.exists() or target.is_symlink():
-                target.unlink()
-        for b in dict.fromkeys([*meta.get("backups", []), *backups]):
-            backup = Path(b)
-            original = backup.with_name(re.sub(r"\.before-D\d+$", "", backup.name))
-            if original != backup and backup.exists() and not original.exists():
-                backup.rename(original)
+            _remove(Path(f))
+        _put_back([*meta.get("backups", []), *backups])
         return ""
     path = Path(meta.get("installed_to") or "")
     if meta.get("kind") == "appimage":
@@ -279,10 +303,12 @@ def patch_text(dir_: Path) -> str:
 
 
 def install(dir_: Path, meta: dict, install_dir: Path, home: Path | None = None,
-            previous: dict | None = None) -> dict:
+            previous: dict | None = None, others: set[str] = frozenset(), kept: list[str] = ()) -> dict:
     """Copy the delivery to where it belongs. `previous` is the installed delivery it updates:
-    its AppImage is removed, and its add-on files are replaced without a backup. Returns the
-    delivery's record."""
+    its AppImage is removed, and its add-on files are replaced without a backup (and what it put there
+    that this one doesn't is removed, a file of the user's it set aside put back: `kept`, the backups
+    of the app's deliveries). `others`: the files other apps' add-ons installed, never taken over.
+    Returns the delivery's record."""
     install_dir = install_dir.expanduser()
     home = home or Path.home()
     name = safe_name(meta.get("name"))
@@ -294,10 +320,15 @@ def install(dir_: Path, meta: dict, install_dir: Path, home: Path | None = None,
             raise DeliveryError("The add-on in quarantine no longer matches its recorded sha256; not installed.")
         dest = addon_dir(meta["install_to"], home)
         ours = set((previous or {}).get("installed_files", []))
+        # all checked before anything is changed
+        items = [(item, addon_target(dest, item.name, home)) for item in sorted(src.iterdir())]
+        for _, target in items:
+            if str(target) in others:
+                raise DeliveryError(f"{target} is another of your apps' add-on: remove that app (My apps) first, "
+                                    "or install this one somewhere else.")
         dest.mkdir(parents=True, exist_ok=True)
         installed, backups = [], []
-        for item in sorted(src.iterdir()):
-            target = dest / item.name
+        for item, target in items:
             if target.exists() or target.is_symlink():
                 if str(target) in ours:
                     shutil.rmtree(target) if target.is_dir() and not target.is_symlink() else target.unlink()
@@ -313,7 +344,13 @@ def install(dir_: Path, meta: dict, install_dir: Path, home: Path | None = None,
             else:
                 shutil.copy2(item, target)
             installed.append(str(target))
-        extra = {"installed_files": installed, "backups": backups}
+        # what the version before put there and this one doesn't (a file renamed, another folder) goes
+        gone = {f for f in ours if f not in installed}
+        for f in gone:
+            _remove(Path(f))
+        _put_back([*(previous or {}).get("backups", []), *kept], only=gone)
+        # installed again (gone back to): the user's files it set aside the first time are still its to put back
+        extra = {"installed_files": installed, "backups": list(dict.fromkeys([*meta.get("backups", []), *backups]))}
     elif meta["kind"] == "appimage":
         src = dir_ / meta["file"]
         if sha256_file(src) != meta["sha256"]:

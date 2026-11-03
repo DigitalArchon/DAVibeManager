@@ -274,6 +274,60 @@ async def test_installing_makes_a_menu_entry_of_its_own_and_an_update_takes_its_
     assert app_file.read_bytes() == make_appimage(b"app v1") and apps.load("gthumb")["installed"]["build"] == "D1"
 
 
+async def test_an_update_after_the_install_folder_changed_keeps_the_menu_entry_it_made(gthumb, tmp_path):
+    """The update goes to the new folder, its menu entry made again for it under the same name: of the
+    one before, only its file goes (removing it by its entry's name took the new entry and icon too)."""
+    engine, sb, fake, told = gthumb
+    home = tmp_path / "home"
+    engine.install_delivery("D1")
+    entry, old_file = home / ".local/share/applications/dvm-gthumb.desktop", home / "Applications/gThumb-dvm.AppImage"
+    engine.cfg.settings.install_dir = str(home / "Programs")
+    engine.cfg.settings.changelog_summary = "manual"
+    await engine.app_manager.check("gthumb")
+    sb.appimage = sb.rebuilt = make_appimage(b"app v2")
+    engine.install_delivery(await engine.app_manager.rebuild("gthumb"))
+    new_file = home / "Programs/gThumb-dvm.AppImage"
+    assert new_file.is_file() and not old_file.exists()
+    assert entry.is_file() and f"Exec={new_file}" in entry.read_text()
+    assert Path(entry.read_text().split("Icon=")[1].split()[0]).is_file()
+    assert not next(x for x in engine.app_manager.apps() if x["id"] == "gthumb")["entry_missing"]
+
+
+async def test_an_update_installed_after_switching_to_gear_lever_takes_the_old_ones_place(gthumb, tmp_path, monkeypatch):
+    """Where apps live changed (our own menu entry, then Gear Lever): the one before is uninstalled the
+    way it was installed, not left as a second gThumb in the menu, running the old build."""
+    engine, sb, fake, told = gthumb
+    home = tmp_path / "home"
+    engine.install_delivery("D1")
+    entry, old_file = home / ".local/share/applications/dvm-gthumb.desktop", home / "Applications/gThumb-dvm.AppImage"
+    assert entry.is_file() and old_file.is_file()
+    fake_cli(tmp_path, monkeypatch, "gearlever", GEARLEVER)
+    engine.cfg.settings.app_home = "gearlever"
+    engine.cfg.settings.changelog_summary = "manual"
+    await engine.app_manager.check("gthumb")
+    sb.appimage = sb.rebuilt = make_appimage(b"app v2")
+    engine.install_delivery(await engine.app_manager.rebuild("gthumb"))
+    assert apps.load("gthumb")["installed"]["via"] == "gearlever"
+    assert not entry.exists() and not old_file.exists()
+
+
+async def test_shelly_saying_where_it_put_an_app_from_the_home_folder_is_understood(gthumb, tmp_path, monkeypatch):
+    """Its listing writes the path as ~/…: kept as the real path, "Open it" finds the app there."""
+    engine, sb, fake, told = gthumb
+    fake_cli(tmp_path, monkeypatch, "shelly", SHELLY.replace('"Path": dest', '"Path": "~/.local/share/shelly/appimages/gThumb-dvm.AppImage"'))
+    engine.cfg.settings.app_home = "shelly"
+    meta = engine.install_delivery("D1")
+    assert meta["installed_to"] == str(tmp_path / "home/.local/share/shelly/appimages/gThumb-dvm.AppImage")
+    assert Path(meta["installed_to"]).is_file()
+
+
+def test_a_second_app_of_a_long_name_gets_an_id_of_its_own():
+    name = "GNOME Shell extension Dash to Dock with my tweaks"
+    first = apps.create(name, "appimage", "https://github.com/micheleg/dash-to-dock.git")
+    second = apps.create(name, "appimage", "https://github.com/someone/dash-to-dock.git")
+    assert first["id"] != second["id"] and apps.check_id(second["id"]) == second["id"] and apps.load(second["id"])
+
+
 async def test_an_app_is_exported_as_its_appimage_to_run_elsewhere(gthumb, tmp_path):
     """The build as delivered (checked), in Downloads, under a name that says what it is: the installed
     one, else the newest; never one set aside, nor a changed file."""

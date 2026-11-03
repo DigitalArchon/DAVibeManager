@@ -104,9 +104,9 @@ def new_id(name: str) -> str:
     if base not in taken:
         return base
     n = 2
-    while f"{base}-{n}" in taken:
+    while (candidate := f"{base[:40 - len(str(n))].rstrip('-')}-{n}") in taken:
         n += 1
-    return f"{base}-{n}"
+    return candidate                    # as check_id takes it: 41 characters at most
 
 
 def create(name: str, kind: str, upstream: str, **fields) -> dict:

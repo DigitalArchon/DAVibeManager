@@ -1246,16 +1246,26 @@ class AppManager:
         """A build installed under another menu name than the one before it (an imported app, given the
         name the user chose) is a second entry where apps live: the one before it goes, unless another
         app of the user's is installed there too. Best effort: it's said in the log if it can't be."""
-        if not before or not before.get("path") or before.get("path") == now.get("path") or before.get("via") != now.get("via"):
+        if not before or not before.get("path") or before.get("path") == now.get("path"):
             return
         if any((x.get("installed") or {}).get("path") == before["path"] for x in apps.list_all() if x["id"] != a["id"]):
             return
         s = self.e.cfg.settings
-        integrator = integrate.by_key(before["via"], Path(s.install_dir), data_dir() / "icons")
         meta = delivery_mod.load(delivery_mod.root_dir() / before.get("build", "")) if before.get("build") else None
+        sha = (meta or {}).get("sha256", "")
         try:
+            if before.get("desktop_id") and before.get("desktop_id") == now.get("desktop_id") \
+                    and {before.get("via"), now.get("via")} <= {"menu", "omarchy"}:
+                # our own entry, made again by this install for the new file (the install folder changed):
+                # only the old file goes (uninstalling it by its entry's name would take the new entry too)
+                old = Path(before["path"])
+                if old.is_file() and not old.is_symlink() and sha and delivery_mod.sha256_file(old) == sha:
+                    old.unlink()
+                return
+            # also when where apps live has changed since (our menu entry, then Gear Lever): the way it was installed
+            integrator = integrate.by_key(before["via"], Path(s.install_dir), data_dir() / "icons")
             if integrator is not None:
-                integrator.uninstall(before, a, (meta or {}).get("sha256", ""))
+                integrator.uninstall(before, a, sha)
         except (integrate.IntegrationError, OSError) as e:
             self.e.log("replaced_not_removed", app=a["id"], path=before["path"], error=str(e))
 
@@ -1304,8 +1314,11 @@ class AppManager:
         prev = (a.get("previous") or {}).get("build")
         if not prev:
             raise UserError("There's no earlier version to go back to.")
+        if a.get("kind") == "source":
+            raise UserError(f"The earlier version's source code is still where it was put: {a['previous'].get('path') or 'in your install folder'}.")
         try:
-            meta = self.install(prev)
+            # an add-on as any of its installs is made (its files in place of the newer one's)
+            meta = self.install(prev) if a.get("kind") == "appimage" else self.e.install_delivery(prev)
         except (OSError, delivery_mod.DeliveryError, appimage.AppImageError, integrate.IntegrationError) as e:
             raise UserError(f"Could not go back to it: {e}") from e
         self.e.log("rolled_back", app=app_id, to=prev)
