@@ -514,12 +514,17 @@ class Engine:
         if "builder_model" in data and not str(data["builder_model"]).strip():
             raise UserError("The assistant needs a model: type one, or pick GLM 5.3, private GLM 5.3 or Claude Opus 5.5.")
         chosen = {k: str(data.get(k, getattr(s, k)) or "").strip()
-                  for k in ("builder_model", "builder_small_model", "builder_vision_model")}
+                  for k in ("builder_model", "builder_small_model", "builder_vision_model", "review_model")}
         if is_private_mode(chosen["builder_model"]) and any(
                 v and not is_private_mode(v) for v in (chosen["builder_small_model"], chosen["builder_vision_model"])):
             raise UserError("With a private model, the models for quick tasks and for images must be private too (or "
                             "empty, to use the same one): what the assistant is given would otherwise go to them in "
                             "the clear.")
+        reviewer = chosen["review_model"].partition("|")[2]
+        if is_private_mode(chosen["builder_model"]) and reviewer and not is_private_mode(reviewer):
+            raise UserError("With a private model, the reviewer must be private too: second opinions read the commands "
+                            "your private chats propose. Choose a private reviewer first (Second opinions), or pick "
+                            "Private GLM 5.3, which sets one.")
         if "install_dir" in data:
             folder = str(data["install_dir"]).strip()
             where = Path(os.path.expanduser(folder)) if folder else None
@@ -1446,8 +1451,20 @@ class Engine:
             raise UserError(f"The reviewer couldn't be asked: {e}") from e
         return {"model": model, "tier": tier, "text": text.strip(), **self._parse_review(text)}
 
+    def _private_review_check(self) -> None:
+        """A command a private chat proposes goes to a reviewer only sealed too: it, and what it's for, come
+        from that chat (Settings refuses the two together; a chat that ran private stays so: conv.sealed)."""
+        if not (is_private_mode(self.cfg.settings.builder_model) or self.conv.sealed):
+            return
+        _, model, _ = self.models.review_target()
+        if not is_private_mode(model):
+            raise UserError(f"This chat is private, and the reviewer ({model}) isn't: it would be given the command and "
+                            "what it's for in the clear, so it wasn't asked. Choose a private reviewer in Settings "
+                            "(Second opinions).")
+
     async def review_request(self, rid: int, auto: bool = False) -> dict:
         r = self._request(rid)
+        self._private_review_check()
         command = r.command
         context = [f"Computer: {_local_os()}, desktop: {_desktop()}",
                    f"Stated purpose: {r.purpose}", f"Command{' (as administrator)' if r.as_root else ''}: {r.command}",

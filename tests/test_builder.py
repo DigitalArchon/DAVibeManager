@@ -1036,6 +1036,7 @@ async def test_a_private_chat_stays_private(builder_env):
     engine, _, _, clients = builder_env
     s = engine.cfg.settings
     s.builder_model, s.builder_small_model, s.builder_vision_model = "private/glm-5-3", "", ""
+    s.review_model = "Fake|private/glm-5-3"                          # as the private preset sets it
     with pytest.raises(UserError, match="must be private too"):
         engine.save_settings({"builder_small_model": "z-ai/glm-5.3-flash"})
     with pytest.raises(UserError, match="must be private too"):

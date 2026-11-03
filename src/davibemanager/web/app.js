@@ -1957,7 +1957,8 @@ function settingsPanel() {
       radio("so", "all", s.second_opinion, "On every command", null, () => save({ second_opinion: "all" })),
       radio("so", "off", s.second_opinion, "Only when I ask", null, () => save({ second_opinion: "off" })),
       isPrivate(s.builder_model) && !isPrivate(reviewer) ? h("div", { class: "warnbox small" },
-        `The assistant is private, but second opinions go to ${reviewer || "no reviewer"} in the clear: the commands it reads come from your private chat. `,
+        reviewer ? `The assistant is private, but the reviewer, ${reviewer}, isn't: the commands it would read come from your private chats, so second opinions aren't asked for until it's private too. `
+          : "The assistant is private, and there's no reviewer: a private one gives second opinions without anything leaving the seal. ",
         nano ? h("button", { class: "small", onclick: () => save({ review_model: `${nano.name}|private/glm-5-3` }, "Second opinions are private too now.") }, "Make them private too") : null) : null,
       h("div", { class: "row small" }, "Reviewer: ", h("span", { class: "mono" }, reviewer || "not set"), isPrivate(reviewer) ? h("span", { class: "chip private" }, "private") : null,
         nano?.base_url ? h("button", { class: "small", onclick: () => pickModel("Reviewer", nano.name, (id) => api("POST", "/api/settings", { review_model: `${nano.name}|${id}` })) }, "Change") : null)),

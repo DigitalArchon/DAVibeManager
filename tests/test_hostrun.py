@@ -227,6 +227,38 @@ async def test_changes_get_an_automatic_second_opinion(env):
     await task
 
 
+async def test_a_private_chats_commands_go_only_to_a_private_reviewer(env):
+    """A command a private chat proposes, and what it's for, come from that chat: Settings won't put a
+    plain reviewer beside a private assistant, and one set before that, or beside a chat that ran
+    private, isn't asked (automatically or when asked to), and nothing goes to it."""
+    from davibemanager.engine import UserError
+    engine, fake, _ = env
+    s = engine.cfg.settings
+    private = {"builder_model": "private/glm-5-3", "builder_small_model": "", "builder_vision_model": ""}
+    with pytest.raises(UserError, match="reviewer must be private too"):
+        engine.save_settings(private)
+    assert s.builder_model != "private/glm-5-3"
+    engine.save_settings({"review_model": "Fake|private/glm-5-3"})      # a private one first: then it may be
+    engine.save_settings(private)
+    with pytest.raises(UserError, match="reviewer must be private too"):
+        engine.save_settings({"review_model": "Fake|reviewer-model"})
+    engine.save_settings({"review_model": ""})                         # or none
+    s.review_model = "Fake|reviewer-model"                             # set before the check existed
+    asked = len(fake.requests)
+    task, rid = await ask(engine, {"command": "rm -rf ~/.config/gthumb", "purpose": "reset my photo app",
+                                   "risk": "modifying"})
+    await wait_for(lambda: engine.requests[rid].review.get("status") == "error", "the refusal on its card")
+    assert "This chat is private" in engine.requests[rid].review["error"]
+    with pytest.raises(UserError, match="This chat is private"):
+        await engine.review_request(rid)
+    s.builder_model, engine.conv.sealed = "z-ai/glm-5.3", True         # a chat that ran private
+    with pytest.raises(UserError, match="This chat is private"):
+        await engine.review_request(rid)
+    assert len(fake.requests) == asked
+    engine.decline_request(rid)
+    await task
+
+
 async def test_a_decision_after_the_assistant_stopped_waiting_goes_as_a_message(env):
     engine, _, _ = env
     task, rid = await ask(engine, {"command": "uname -r", "purpose": "kernel", "risk": "read_only"})

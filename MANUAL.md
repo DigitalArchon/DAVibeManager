@@ -137,8 +137,8 @@ subscription), or private GLM 5.3, Claude Opus 5.5 or any other in Settings.
 
 With a private model, the chat is sealed end to end: on this computer, to an enclave whose
 attestation has been checked, so NanoGPT passes it on without being able to read it. Everything of
-the chat goes that way (its quick tasks and pictures too, and second opinions with the Private GLM 5.3
-choice), or not at all: a chat that ran on a private model can't be carried on with one in the clear,
+the chat goes that way (its quick tasks and pictures too, and second opinions: the reviewer is private
+too, or there's none), or not at all: a chat that ran on a private model can't be carried on with one in the clear,
 since all of it would go along. Start a new chat for that. NanoGPT still sees how much is sent, and when.
 
 ## Which host runs the model
