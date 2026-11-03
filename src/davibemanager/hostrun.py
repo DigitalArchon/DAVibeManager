@@ -129,9 +129,14 @@ class RunResult:
 # can't signal it (or anything it starts) any more: stopping it, or its time limit, would do nothing.
 # So root's side stops it itself: the command runs in a process group of its own, and a watcher
 # ends that group when this app closes its end of a pipe (the wrapper's stdin), which it does to
-# stop it, and which also happens if this app ends.
+# stop it, and which also happens if this app ends. Once it runs as root (the password given), it says
+# so (ROOT_RUNNING): the command's time limit starts there, not while the password is asked for. And
+# if this app gave up meanwhile (stopped, or out of time: its pipe is closed), nothing is started.
+ROOT_RUNNING = b"@@dvm-root-running\n"
 ROOT_WRAPPER = r"""
 exec 3<&0 </dev/null
+if read -t 0 -u 3; then exit 125; fi
+printf '@@dvm-root-running\n'
 setsid /bin/bash -c "$1" 3<&- &
 pid=$!
 ( read -r _ <&3; kill -s TERM -- "-$pid" 2>/dev/null; sleep 3; kill -s KILL -- "-$pid" 2>/dev/null ) >/dev/null 2>&1 &
@@ -144,8 +149,11 @@ exit "$rc"
 """
 
 
+PROMPT_TIMEOUT = 10 * 60            # how long the password may take, before the command's own time limit
+
+
 def argv_for(command: str, as_root: bool) -> list[str]:
-    return ["pkexec", "/bin/sh", "-c", ROOT_WRAPPER, "sh", command] if as_root else ["/bin/bash", "-c", command]
+    return ["pkexec", "/bin/bash", "-c", ROOT_WRAPPER, "sh", command] if as_root else ["/bin/bash", "-c", command]
 
 
 async def run(command: str, *, as_root: bool = False, timeout: float = DEFAULT_TIMEOUT,
@@ -159,20 +167,46 @@ async def run(command: str, *, as_root: bool = False, timeout: float = DEFAULT_T
         stderr=asyncio.subprocess.STDOUT, env=host_env(), cwd=os.path.expanduser("~"), start_new_session=True)
     chunks: list[bytes] = []
     size = 0
+    running = asyncio.Event()           # as root: the password was given, the command runs
+    if not as_root:
+        running.set()
+
+    def keep(chunk: bytes) -> None:
+        nonlocal size
+        if size < MAX_OUTPUT:
+            chunks.append(chunk[:MAX_OUTPUT - size])
+        size += len(chunk)
 
     async def read():
-        nonlocal size
+        pending = b""                   # before root's side says it runs: pkexec's own words, or that
         while chunk := await proc.stdout.read(65536):
-            if size < MAX_OUTPUT:
-                chunks.append(chunk[:MAX_OUTPUT - size])
-            size += len(chunk)
+            if not running.is_set():
+                pending += chunk
+                if ROOT_RUNNING not in pending:
+                    continue
+                before, _, chunk = pending.partition(ROOT_RUNNING)
+                pending = b""
+                keep(before)
+                running.set()
+            keep(chunk)
+        keep(pending)
         await proc.wait()
 
     reader = asyncio.ensure_future(read())
     waits = [reader] + ([asyncio.ensure_future(cancel.wait())] if cancel else [])
     timed_out = still_running = False
     try:
-        done, _ = await asyncio.wait(waits, timeout=min(max(timeout, 1), MAX_TIMEOUT), return_when=asyncio.FIRST_COMPLETED)
+        if not running.is_set():
+            # the password is asked for first: that time isn't the command's
+            asked = asyncio.ensure_future(running.wait())
+            first, _ = await asyncio.wait([asked, *waits], timeout=PROMPT_TIMEOUT, return_when=asyncio.FIRST_COMPLETED)
+            asked.cancel()
+            # ended there (refused, the dialog closed), stopped, or nobody gave the password in time: as below
+            done = None if asked in first and reader not in first else first - {asked}
+        else:
+            done = None
+        if done is None:
+            done, _ = await asyncio.wait(waits, timeout=min(max(timeout, 1), MAX_TIMEOUT), return_when=asyncio.FIRST_COMPLETED)
         if reader not in done:
             timed_out = cancel is None or not cancel.is_set()
             still_running = not await _stop(proc, reader)

@@ -2,6 +2,7 @@
 
 import asyncio
 import os
+import subprocess
 import signal
 
 import pytest
@@ -24,7 +25,7 @@ def test_sudo_is_refused_in_favour_of_as_root_and_hidden_characters_are_removed(
     r = HostRequest.create(1, {"command": "ls‮ -la", "purpose": "x", "risk": "read_only"})
     assert "‮" not in r.command and r.hidden
     argv = hostrun.argv_for("apt update", True)
-    assert argv[:2] == ["pkexec", "/bin/sh"] and argv[-1] == "apt update"     # the command is an argument, never pasted in
+    assert argv[:2] == ["pkexec", "/bin/bash"] and argv[-1] == "apt update"     # the command is an argument, never pasted in
 
 
 def test_only_a_command_that_has_not_run_can_be_edited():
@@ -51,7 +52,7 @@ async def test_running_is_bounded_and_has_no_terminal():
 
 def root_like(command: str) -> list[str]:
     """How an administrator's command is started, without pkexec (the wrapper as root runs it)."""
-    return ["/bin/sh", "-c", hostrun.ROOT_WRAPPER, "sh", command]
+    return ["/bin/bash", "-c", hostrun.ROOT_WRAPPER, "sh", command]
 
 
 async def test_an_administrators_command_is_stopped_by_roots_side_when_asked_or_out_of_time(tmp_path):
@@ -79,11 +80,30 @@ async def test_a_command_that_wont_stop_is_reported_as_maybe_still_running(monke
     monkeypatch.setattr(hostrun, "_signal", signalled.append)       # as with root's processes: no effect
     monkeypatch.setattr(hostrun, "STOP_GRACE", 0.2)
     monkeypatch.setattr(hostrun, "STOP_WAIT", 0.2)
-    res = await hostrun.run("x", as_root=True, timeout=1, argv=["/bin/sh", "-c", "exec sleep 20"])
+    res = await hostrun.run("x", as_root=True, timeout=1, argv=["/bin/sh", "-c", "printf '@@dvm-root-running\\n'; exec sleep 20"])
     assert res.still_running and res.exit_code is None and res.seconds < 5
     proc = signalled[0]
     os.killpg(proc.pid, signal.SIGKILL)
     await proc.wait()
+
+
+async def test_an_administrators_time_limit_starts_once_the_password_is_given():
+    """The password dialog may wait for the user: that isn't the command's time (a slow password was
+    stopped mid-dialog, or the command ran after it was said to be stopped)."""
+    res = await hostrun.run("x", as_root=True, timeout=1, argv=[
+        "/bin/sh", "-c", "sleep 1.5; printf '@@dvm-root-running\\n'; echo ran"])     # 1.5 s at the password
+    assert not res.timed_out and res.exit_code == 0 and res.output == "ran\n"
+
+
+def test_nothing_runs_as_administrator_once_the_app_has_given_up(tmp_path):
+    """Stopped, or out of time, while the password was asked for: the app's pipe is closed by the time
+    root's side starts, and it starts nothing."""
+    mark = tmp_path / "ran"
+    r, w = os.pipe()
+    os.close(w)
+    p = subprocess.run(["/bin/bash", "-c", hostrun.ROOT_WRAPPER, "sh", f"touch {mark}"], stdin=r, capture_output=True)
+    os.close(r)
+    assert p.returncode == 125 and not mark.exists() and b"@@dvm-root-running" not in p.stdout
 
 
 # ---- through the engine, as the assistant's tool sees it
