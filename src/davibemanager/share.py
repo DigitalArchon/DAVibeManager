@@ -23,6 +23,7 @@ sharing that version back, since the copies elsewhere don't have the fix.
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import io
 import json
@@ -30,6 +31,7 @@ import re
 import secrets
 import time
 import zipfile
+import zlib
 from pathlib import Path
 from typing import TYPE_CHECKING
 from urllib.parse import urlsplit
@@ -49,6 +51,7 @@ MAX_FILE = 25 << 20                 # the whole .vibe file
 MAX_MEMBER = 8 << 20                # one file in it, unpacked
 MAX_TOTAL = 30 << 20                # all of them, unpacked
 REVIEW_CHARS = 180_000              # the most of the changes the reviewer is given
+MAX_TEXT = 64 << 10                  # a build script, a change's notes: as at delivery, and read whole by the reviewer
 NAMES = re.compile(r"manifest\.json|README\.txt|build\.sh|changes/[a-z0-9-]{1,48}\.(md|patch)")
 REF = re.compile(r"[A-Za-z0-9][A-Za-z0-9._+/-]{0,99}")
 PACKAGE = re.compile(r"[a-z0-9][a-z0-9+.-]{0,80}")
@@ -239,6 +242,18 @@ def pack(a: dict) -> bytes:
     title = f"{a['name']}, as changed with DA Vibe Manager"
     files["README.txt"] = README.format(name=a["name"], line="=" * len(title), upstream=a["upstream"], base=a["base_ref"],
                                         repo=repo, patches=" ".join(f"../changes/{c['id']}.patch" for c in changes))
+    # what read() takes, and nothing it would refuse: a file that can't be imported isn't one to give anyone
+    titles = {f"changes/{c['id']}.patch": c["title"] for c in changes}
+    for name, text in files.items():
+        size = len(text.encode())
+        if name in titles and not apps.split_patch(text):
+            raise ShareError(f"“{titles[name]}” isn't kept as a change of its own yet: build {a['name']} once (or "
+                             "look for a new version), then share it.")
+        if size > MAX_MEMBER or ((name == "build.sh" or name.endswith(".md")) and size > MAX_TEXT):
+            what = f"“{titles[name]}”" if name in titles else "Its build script" if name == "build.sh" else f"The notes of {name}"
+            raise ShareError(f"{what} is too big to share.")
+    if sum(len(t.encode()) for t in files.values()) > MAX_TOTAL:
+        raise ShareError(f"{a['name']}'s changes are too big to share all together.")
     out = io.BytesIO()
     with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as z:
         for name, text in [("manifest.json", json.dumps(manifest, indent=1, ensure_ascii=False))] + sorted(files.items()):
@@ -266,7 +281,7 @@ def read(path: Path) -> dict:
         raise ShareError("That file is too big to be a shared app.")
     try:
         z = zipfile.ZipFile(path)
-    except (zipfile.BadZipFile, OSError):
+    except (zipfile.BadZipFile, OSError, ValueError):     # ValueError: a name that isn't one (bad UTF-8)
         raise ShareError("That isn't a shared app (a .vibe file).") from None
     with z:
         infos = {i.filename: i for i in z.infolist() if not i.is_dir()}
@@ -274,7 +289,11 @@ def read(path: Path) -> dict:
             raise ShareError("That isn't a shared app (it has no manifest.json).")
         if sum(i.file_size for i in infos.values()) > MAX_TOTAL or len(infos) > 3 + 2 * apps.MAX_CHANGES:
             raise ShareError("That file holds too much to be a shared app.")
-        files = {name: _text(z, i) for name, i in infos.items() if NAMES.fullmatch(name)}
+        try:
+            files = {name: _text(z, i) for name, i in infos.items() if NAMES.fullmatch(name)}
+        except (zipfile.BadZipFile, zlib.error, NotImplementedError, RuntimeError, EOFError, OSError) as e:
+            # a checksum that's wrong, a way of packing or a password zipfile doesn't take
+            raise ShareError(f"That file is damaged, so it can't be read ({e}).") from None
     try:
         m = json.loads(files.pop("manifest.json"))
     except ValueError:
@@ -294,13 +313,15 @@ def _checked(a, files: dict) -> dict:
         raise ShareError("The app in it has no name.")
     upstream = str(a.get("upstream") or "").strip()
     try:
+        if len(upstream) > 300 or re.search(r"[\s\x00-\x1f\x7f]", upstream):
+            raise InsecureURL("that isn't an address")       # (urlsplit drops a line break in it, and goes on)
         check_url(upstream, "Its official source")
         if not upstream.startswith("https://"):
             raise InsecureURL("it isn't https://")
         if is_local_host(urlsplit(upstream).hostname):
             raise InsecureURL("it's on a local network, not a public project")
-    except InsecureURL as e:
-        raise ShareError(f"Its source isn't a public https:// repository ({upstream[:100]}): {e}") from None
+    except ValueError as e:                                     # InsecureURL, or one urlsplit can't take
+        raise ShareError(f"Its source isn't a public https:// repository ({upstream[:100]!r}): {e}") from None
     base = str(a.get("base_ref") or "")
     if not REF.fullmatch(base) or ".." in base:
         raise ShareError("The release it's built on isn't a release's name.")
@@ -328,6 +349,10 @@ def _checked(a, files: dict) -> dict:
         files.pop(extra)                    # notes or patches of no change it lists
     if not files.get("build.sh", "").strip():
         raise ShareError("It has no build script.")
+    # what the reviewer reads whole, and the user before building: as long as at delivery, at most
+    for n, text in files.items():
+        if (n == "build.sh" or n.endswith(".md")) and len(text.encode()) > MAX_TEXT:
+            raise ShareError(f"{n} in it is too long ({MAX_TEXT >> 10} KB at most).")
     sh = a.get("share") if isinstance(a.get("share"), dict) else {}
     share_id = str(sh.get("id") or "")
     works = [{"system": re.sub(r"[\x00-\x1f\x7f]", "", str(w.get("system") or ""))[:80], "sig": str(w.get("sig") or ""),
@@ -340,45 +365,113 @@ def _checked(a, files: dict) -> dict:
     return got
 
 
+def imported_as_own(a: dict | None) -> bool:
+    """An app imported as one of its own, under the name the user gave it (not changes added to one of
+    theirs): its builds are named so in the menu (AppManager.menu_name), whatever is added to it later."""
+    imp = (a or {}).get("imported") or {}
+    return bool(imp) and bool(imp.get("own") or not imp.get("into"))
+
+
+def _kept_own(mine: dict) -> dict:
+    return {"own": True} if imported_as_own(mine) else {}
+
+
 def _rev_of(r) -> dict:
     """A revision from a file, checked; a new one when it has none (a file from before them)."""
     if not isinstance(r, dict) or not REV.fullmatch(str(r.get("id") or "")):
         return new_rev()
     history = [h for h in (r.get("history") if isinstance(r.get("history"), list) else []) if isinstance(h, str) and REV.fullmatch(h)]
-    return {"id": r["id"], "history": history[-HISTORY:]}
+    return {"id": str(r["id"]), "history": history[-HISTORY:]}
 
 
 _BASE85 = re.compile(r"[0-9A-Za-z!#$%&()*+;<=>?@^_`{|}~-]+")
+SHOWN_BINARY = 1 << 20               # a "binary" file shown as the text it is, at most
+# names of files that are code or text: one sent as a binary patch must be read, or be said not to be
+TEXTLIKE = re.compile(r"\.(c|h|cc|cpp|cxx|hh|hpp|py|sh|bash|zsh|fish|js|mjs|ts|rs|go|java|kt|rb|pl|pm|php|lua|vala|vapi|cs|"
+                      r"swift|m|mm|ui|xml|json|toml|ya?ml|ini|cfg|conf|desktop|service|cmake|mk|make|meson|txt|md|in|"
+                      r"am|ac|patch|diff|spec|po|qml|glade|gschema)$|(^|/)(Makefile|CMakeLists\.txt|meson\.build|"
+                      r"meson_options\.txt|configure|PKGBUILD|build\.sh)$", re.I)
+
+
+def _literal(lines: list[str]) -> bytes | None:
+    """A file as a "literal" block of a git binary patch holds it (each line: its length as a letter,
+    then base85 of zlib-packed bytes), or None when it can't be read or is too big to show."""
+    data = bytearray()
+    for line in lines:
+        c = line[:1]
+        n = ord(c) - 64 if "A" <= c <= "Z" else ord(c) - 70 if "a" <= c <= "z" else 0    # A=1 … z=52
+        try:
+            data += base64.b85decode(line[1:])[:n]
+        except ValueError:
+            return None
+    unpack = zlib.decompressobj()
+    try:
+        out = unpack.decompress(bytes(data), SHOWN_BINARY + 1)      # never more than that, whatever it claims
+    except zlib.error:
+        return None
+    return out if len(out) <= SHOWN_BINARY else None
 
 
 def for_review(patch: str) -> tuple[str, list[dict]]:
-    """A patch as a reviewer can read it: each binary file (git's "GIT binary patch", its bytes
-    encoded as lines of text) as one line saying what it is, since to a reader they're only noise,
-    and a lot of it. Returns (text, [{"file", "bytes"}] of the binary files)."""
+    """A patch as a reviewer (and the user) can read it: each binary file (git's "GIT binary patch",
+    its bytes encoded as lines of text) as one line saying what it is, since to a reader they're only
+    noise, and a lot of it. One that is text all the same (code can be sent as a binary patch, so that
+    nobody reads it) is shown as the text it is. Returns (text, [{"file", "bytes", "hidden"}] of the
+    binary files that can't be read: "hidden", one whose name says it's code or text)."""
     out: list = []
     binaries: list[dict] = []
-    file, inside = "", False
+    file, inside, block = "", False, None
+
+    def done(b: dict) -> None:
+        kind, lines = b.pop("_kind", ""), b.pop("_lines", [])
+        data = _literal(lines) if kind == "literal" else None
+        try:
+            text = data.decode("utf-8") if data is not None and b"\0" not in data else None
+        except UnicodeDecodeError:
+            text = None
+        if text is not None:
+            b["text"] = text
+        elif TEXTLIKE.search(b["file"]):
+            b["hidden"] = True
     for line in patch.split("\n"):
         if inside:
-            m = re.fullmatch(r"(?:literal|delta) (\d+)", line)
+            m = re.fullmatch(r"(literal|delta) (\d+)", line)
             if m:
-                if binaries[-1]["bytes"] is None:
-                    binaries[-1]["bytes"] = int(m.group(1))
+                b = binaries[-1]
+                block = None
+                if b["bytes"] is None:          # the first block: the file as the change makes it
+                    b["bytes"], b["_kind"], block = int(m.group(2)), m.group(1), b["_lines"]
                 continue
-            if line == "" or _BASE85.fullmatch(line):
+            if line == "":
+                block = None
+                continue
+            if _BASE85.fullmatch(line):
+                if block is not None:
+                    block.append(line)
                 continue
             inside = False
+            done(binaries[-1])
         if line.startswith("diff --git "):
             file = line.rsplit(" b/", 1)[-1]
         if line == "GIT binary patch":
             inside = True
-            binaries.append({"file": file, "bytes": None})
+            binaries.append({"file": file, "bytes": None, "_lines": []})
             out.append(binaries[-1])
             continue
         out.append(line)
-    text = "\n".join(f"[binary file {x['file']}, {x['bytes'] if x['bytes'] is not None else '?'} bytes: not shown, "
-                     "its contents can't be read as text]" if isinstance(x, dict) else x for x in out)
-    return text, binaries
+    if inside:
+        done(binaries[-1])
+
+    def shown(x: dict) -> str:
+        size = x["bytes"] if x["bytes"] is not None else "?"
+        if "text" in x:
+            return (f"[{x['file']}: sent as a binary file, but it's text ({size} bytes), so here it is as it reads:]\n"
+                    f"{x['text']}\n[end of {x['file']}]")
+        return (f"[binary file {x['file']}, {size} bytes: not shown, its contents can't be read as text"
+                + ("; its name says it's code or text, so it should have been sent as text: what it does can't be "
+                   "checked]" if x.get("hidden") else "]"))
+    text = "\n".join(shown(x) if isinstance(x, dict) else x for x in out)
+    return text, [{k: v for k, v in b.items() if k != "text"} for b in binaries if "text" not in b]
 
 
 _CAUTION = {"stop": 3, "care": 2, "": 1, "ok": 0}       # an unclear verdict is never the safest
@@ -396,15 +489,24 @@ def combined(outs: list[tuple[str, dict]]) -> dict:
             "verdict": worst["verdict"], "level": worst["level"]}
 
 
+def verdict_level(verdict: str, ok: tuple[str, ...]) -> str:
+    """A reviewer's verdict as stop, care or ok ("" when it's none of them): anything that says no (not
+    safe, unsafe, don't, would not) is stop, and only a plain yes is ok (`ok`: what one starts with)."""
+    v = " ".join(re.sub(r"[^a-z' ]+", " ", verdict.lower().replace("\u2019", "'")).split())
+    if re.search(r"\b(do not|don't|dont|never|not|isn't|aren't|wouldn't|shouldn't|unsafe|dangerous|malicious|avoid)\b", v):
+        return "stop"
+    if re.search(r"\b(care|careful|caution|cautious|carefully)\b", v):
+        return "care"
+    return "ok" if any(v == w or v.startswith(w + " ") for w in ok) else ""
+
+
 def parse_review(text: str) -> dict:
     def line(key: str) -> str:
         # the last: the reviewer may quote what it read, and that can hold a "VERDICT:" line of its own
         found = re.findall(rf"^\W*{key}\W*:\s*(.+)$", text, re.I | re.M)
         return found[-1].strip().strip("*_ ").strip() if found else ""
     verdict = line("VERDICT")
-    v = verdict.lower()
-    level = "stop" if re.search(r"\b(do not|don't|never)\b", v) else "care" if "care" in v or "careful" in v \
-        else "ok" if "safe" in v or "fine" in v else ""
+    level = verdict_level(verdict, ok=("looks safe", "safe", "looks fine", "fine"))
     concerns = line("CONCERNS")
     if re.match(r"(?i)^(none|no|n/?a|nothing)\b", concerns):
         concerns = ""
@@ -486,8 +588,8 @@ class Sharing:
                   if (x.get("share") or {}).get("id") == a["share"]["id"]]
         same = [{"id": x["id"], "name": x["name"], "changes": [c["title"] for c in x.get("changes", [])]} for x in mine
                 if apps.same_upstream(x.get("upstream", ""), a["upstream"]) and x["id"] not in {c["id"] for c in copies}]
-        names = {apps.slug(x["name"]) for x in apps.list_all()}
-        name = a["name"] if apps.slug(a["name"]) not in names else f"{a['name']} (shared)"
+        names = {apps.name_key(x["name"]) for x in apps.list_all()}
+        name = a["name"] if apps.name_key(a["name"]) not in names else f"{a['name']} (shared)"
         changes = [{**c, "notes": p["files"].get(f"changes/{c['id']}.md", ""), "patch": for_review(p["files"][f"changes/{c['id']}.patch"])[0],
                     "lines": apps.changed_lines(p["files"][f"changes/{c['id']}.patch"])} for c in a["changes"]]
         return {"token": token, "app": {**a, "changes": changes}, "build_script": p["files"]["build.sh"],
@@ -509,7 +611,7 @@ class Sharing:
             return
         a, files = p["app"], p["files"]
         head = [f"App: {a['name']}. Official source, as the file says: {a['upstream']}, release {a['base_ref']}.",
-                "The build script (runs in a sealed container to build it):\n" + fence(files["build.sh"][:20000])]
+                "The build script (runs in a sealed container to build it):\n" + fence(files["build.sh"])]
         if a["packages"]:
             head.append("Ubuntu packages the build installs: " + ", ".join(a["packages"]))
         sections, binaries = [], []
@@ -517,7 +619,7 @@ class Sharing:
             patch, bins = for_review(files[f"changes/{c['id']}.patch"])
             binaries += [{"change": c["title"], **b} for b in bins]
             notes = files.get(f"changes/{c['id']}.md", "").strip()
-            sections.append(f"Change {c['id']}: {c['title']}\n" + (f"What its notes say it does:\n{fence(notes[:8000])}\n" if notes
+            sections.append(f"Change {c['id']}: {c['title']}\n" + (f"What its notes say it does:\n{fence(notes)}\n" if notes
                             else "(it has no notes)\n") + "Its patch:\n" + fence(patch))
         whole = "\n\n".join([*head, *sections])
         if len(whole) <= REVIEW_CHARS:
@@ -541,8 +643,16 @@ class Sharing:
         except Exception as e:  # noqa: BLE001 - shown on the card; the user decides
             p["review"] = {"status": "error", "error": str(e)}
             return
+        review = combined(outs)
+        hidden = [b["file"] for b in binaries if b.get("hidden")]
+        if hidden and _CAUTION[review["level"]] < _CAUTION["care"]:
+            # code it couldn't read can't have been found safe
+            review["level"] = "care"
+            review["concerns"] = "; ".join(x for x in (review["concerns"], (
+                f"{', '.join(hidden)} {'is' if len(hidden) == 1 else 'are'} code or text sent as binary, so neither "
+                "the reviewer nor you can read what it does")) if x)
         p["review"] = {"status": "done", "model": outs[0][1]["model"], "partial": cut, "parts": len(outs),
-                       "binaries": binaries, **combined(outs), "at": time.time()}
+                       "binaries": binaries, **review, "at": time.time()}
         self.e.log("shared_app_reviewed", app=a["name"], level=p["review"]["level"], partial=cut, parts=len(outs),
                    binaries=len(binaries))
 
@@ -570,11 +680,11 @@ class Sharing:
         name = re.sub(r"[\x00-\x1f\x7f]", "", name or a["name"]).strip()[:80]
         if not name:
             raise ShareError("Give it a name.")
-        if any(apps.slug(x["name"]) == apps.slug(name) for x in apps.list_all()):
+        if any(apps.same_name(x["name"], name) for x in apps.list_all()):
             raise ShareError(f"You have an app called {name} already: give this one another name, so both can be installed.")
         new = apps.create(name, "appimage", a["upstream"], base_ref=a["base_ref"], packages=a["packages"],
                           changes=[{**c, "patch_ids": [], "added": time.time()} for c in a["changes"]],
-                          split=True, imported=imported,
+                          split=True, imported={**imported, "own": True},
                           share={**{k: v for k, v in a["share"].items() if k != "sig"}, "shared": [a["share"]["sig"]]})
         self._write(new["id"], files, a["changes"])
         self.e.log("app_imported", app=new["id"], changes=len(a["changes"]), into="")
@@ -605,7 +715,8 @@ class Sharing:
         apps.write_file(mine["id"], "series.patch", "".join(apps.read_file(mine["id"], f"changes/{c['id']}.patch") for c in changes))
         packages = sorted(set(mine.get("packages") or []) | set(a["packages"]))
         apps.save({**mine, "changes": changes, "packages": packages,
-                   "imported": {**imported, "changes": [c["id"] for c in added], "into": True, "base_ref": a["base_ref"]}})
+                   "imported": {**imported, "changes": [c["id"] for c in added], "into": True, "base_ref": a["base_ref"],
+                                **_kept_own(mine)}})
         self.e.log("app_imported", app=mine["id"], changes=len(added), into=mine["id"])
         return {"app": mine["id"], "name": mine["name"]}
 
@@ -647,7 +758,7 @@ class Sharing:
         packages = sorted(set(mine.get("packages") or []) | set(a["packages"]))
         apps.save({**mine, "changes": changes, "packages": packages, "share": sh,
                    "imported": {**imported, "changes": sorted(take), "into": True, "update": rel["verdict"],
-                                "base_ref": a["base_ref"]}})
+                                "base_ref": a["base_ref"], **_kept_own(mine)}})
         self.e.log("app_updated_from_share", app=mine["id"], took=sorted(take), build=rel["build"], verdict=rel["verdict"])
         return {"app": mine["id"], "name": mine["name"]}
 

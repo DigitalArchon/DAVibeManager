@@ -250,3 +250,14 @@ async def test_a_turn_may_end_on_a_card_that_tells_the_user_something(builder_en
     engine.send("I wish gThumb could zoom by dragging a box")
     await wait_for(lambda: not engine.busy and engine.conv.chat[-1]["kind"] == "assistant", "the turn's end")
     assert len(queries) == 1 and [p["t"] for p in engine.conv.chat[-1]["parts"]] == ["text", "suggest"]
+
+
+async def test_apps_named_in_another_script_are_told_apart(env):
+    """Names are compared as names, in any script: two apps in Cyrillic aren't the same app."""
+    engine, _, _ = env
+    foto = apps.create("Фото", "appimage", "https://github.com/example/foto.git")
+    await engine.new_chat("app", app_name="Видео")
+    assert (engine.conv.app, engine.conv.app_name) == ("", "Видео")                  # not Фото's chat
+    await engine.new_chat("app", app_name="фото")
+    assert engine.conv.app == foto["id"]
+    assert apps.same_name("gThumb", "GThumb ") and not apps.same_name("Фото", "Видео")

@@ -45,6 +45,16 @@ def slug(text: str, fallback: str = "app") -> str:
     return s or fallback
 
 
+def name_key(text: str) -> str:
+    """A name as it's compared with another: case, spaces and punctuation aside, in any script (slug is
+    for ids, in ASCII: every Cyrillic or Chinese name is "app" to it)."""
+    return re.sub(r"[\W_]+", "-", str(text or "").casefold()).strip("-")
+
+
+def same_name(a: str, b: str) -> bool:
+    return bool(name_key(a)) and name_key(a) == name_key(b)
+
+
 def upstream_key(url: str) -> str:
     """A repository however it was written (case of the host, .git, a trailing slash): host and path."""
     p = urlsplit(url.strip())
@@ -124,7 +134,7 @@ def find(apps: list[dict], *, upstream: str = "", kind: str = "", name: str = ""
             continue
         if upstream and same_upstream(a.get("upstream", ""), upstream):
             return a
-        if not upstream and not a.get("upstream") and name and slug(a.get("name", "")) == slug(name):
+        if not upstream and not a.get("upstream") and name and same_name(a.get("name", ""), name):
             return a
     return None
 

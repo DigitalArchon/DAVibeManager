@@ -349,8 +349,7 @@ class AppManager:
         an app imported as one of its own, under the name the user gave it. (Its build script, from
         whoever shared it, names it as theirs: where apps live, it would take the place of any app of
         that name, the user's own copy of it too.) "" for any other app."""
-        imp = (a or {}).get("imported") or {}
-        if not imp or imp.get("into") or a.get("kind") != "appimage":
+        if not share.imported_as_own(a) or a.get("kind") != "appimage":
             return ""
         return f"{a['name']} ({integrate.TAG.upper()})"
 

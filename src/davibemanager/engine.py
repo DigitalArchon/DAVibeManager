@@ -714,7 +714,7 @@ class Engine:
         if not app_name:
             raise UserError("Which app? Pick one of yours, or type its name.")
         # one the user has already, under the name they typed: that one
-        same = next((a for a in apps_mod.list_all() if apps_mod.slug(a.get("name", "")) == apps_mod.slug(app_name)), None)
+        same = next((a for a in apps_mod.list_all() if apps_mod.same_name(a.get("name", ""), app_name)), None)
         return (mode, same["id"], same["name"]) if same else (mode, "", app_name)
 
     async def open_chat(self, cid: str) -> None:
@@ -1394,9 +1394,7 @@ class Engine:
             found = re.findall(rf"^\W*{key}\W*:\s*(.+)$", text, re.I | re.M)
             return found[-1].strip().strip("*_ ").strip() if found else ""
         verdict = line("VERDICT")
-        v = verdict.lower()
-        level = ("stop" if re.search(r"\b(do not|don't|never)\b", v) else "care" if "care" in v or "caution" in v
-                 else "ok" if "proceed" in v else "")
+        level = share_mod.verdict_level(verdict, ok=("proceed",))
         data = line("DATA")
         if re.match(r"(?i)^(none|no|n/?a|nothing)\b", data):
             data = ""
@@ -2099,7 +2097,7 @@ class Engine:
             await asyncio.sleep(0.05)
         else:
             raise Unanswered(self._unanswered(entry))
-        same = next((a for a in apps_mod.list_all() if apps_mod.slug(a.get("name", "")) == apps_mod.slug(name)), None)
+        same = next((a for a in apps_mod.list_all() if apps_mod.same_name(a.get("name", ""), name)), None)
         entry["parts"].append({"t": "suggest", "app": same["name"] if same else name, "app_id": same["id"] if same else "",
                                "wish": wish})
         self._entry_changed(entry)
@@ -2137,7 +2135,7 @@ class Engine:
         else:
             raise Unanswered(self._unanswered(entry))
         a = apps_mod.load(ref) if re.fullmatch(r"[a-z0-9][a-z0-9-]{0,40}", ref) else None
-        a = a or next((x for x in apps_mod.list_all() if apps_mod.slug(x.get("name", "")) == apps_mod.slug(ref)), None)
+        a = a or next((x for x in apps_mod.list_all() if apps_mod.same_name(x.get("name", ""), ref)), None)
         entry["parts"].append({"t": "findings", "app": a["name"] if a else ref, "app_id": a["id"] if a else "",
                                "findings": findings})
         self._entry_changed(entry)
