@@ -218,7 +218,7 @@ def test_a_reply_signed_by_another_key_fails():
 FIXTURE = Path(__file__).parent / "data" / "tee_attestation.json"
 
 
-def fixture_server(fixture: dict, *, intel_status: int = 200, jwks: dict | None = None):
+def fixture_server(fixture: dict, *, intel_status: int = 200, jwks: dict | None = None, extra: dict | None = None):
     """One real attestation, captured live from TEE/glm-5.3-flash with Intel's
     collateral and NVIDIA's answer and keys exactly as they came (in the author's
     AI-Assistant app, Sept 26 2026; the same nano-gpt endpoint)."""
@@ -235,6 +235,7 @@ def fixture_server(fixture: dict, *, intel_status: int = 200, jwks: dict | None 
                     "nvidia_payload": json.dumps(
                         {"nonce": fixture["nonce"], "evidence_list": [{"evidence": "e"}]}
                     ),
+                    **(extra or {}),
                 },
             )
         if url == NRAS_URL:
@@ -677,3 +678,40 @@ def test_the_quoting_enclave_must_be_intels_whether_or_not_intels_collateral_can
     monkeypatch.setattr(dcap, "_cache", {})
     result = intel(real, intel_status=503)
     assert not result.collateral and checked == [dcap.INTEL_TD_QE]
+
+
+def _real_client(real, monkeypatch, **server):
+    import davibemanager.llm.tee as tee_module
+    monkeypatch.setattr(tee_module.secrets, "token_hex", lambda _n: real["nonce"])
+    return TeeClient("https://nano-gpt.com/api/v1", "k", real["model"], client=fixture_server(real, **server),
+                     intel=lambda raw, s: dcap.verify(raw, s, now=at(real)),
+                     nvidia=lambda a, n, s: nras.verify(a, n, s, now=real["now"]))
+
+
+REDPILL = {"api_version": "aci/1", "service_capabilities": {"serving": "aggregator"},
+           "attestation": {"workload_keyset": {"not_after": 4102444800}}}      # (2100)
+
+
+def test_redpills_gateway_is_attested_only_in_part_and_its_expired_keys_are_refused(real, monkeypatch):
+    """RedPill's gateway passes each request on to the model's host: its quote and the GPUs' evidence hold,
+    but not that the model itself runs in an enclave, so it isn't called "full"."""
+    result = _real_client(real, monkeypatch, extra=REDPILL).attest()
+    assert result.level == "partial" and result.shortfalls == ["the model's own enclave unchecked (RedPill's gateway)"]
+    assert result.gpus == 8 and result.tcb_status == "UpToDate"
+    expired = {**REDPILL, "attestation": {"workload_keyset": {"not_after": 1_700_000_000}}}
+    with pytest.raises(TeeRefused, match="attested keys expired"):
+        _real_client(real, monkeypatch, extra=expired).attest()
+
+
+async def test_a_tee_model_attested_in_part_is_said_once(real, monkeypatch):
+    from davibemanager.config import Config, Provider
+    from davibemanager.models import Models
+    told = []
+    cfg = Config(providers=[Provider("NanoGPT", "https://nano-gpt.com/api/v1", builder_url="https://nano-gpt.com/api/v1")])
+    m = Models(cfg, save_config=lambda c: None, emit=lambda t, **d: told.append(d.get("text", "")), log=lambda e, **d: None)
+    m.tee_factory = lambda base, key, model: _real_client(real, monkeypatch, extra=REDPILL)
+    m.key = lambda prov: "k"
+    for _ in range(2):
+        m._tee.clear()
+        assert (await m.tee_guard(cfg.providers[0], real["model"]))["level"] == "partial"
+    assert len(told) == 1 and "attested only in part" in told[0] and "private model" in told[0]

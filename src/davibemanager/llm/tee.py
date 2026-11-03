@@ -1,6 +1,14 @@
 """TEE models on nano-gpt: attestation before anything is sent. Ported from SealedLore (its
 providers/tee.py, Sept 2026); the checks are the same.
 
+What the attestation is of (looked into Nov 2026): for most of nano-gpt's TEE/ models it is RedPill's
+gateway (its "aci/1" report, relayed by nano-gpt), which passes each request on to the model's host
+(Phala, NEAR AI, Tinfoil, Chutes…). Its quote is the gateway VM's; the GPU evidence is the upstream
+node's, made with our nonce but not bound to the gateway's quote; that the model itself runs in an
+enclave isn't in the report. RedPill states that per reply, in a signed receipt, which nano-gpt doesn't
+pass on: so such an attestation is "partial" here ("the model's own enclave unchecked"), and the
+user is told. For a model sealed end to end, use a private/ one (llm/private_mode.py).
+
 nano-gpt's `TEE/*` models run inside a trusted execution environment. Two
 calls let a client check that (docs.nano-gpt.com/api-reference/tee-verification):
 
@@ -37,6 +45,7 @@ import binascii
 import hashlib
 import json
 import secrets
+import time
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass, field
@@ -299,8 +308,9 @@ class TeeClient:
         shapes (both measured live, Sept 2026; ported from the author's
         AI-Assistant app):
 
-        - aci/1: one enclave, whose TDX quote binds its reply-signing key and our
-          nonce, with GPU evidence made with our nonce (`_attest_signing_key`);
+        - aci/1: RedPill's gateway, whose TDX quote binds its reply-signing key and
+          our nonce, with GPU evidence of the upstream node made with our nonce
+          (`_attest_signing_key`; partial: the model's own enclave isn't shown);
         - per instance (Chutes: TEE/kimi-k3 and others): a list of instances, each
           quote binding that instance's own key, which signs a body carrying our
           nonce, the quote and the GPU evidence (`_attest_instances`).
@@ -395,6 +405,19 @@ class TeeClient:
         ):
             raise TeeRefused(f"{self.model}'s attestation didn't bind its signing key to our nonce")
         check = _Checks("the Intel TDX quote binds the signing key to our nonce")
+        keyset = ((body.get("attestation") or {}).get("workload_keyset") or {}) if isinstance(body.get("attestation"), dict) else {}
+        expires = keyset.get("not_after") if isinstance(keyset, dict) else None
+        if isinstance(expires, (int, float)) and expires < time.time():
+            raise TeeRefused(f"{self.model}'s attested keys expired on {datetime.fromtimestamp(expires, UTC):%Y-%m-%d}")
+        caps = body.get("service_capabilities") if isinstance(body.get("service_capabilities"), dict) else {}
+        if body.get("api_version") == "aci/1" or caps.get("serving") == "aggregator":
+            # RedPill's gateway (live, Nov 2026: the same key since Sept): it passes requests on to the model's
+            # host. Its quote is the gateway's; the GPU evidence is an upstream node's, made with our nonce but
+            # not bound to that quote; that the model itself runs in an enclave isn't shown here (RedPill says it
+            # in a signed receipt per reply, which nano-gpt doesn't pass on).
+            check.fall_short("the model's own enclave unchecked (RedPill's gateway)")
+            check.note("this is RedPill's gateway, which passes each request on to the model's host: the gateway's "
+                       "quote and the GPUs' evidence are checked, not that the model itself runs in an enclave")
         self._check_quote(raw, check)
         payload = _json(body.get("nvidia_payload"))
         self._check_gpus(

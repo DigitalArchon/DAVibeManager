@@ -45,6 +45,7 @@ class Models:
         self._save_config = save_config
         self._emit = emit                       # emit(type, **data) to the UI
         self._told_release: set[tuple[str, str]] = set()      # older router releases the user was told of
+        self._told_partial: set[tuple[str, tuple]] = set()    # TEE models attested in part, the user told of
         self._log = log                         # log(event, **data) to the conversation's audit log
         self._models: dict[str, list[str]] = {}
         self._enclaves: dict[str, Enclave] = {}      # provider name -> attested enclave (Private Mode)
@@ -384,4 +385,11 @@ class Models:
                 raise UserError(f"{model}'s TEE attestation didn't hold, so nothing was sent to it: {e}") from e
             self._tee[(prov.name, prov.base_url, model)] = (client, time.monotonic(), att.to_dict())
             self._log("enclave_attested", model=model, **att.to_dict())
+            told = (model, tuple(att.shortfalls))
+            if att.level == "partial" and told not in self._told_partial:
+                # sent all the same, as before; but the user knows how far the attestation goes
+                self._told_partial.add(told)
+                self._emit("toast", level="info", text=(
+                    f"{model} is attested only in part ({', '.join(att.shortfalls)}). What goes to it isn't sealed "
+                    "end to end: for that, choose a private model."))
             return att.to_dict()
