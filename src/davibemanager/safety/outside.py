@@ -46,6 +46,14 @@ _IPV4 = re.compile(r"\b\d{1,3}(?:\.\d{1,3}){3}\b")
 GENERIC = {"x86_64", "amd64", "i386", "i686", "aarch64", "arm64", "armhf", "utf-8", "utf8", "ipv4", "ipv6",
            "64-bit", "32-bit", "mp3", "mp4", "h264", "h265", "x11", "gtk3", "gtk4", "gtk-3", "gtk-4", "qt5", "qt6",
            "1080p", "720p", "4k", "2fa", "https://", "http://", "e.g.", "i.e."}
+# what a token is made of: a URL's or path's pieces, and the parts of a name of several (a disk's id)
+_PIECES = re.compile(r"[/@=:?&#,~+]+")
+_PARTS = re.compile(r"[-_.]+")
+_VERSION = re.compile(r"\d+(?:\.\d+)+")
+# sites every computer's output names (a repository's address): as a piece of a token, they say nothing
+PUBLIC_SITES = {"github.com", "gitlab.com", "codeberg.org", "bitbucket.org", "sourceforge.net", "launchpad.net",
+                "freedesktop.org", "gnome.org", "kde.org", "kernel.org", "debian.org", "ubuntu.com", "archlinux.org",
+                "fedoraproject.org", "python.org", "pypi.org", "npmjs.com", "crates.io", "flathub.org", "nano-gpt.com"}
 # logins too common to be told apart from a word in a query
 COMMON_NAMES = {"user", "admin", "root", "guest", "home", "test", "linux", "ubuntu", "mint", "debian", "fedora",
                 "desktop", "laptop", "computer", "pc", "localhost"}
@@ -65,6 +73,23 @@ def distinctive(tok: str) -> bool:
         return False
     return (bool(re.search(r"\d", t)) or any(c in t for c in "/@\\_~=:%#")
             or bool(re.search(r"[A-Za-z]\.[A-Za-z]", t)) or len(t) >= 20)
+
+
+def keys(tok: str) -> set[str]:
+    """What of a token is told apart, normalised: the token itself, and the distinctive pieces it's made
+    of, so that a piece searched on its own is caught too: a URL's host and path (a company's git server
+    in git.acme.example/team/x.git), a version it starts with (24.2.8 of 24.2.8-1ubuntu1~24.04.1), a
+    serial in a name (S3Z9NB0K of ata-WDC_WD10_S3Z9NB0K)."""
+    out = {tok} if distinctive(tok) else set()
+    for piece in _PIECES.split(tok):
+        if not piece or (re.search(r"[A-Za-z]\.[A-Za-z]", piece) and ".".join(piece.lower().split(".")[-2:]) in PUBLIC_SITES):
+            continue
+        if distinctive(piece):
+            out.add(piece)
+        if m := _VERSION.match(piece):
+            out.add(m.group())
+        out |= {x for x in _PARTS.split(piece) if len(x) >= 8 and re.search(r"\d", x) and re.search(r"[A-Za-z]", x)}
+    return {k for k in map(_norm, out) if k}
 
 
 def _ngrams(text: str) -> set[str]:
@@ -111,7 +136,7 @@ class OutsideData:
             pass
 
     def add(self, text: str) -> None:
-        tokens = {_h(_norm(t)) for t in _TOKEN.findall(text or "") if distinctive(t)}
+        tokens = {_h(k) for t in _TOKEN.findall(text or "") for k in keys(t)}
         runs = {_h(r) for r in _ngrams(text or "")}
         if tokens <= self.tokens and runs <= self.runs:
             return
@@ -140,7 +165,7 @@ class OutsideData:
         found += _EMAIL.findall(query) + _MAC.findall(query)
         found += [ip for ip in _IPV4.findall(query) if _private_ip(ip)]
         for t in _TOKEN.findall(query):
-            if distinctive(t) and _h(_norm(t)) in self.tokens:
+            if any(_h(k) in self.tokens for k in keys(t)):
                 found.append(t)
         words = _WORD.findall(low)
         for i in range(len(words) - NGRAM + 1):

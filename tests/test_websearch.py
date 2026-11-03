@@ -53,6 +53,30 @@ def test_anything_from_the_users_computer_is_found_in_a_query(outside, query, fo
     assert any(found.lower() in f.lower() for f in outside.check(query)), outside.check(query)
 
 
+def test_a_piece_of_something_from_this_computer_is_caught_on_its_own(tmp_path):
+    """A URL, a path or a name made of several is one token: its host, a file in it, the version it
+    starts with or a serial in it, searched alone, came from this computer all the same."""
+    o = OutsideData(tmp_path / "outside.json", names=[])
+    o.add("origin\thttps://git.acme-intranet.example/team/secret-project.git (fetch)\n"
+          "/dev/disk/by-id/ata-Samsung_SSD_860_EVO_S3Z9NB0K123456\n"
+          "Version: 24.2.8-1ubuntu1~24.04.1\n"
+          "upstream\thttps://github.com/GNOME/gthumb.git (fetch)\n")
+    assert o.check("git.acme-intranet.example login page") == ["git.acme-intranet.example"]
+    assert o.check("secret-project.git") == ["secret-project.git"]
+    assert o.check("S3Z9NB0K123456 firmware") == ["S3Z9NB0K123456"]
+    assert o.check("mesa 24.2.8 vulkan crash") == ["24.2.8"]
+    assert o.check_url("https://example.com/search?q=S3Z9NB0K123456") == ["S3Z9NB0K123456"]
+    # what searches are made of stays searchable: public sites, plain words
+    assert o.check("site github.com gthumb drag to zoom") == [] and o.check("samsung ssd 860 evo firmware") == []
+
+
+async def test_the_sites_a_search_is_limited_to_are_checked_as_its_query_is(searching):
+    engine, fake, events = searching
+    engine._outside().add("Connected to pf3abc12.secret-client-acme.com")
+    out = await engine.builder_search({"query": "gtk drag zoom", "sites": ["pf3abc12.secret-client-acme.com"]})
+    assert out.startswith("Not searched") and "pf3abc12" in out and not fake.requests
+
+
 def test_it_is_remembered_hashed_and_a_reset_forgets_it(outside, tmp_path):
     again = OutsideData(tmp_path / "outside.json", names=[])
     assert again.check("gthumb 3.12.6") == ["3.12.6"]

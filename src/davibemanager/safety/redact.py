@@ -14,7 +14,8 @@ _I = re.IGNORECASE
 
 # (pattern, replacement). Replacements keep the key name so the AI still understands context.
 RULES: list[tuple[re.Pattern, str]] = [
-    (re.compile(r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----.*?-----END [A-Z0-9 ]*PRIVATE KEY-----", re.S),
+    # PGP's too (PRIVATE KEY BLOCK), and a key cut short (head of a key file, output shortened): to its end
+    (re.compile(r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----.*?(?:-----END [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----|\Z)", re.S),
      "[REDACTED PRIVATE KEY]"),
     (re.compile(r"(\bauthorization\s*:\s*)(bearer|basic|token)\s+\S+", _I), r"\1\2 " + MASK),
     (re.compile(r"\bbearer\s+[A-Za-z0-9._~+/=-]{12,}", _I), "Bearer " + MASK),
@@ -22,6 +23,9 @@ RULES: list[tuple[re.Pattern, str]] = [
     (re.compile(r"\bsk-[A-Za-z0-9_-]{16,}"), MASK),
     (re.compile(r"\b(ghp|gho|ghu|ghs|ghr|github_pat)_[A-Za-z0-9_]{20,}"), MASK),
     (re.compile(r"\bxox[abprs]-[A-Za-z0-9-]{10,}"), MASK),
+    (re.compile(r"\bglpat-[A-Za-z0-9_-]{20,}"), MASK),                    # GitLab
+    (re.compile(r"\b[sr]k_(?:live|test)_[A-Za-z0-9]{16,}"), MASK),        # Stripe's secret and restricted keys
+    (re.compile(r"\bAIza[0-9A-Za-z_-]{35}"), MASK),                       # Google's API keys
     (re.compile(r"\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}"), MASK),  # JWT
     # crypt(3) hashes as in /etc/shadow
     (re.compile(r"\$(1|2[abxy]?|5|6|y|gy|7)\$[^\s:]{8,}"), "[REDACTED HASH]"),
@@ -35,10 +39,12 @@ RULES: list[tuple[re.Pattern, str]] = [
     # PowerShell
     (re.compile(r"(-(Password|Secret|Token|ApiKey|Key|Credential)\s+)(['\"]).*?\3", _I), r"\1" + MASK),
     (re.compile(r"(ConvertTo-SecureString\s+(-String\s+)?)(['\"]).*?\3", _I), r"\1" + MASK),
-    # key=value / key: value (env files, config files, URLs, RouterOS password=)
+    # key=value / key: value (env files, config files, URLs, RouterOS password=), and a key in quotes
+    # (JSON, a Python dict: {"password": "…"}, docker's "auth")
     (re.compile(r"\b([A-Za-z0-9_.-]*(password|passwd|pwd|passphrase|secret|token|api[_-]?key|access[_-]?key|"
-                r"private[_-]?key|client[_-]?secret|auth[_-]?key|shared[_-]?key|psk)[A-Za-z0-9_.-]*)(\s*[=:]\s*)"
+                r"private[_-]?key|client[_-]?secret|auth[_-]?key|shared[_-]?key|psk)[A-Za-z0-9_.-]*)([\"']?\s*[=:]\s*)"
                 r"(?!\s*$)(?!\[REDACTED)(\"[^\"]*\"|'[^']*'|\S+)", _I), r"\1\3" + MASK),
+    (re.compile(r"([\"']auth[\"']\s*:\s*)(?!\[REDACTED)(\"[^\"]*\"|'[^']*')", _I), r"\1" + MASK),
     # credentials in URLs: scheme://user:pass@host
     (re.compile(r"(\b[a-z][a-z0-9+.-]*://[^\s:/@]+:)[^\s@/]+@", _I), r"\1" + MASK + "@"),
 ]

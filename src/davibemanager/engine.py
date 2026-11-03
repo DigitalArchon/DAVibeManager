@@ -2339,11 +2339,14 @@ class Engine:
         if len(query) < 2:
             raise ValueError("an empty query")
         purpose = args.get("purpose") if args.get("purpose") in websearch.MODES_OF_USE else "answer"
-        leaked = self._outside().check(query)
+        # the sites it's limited to go to the search provider as well: they're checked as the query is,
+        # whole and label by label (a host name of this computer's network in one)
+        sites = websearch.clean_sites(args.get("sites"))
+        leaked = self._outside().check(" ".join([query, *sites, *(site.replace(".", " ") for site in sites)]))
         if leaked:
             self.log("search_refused", query=query, found=leaked)
             self._network_event({"kind": "search", "query": query, "refused": "it holds something from this computer"})
-            return ("Not searched: the query holds something that came from the user's computer ("
+            return ("Not searched: the query (or its sites) holds something that came from the user's computer ("
                     + ", ".join(repr(x) for x in leaked[:5]) + "). Searches may use only what is in your sandbox "
                     "and the user's own words, never anything from their computer. Search again without it "
                     "(e.g. the app's name and the feature, not their version, paths, names or addresses).")
@@ -2356,7 +2359,6 @@ class Engine:
             raise UserError("Web search works through NanoGPT, and the assistant isn't on NanoGPT.")
         base = prov.base_url or prov.builder_url
         provider = s.search_links_provider if purpose == "links" else s.search_provider
-        sites = websearch.clean_sites(args.get("sites"))
         after = websearch.clean_date(args.get("after"))
         started = time.monotonic()
         try:

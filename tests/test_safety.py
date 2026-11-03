@@ -59,6 +59,19 @@ def test_effective_only_raises():
     ("AWS key AKIAABCDEFGHIJKLMNOP here", "AKIAABCDEFGHIJKLMNOP"),
     ("-----BEGIN OPENSSH PRIVATE KEY-----\nabc\ndef\n-----END OPENSSH PRIVATE KEY-----", "abc"),
     ("/interface wireless security-profiles set wpa2-pre-shared-key=Sup3rS3cret", "Sup3rS3cret"),
+    # in quotes, as JSON and Python print them
+    ('{"password": "hunter2", "api_key": "abc123def456"}', "hunter2"),
+    ('{"password": "hunter2", "api_key": "abc123def456"}', "abc123def456"),
+    ("{'client_secret': 'S3cr3tValue'}", "S3cr3tValue"),
+    ('{"auths": {"ghcr.io": {"auth": "dXNlcjpodW50ZXIy"}}}', "dXNlcjpodW50ZXIy"),     # docker's config.json
+    # PGP's private keys, and one cut short (the head of a key file, or output shortened); these keys
+    # are in two pieces, joined again when the test runs: a file that seems to hold real keys can't be
+    # pushed to GitHub
+    ("-----BEGIN PGP PRIVATE " "KEY BLOCK-----\n\nlQOYBF1234secret\n=abcd\n-----END PGP PRIVATE " "KEY BLOCK-----", "lQOYBF1234secret"),
+    ("-----BEGIN OPENSSH PRIVATE " "KEY-----\nb3BlbnNzaC1rZXktdjEAAAAABG5vbmUA", "b3BlbnNzaC1rZXktdjEAAAAABG5vbmUA"),
+    ("gl" "pat-abcdefghijklmnopqrst", "abcdefghijklmnopqrst"),
+    ("STRIPE=sk_" "live_51HabcdefghijklmnopqrstuvwxYZ in .env", "51HabcdefghijklmnopqrstuvwxYZ"),
+    ("key AIza" "SyA-abcdefghijklmnopqrstuvwxyz12345", "AIza" "SyA-abcdefghijklmnopqrstuvwxyz12345"),
 ])
 def test_redacts(text, secret):
     out, n = redact(text)
