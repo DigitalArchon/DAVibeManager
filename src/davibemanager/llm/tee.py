@@ -44,6 +44,7 @@ from urllib.parse import quote, urlparse
 
 import httpx
 
+from ..netpolicy import check_url
 from . import dcap, nras
 from .ethsig import recover_personal
 from .secure_http import ProviderError, make_client
@@ -241,6 +242,7 @@ class TeeClient:
         intel: Callable[..., dcap.Result] | None = None,
         nvidia: Callable[..., int] | None = None,
     ) -> None:
+        check_url(base_url, "The provider's base URL")      # https, or a local address: the key goes there
         self.base_url = base_url
         self.api_key = api_key
         self.model = model

@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from typing import AsyncIterator
 from urllib.parse import urlparse
 
-from openai import AsyncOpenAI
+from openai import AsyncOpenAI, DefaultAsyncHttpxClient
 
 from ..netpolicy import check_url, is_local_host
 
@@ -90,9 +90,11 @@ class TurnResult:
 class LLMClient:
     def __init__(self, base_url: str, api_key: str | None, http_client=None):
         check_url(base_url, "The provider's base URL")
-        # Local servers often need no key, but the SDK insists on a value.
+        # Local servers often need no key, but the SDK insists on a value. A redirect is never followed
+        # (the SDK's own client would): the request, the user's words in it, would go wherever the
+        # provider points, plain http included (as the gateway's forwarder, which refuses them too)
         self._client = AsyncOpenAI(base_url=base_url, api_key=api_key or "not-needed", max_retries=1, timeout=300,
-                                   http_client=http_client)
+                                   http_client=http_client or DefaultAsyncHttpxClient(follow_redirects=False))
 
     async def list_models(self) -> list[str]:
         page = await self._client.models.list()

@@ -80,7 +80,8 @@ class Relay:
             assert request.url.path.endswith("/private/tinfoil/v1/chat/completions")
             self.requests.append((json.loads(request.content), dict(request.headers)))
             status, body = self.replies.pop(0)
-            headers = {"content-type": "text/event-stream"}
+            # as EHBP hands over a reply it opened: the enclave's nonce stays with it (a 2xx only)
+            headers = {"content-type": "text/event-stream", **({"Ehbp-Response-Nonce": "ab" * 32} if status < 300 else {})}
             if self.private_header:
                 headers["x-nanogpt-private-mode"] = self.private_header
             return httpx.Response(status, text=body, headers=headers)
@@ -210,6 +211,30 @@ async def test_real_ehbp_seals_body_and_guard_blocks_unsealed():
 
 REVIEW_REPLY = (chunk({"role": "assistant", "content": "It lists your disks.\nSUMMARY: harmless\nDATA: none\nVERDICT: proceed"})
                 + chunk({}, "stop") + "data: [DONE]\n\n")
+
+
+@pytest.mark.parametrize("status", [200, 302, 304])
+async def test_a_reply_the_enclave_didnt_seal_is_refused_whatever_its_status(status):
+    """EHBP passes a reply that isn't a success through as it came: the relay, which can't read what it
+    carries, mustn't be able to answer it itself (a verdict of its own making, as a 302)."""
+    from ehbp import AsyncEHBPTransport
+    pub = X25519PrivateKey.generate().public_key().public_bytes(Encoding.Raw, PublicFormat.Raw).hex()
+
+    class Relay(_NonEmptyBodyTransport):
+        async def handle_async_request(self, request):
+            await request.aread()
+            return httpx.Response(status, text=REVIEW_REPLY, headers={
+                "content-type": "text/event-stream", "x-nanogpt-private-mode": "tinfoil", "location": BASE})
+
+    def preflight(request):
+        return httpx.Response(200, json={"cacheScope": SCOPE, "upstreamModel": "glm-5-3"})
+    client = PrivateModeClient(
+        BASE, "sk-test", Enclave(RELAY, verifier=lambda relay, secret: verified(pub)),
+        transport_factory=lambda key: AsyncEHBPTransport.from_public_key_hex(key, inner=Relay()),
+        plain_http=httpx.AsyncClient(transport=httpx.MockTransport(preflight)))
+    with pytest.raises(PrivateModeError, match="sealed|couldn't be opened"):
+        async for _ in client.stream("private/glm-5-3", [{"role": "user", "content": "disk full?"}]):
+            pass
 
 
 async def test_second_opinions_from_a_private_reviewer_go_sealed_after_attestation(tmp_path):

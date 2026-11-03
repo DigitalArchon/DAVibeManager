@@ -52,6 +52,7 @@ from urllib.parse import urlparse
 import httpx
 from openai.types.chat import ChatCompletionChunk
 
+from ..netpolicy import check_url
 from .capabilities import norm_id
 from .client import StreamAccumulator, is_private_mode
 
@@ -303,6 +304,7 @@ class PrivateModeClient:
                  plain_http: httpx.AsyncClient | None = None):
         if not offers_private_mode(base_url):
             raise PrivateModeError(f"{base_url} does not offer NanoGPT Private Mode")
+        check_url(base_url, "The provider's base URL")
         if not api_key:
             raise PrivateModeError("An API key is required for Private Mode.")
         self.enclave = enclave
@@ -421,6 +423,12 @@ class PrivateModeClient:
                     text = (await resp.aread()).decode(errors="replace")
                     raise PrivateModeError(f"Private Mode request failed (HTTP {resp.status_code}): {text[:300]}",
                                            resp.status_code, text)
+                from ehbp.protocol import RESPONSE_NONCE_HEADER
+                # EHBP passes a reply that isn't a success through as it came, unsealed: one the relay made
+                # itself (a 302 with a verdict in it) would pass for the enclave's. Only a sealed one counts.
+                if not 200 <= resp.status_code < 300 or RESPONSE_NONCE_HEADER not in resp.headers:
+                    raise PrivateModeError(f"the reply wasn't sealed by the enclave (HTTP {resp.status_code}); refused",
+                                           resp.status_code)
                 if resp.headers.get("x-nanogpt-private-mode") != "tinfoil":
                     raise PrivateModeError("the reply didn't come back through Private Mode; refused")
                 async for line in resp.aiter_lines():
@@ -453,6 +461,7 @@ class PrivateModeClient:
 
 async def list_private_models(base_url: str, http: httpx.AsyncClient | None = None) -> list[str]:
     """The relay's public list of Private Mode model ids (no key needed)."""
+    check_url(base_url, "The provider's base URL")
     client = http or httpx.AsyncClient(timeout=30)
     try:
         resp = await client.get(relay_url(base_url) + "/models", headers={"Accept": "application/json"})

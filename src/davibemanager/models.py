@@ -138,13 +138,13 @@ class Models:
         if not prov.base_url:
             raise UserError(f"{prov.name} has no chat endpoint, so it can't be the reviewer.")
         key = self.key(prov)
+        enclave = None
         if is_private_mode(model):
             enclave = self._enclaves.get(prov.name)
             if enclave is None or enclave.relay != relay_url(prov.base_url):
                 enclave = self._enclaves[prov.name] = Enclave(relay_url(prov.base_url))
-            return PrivateModeClient(prov.base_url, key, enclave)
         try:
-            return LLMClient(prov.base_url, key)
+            return PrivateModeClient(prov.base_url, key, enclave) if is_private_mode(model) else LLMClient(prov.base_url, key)
         except InsecureURL as e:
             raise UserError(str(e)) from None
 
@@ -354,7 +354,10 @@ class Models:
             if hit and time.monotonic() - hit[1] < TEE_REATTEST_SECONDS:
                 return hit[2]
             make = self.tee_factory or tee_mod.TeeClient
-            client = make(prov.base_url, self.key(prov) or "", model)
+            try:
+                client = make(prov.base_url, self.key(prov) or "", model)
+            except InsecureURL as e:
+                raise UserError(f"{model}'s enclave wasn't asked to attest, so nothing was sent to it: {e}") from None
             try:
                 att = await asyncio.to_thread(client.attest)
             except Exception as e:  # noqa: BLE001

@@ -14,6 +14,8 @@ from urllib.parse import urlsplit
 
 import httpx
 
+from ..netpolicy import InsecureURL, check_url
+
 # Best first, from DA-Assistant's measurement (2026-09-21: three queries, eight results each, scored
 # by primary sources): perplexity 10/16 with ~1,300 clean characters per result; valyu 5/16, clean
 # prose; tavily 4/16, thin; kagi good links but ~150-210 characters of text, and the dearest at $0.025;
@@ -81,6 +83,10 @@ async def web_search(base_url: str, api_key: str, query: str, provider: str = "p
     limits the search to those domains (Kagi, Valyu and Linkup keep to them, Perplexity mostly,
     Brave not at all); `after`/`before` (YYYY-MM-DD) to pages from that window, where the provider
     allows it (not Kagi: then the search runs without them and dates_dropped says so)."""
+    try:
+        check_url(base_url, "The provider's base URL")      # the key goes with the search
+    except InsecureURL as e:
+        raise SearchError(str(e)) from None
     body = {"query": query, "provider": provider, "outputType": "searchResults", "excludeDomains": list(UNREADABLE)}
     if provider == "kagi":
         body["kagiSource"] = "search"   # full web search; "web" and "news" are enrichment tiers that find little

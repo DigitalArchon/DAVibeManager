@@ -46,6 +46,43 @@ def test_the_chat_client_refuses_an_insecure_base_url():
     LLMClient("http://127.0.0.1:1234/v1", None)          # a local server is fine
 
 
+async def test_the_chat_client_never_follows_a_redirect_the_request_would_go_anywhere():
+    """A provider's 307 to plain http (one has pointed at 0.0.0.0): the request, the user's words in it,
+    isn't sent again there, in the clear."""
+    import httpx2                                       # the OpenAI SDK's own http library
+    import openai
+    c = LLMClient("https://nano-gpt.com/api/v1", "sk-test")
+    seen = []
+
+    def handler(request):
+        seen.append(str(request.url))
+        return httpx2.Response(307, headers={"location": "http://0.0.0.0:3000/api/v1/chat/completions"})
+    inner = c._client._client
+    inner._transport, inner._mounts = httpx2.MockTransport(handler), {}
+    with pytest.raises(openai.APIStatusError, match="307"):
+        await c.complete("z-ai/glm-5.3", [{"role": "user", "content": "the output of ip a"}])
+    assert seen == ["https://nano-gpt.com/api/v1/chat/completions"]
+
+
+async def test_every_client_that_carries_the_key_refuses_plain_http_to_the_cloud():
+    """A base URL from a config file edited by hand, or from a backup, isn't checked when it's read:
+    each client that sends the key (or a prompt) holds it to the rule itself, before sending anything."""
+    from davibemanager.llm import capabilities, websearch
+    from davibemanager.llm.private_mode import Enclave, PrivateModeClient, list_private_models, relay_url
+    from davibemanager.llm.tee import TeeClient
+    base = "http://nano-gpt.com/api/v1"
+    with pytest.raises(InsecureURL):
+        TeeClient(base, "sk-test", "TEE/glm-5.3")
+    with pytest.raises(InsecureURL):
+        PrivateModeClient(base, "sk-test", Enclave(relay_url(base)))
+    with pytest.raises(InsecureURL):
+        await list_private_models(base)
+    with pytest.raises(InsecureURL):
+        await capabilities.fetch_nanogpt(base, "sk-test")
+    with pytest.raises(websearch.SearchError, match="plain http"):
+        await websearch.web_search(base, "sk-test", "gtk drag to zoom")
+
+
 def test_saving_a_provider_with_a_plain_http_cloud_url_is_refused(tmp_path):
     from davibemanager.config import Config
     models = Models(Config(), save_config=lambda c: None, emit=lambda *a, **k: None, log=lambda *a, **k: None)

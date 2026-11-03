@@ -11,6 +11,8 @@ import re
 
 import httpx
 
+from ..netpolicy import check_url
+
 EFFORTS = ["none", "minimal", "low", "medium", "high", "xhigh", "max"]
 
 
@@ -65,6 +67,7 @@ def cost(caps: dict | None, usage: dict) -> float | None:
 
 
 async def fetch_nanogpt(base_url: str, api_key: str | None, http: httpx.AsyncClient | None = None) -> dict[str, dict]:
+    check_url(base_url, "The provider's base URL")          # the key goes with it
     client = http or httpx.AsyncClient(timeout=30)
     try:
         r = await client.get(base_url.rstrip("/") + "/models", params={"detailed": "true"},
