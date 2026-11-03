@@ -114,15 +114,15 @@ def _last_lines(log: str, n: int = 2500) -> str:
     return "\n".join(l for l in (log or "").splitlines() if not l.startswith("@@"))[-n:]
 
 
-def _end_old_guards() -> None:
-    """End the sandbox watchers (Engine._guard_sandbox) of earlier copies of the app."""
+def _end_old_guards(sandbox: str) -> None:
+    """End the watchers (Engine._guard_sandbox) earlier copies of the app left for this sandbox."""
     for d in Path("/proc").iterdir():
         if not d.name.isdigit() or int(d.name) == os.getpid():
             continue
         try:
             argv = (d / "cmdline").read_bytes().split(b"\0")
-            if argv[:2] == [b"/bin/sh", b"-c"] and len(argv) > 3 and argv[3] == b"dvm-sandbox-guard" \
-                    and d.stat().st_uid == os.getuid():
+            if argv[:2] == [b"/bin/sh", b"-c"] and len(argv) > 7 and argv[3] == b"dvm-sandbox-guard" \
+                    and argv[7] == sandbox.encode() and d.stat().st_uid == os.getuid():
                 os.kill(int(d.name), 15)
         except (OSError, ValueError):
             pass
@@ -1532,7 +1532,7 @@ class Engine:
                               pids=s.container_pids)
                 if self._first_start:
                     self._first_start = False
-                    _end_old_guards()               # a dead copy's watcher mustn't stop this copy's sandbox
+                    _end_old_guards(SANDBOX)        # a dead copy's watcher mustn't stop this copy's sandbox
                     await podman.remove_check(SANDBOX)    # a clean build a dead copy left
                     if await podman.state(SANDBOX) == "running":
                         # left running by a copy of the app that didn't get to stop it (killed, crashed):

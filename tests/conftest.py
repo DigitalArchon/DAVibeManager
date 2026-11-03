@@ -85,10 +85,17 @@ def no_real_app_homes(monkeypatch, tmp_path):
 @pytest.fixture(autouse=True)
 def no_real_podman(request, monkeypatch):
     """Unit tests never run podman on this computer (its real sandbox is there): a test that makes the
-    engine think the sandbox runs would otherwise stop it when it ends. Only -m podman tests may."""
+    engine think the sandbox runs would otherwise stop it when it ends. Only -m podman tests may.
+    Nor do they start the sandbox's watcher (Engine._guard_sandbox), a real process that outlives them
+    and stops this computer's sandbox once they're done, or end the app's own watcher of it."""
     if request.node.get_closest_marker("podman"):
         return
+    from davibemanager import engine as engine_mod
     from davibemanager.workspace import podman
+    monkeypatch.setattr(engine_mod.Engine, "_guard_sandbox", lambda self: None)
+    end_guards = engine_mod._end_old_guards
+    monkeypatch.setattr(engine_mod, "_end_old_guards",
+                        lambda sandbox: None if sandbox == podman.APP_SANDBOX else end_guards(sandbox))
     calls, real = [], podman.run
 
     async def run(argv, **kw):

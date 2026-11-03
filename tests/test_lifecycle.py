@@ -106,7 +106,7 @@ def test_a_dead_copys_watcher_is_ended_before_the_sandbox_starts(tmp_path):
     guard = _guard(tmp_path, os.getpid(), _start(os.getpid()))
     time.sleep(0.3)
     assert guard.poll() is None
-    engine_mod._end_old_guards()
+    engine_mod._end_old_guards("dvm-x")
     assert guard.wait(5) != 0 and not (tmp_path / "calls").exists()       # ended, without stopping anything
 
 
