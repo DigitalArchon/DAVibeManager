@@ -21,6 +21,9 @@ upstream="$1"; mirror="$2"
 echo "@@STEP fetch"
 case "$mirror" in /var/lib/dvm/mirrors/*.git) ;; *) echo "@@FAILED fetch: $mirror isn't a mirror"; exit 2;; esac
 umask 022
+# one fetch of a mirror at a time (a change log and a build may want it together)
+exec 9>"$mirror.lock"
+flock -w 1800 9 || { echo "@@FAILED fetch: another fetch of it hasn't finished"; exit 2; }
 if [ ! -d "$mirror" ]; then
   rm -rf "$mirror.part"
   git clone -q --bare "$upstream" "$mirror.part" || { echo "@@FAILED fetch"; exit 2; }

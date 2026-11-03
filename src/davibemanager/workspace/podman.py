@@ -603,13 +603,22 @@ async def prune_images(keep: str) -> list[str]:
     return removed
 
 
+def bounded(argv: list[str], timeout: float) -> list[str]:
+    """A command in the container with a time limit of its own, a little inside the app's: stopping `podman
+    exec` (the app's limit) doesn't stop what it runs in the container, so a clone or apt-get that ran out
+    of time would otherwise go on there (holding the dpkg lock, writing a mirror the next try writes too).
+    GNU timeout ends the command's whole process group: TERM, then KILL."""
+    margin = min(15.0, max(2.0, timeout * 0.2))
+    return ["/usr/bin/timeout", f"--kill-after={margin / 2:g}", f"{timeout - margin:g}", *argv]
+
+
 async def exec_root(name: str, argv: list[str], *, timeout: float = 1800,
                     on_line: Callable[[str], None] | None = None) -> tuple[int, str]:
     """Run a command as root inside the container (the app's own use, never the agent's). The
     container itself has no capabilities, so this exec is given root's, within its user namespace.
     Its PATH and HOME are root's own: the image's PATH starts with the agent's ~/.local/bin, where an
     "apt-get", "git" or "sh" of the agent's would otherwise run as root."""
-    return await run([podman(), "exec", "--privileged", "-u", "0", "-w", "/", *ROOT_ENV, name, *argv],
+    return await run([podman(), "exec", "--privileged", "-u", "0", "-w", "/", *ROOT_ENV, name, *bounded(argv, timeout)],
                      timeout=timeout, on_line=on_line)
 
 
@@ -635,8 +644,8 @@ async def exec_agent(name: str, argv: list[str], *, timeout: float = 120, input:
     AGENT_ENV (and `env`), from / (a repository the agent made of /work would otherwise be read for
     its settings)."""
     extra = [a for k, v in (env or {}).items() for a in ("-e", f"{k}={v}")]
-    return await run([podman(), "exec", *(["-i"] if input is not None else []), "-w", "/", *AGENT_ENV, *extra, name, *argv],
-                     timeout=timeout, input=input, on_line=on_line)
+    return await run([podman(), "exec", *(["-i"] if input is not None else []), "-w", "/", *AGENT_ENV, *extra, name,
+                      *bounded(argv, timeout)], timeout=timeout, input=input, on_line=on_line)
 
 
 # The mirrors' folder made the mirrors user's. Podman gives a new volume to the container's user (the
@@ -667,7 +676,7 @@ async def exec_mirror(name: str, argv: list[str], *, timeout: float = 1800) -> t
         return rc, out
     return await run([podman(), "exec", "-u", MIRROR_USER, "-w", "/", "-e", f"PATH={SYSTEM_PATH}",
                       "-e", f"HOME={MIRROR_HOME}", "-e", "GIT_CONFIG_GLOBAL=/dev/null", "-e", "GIT_TERMINAL_PROMPT=0",
-                      name, *argv], timeout=timeout)
+                      name, *bounded(argv, timeout)], timeout=timeout)
 
 
 async def put_file(name: str, path: str, data: bytes) -> None:

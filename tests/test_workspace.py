@@ -627,3 +627,15 @@ async def test_removing_takes_the_builds_leftovers_built_on_the_base_and_nothing
     removed = await podman._remove_build_leftovers()
     assert set(fake.images) == {"base", "other", "elsewhere"} and removed == [
         "build layer l3", "build layer l2", "build layer l1"]
+
+
+async def test_what_the_app_runs_in_the_sandbox_is_stopped_there_when_it_runs_out_of_time(no_real_podman):
+    """Stopping `podman exec` doesn't stop what it runs in the container (a clone, apt-get holding its lock):
+    each command has a time limit of its own there, a little inside the app's, ending its whole group."""
+    await podman.exec_agent("dvm-x", ["git", "fetch"], timeout=120)
+    await podman.exec_root("dvm-x", ["apt-get", "update"], timeout=1800)
+    await podman.exec_mirror("dvm-x", ["sh", "-c", "x"], timeout=20)
+    agent, root, mirror = no_real_podman[0], no_real_podman[1], no_real_podman[-1]
+    assert agent[agent.index("dvm-x") + 1:] == ["/usr/bin/timeout", "--kill-after=7.5", "105", "git", "fetch"]
+    assert root[root.index("dvm-x") + 1:] == ["/usr/bin/timeout", "--kill-after=7.5", "1785", "apt-get", "update"]
+    assert mirror[mirror.index("dvm-x") + 1:] == ["/usr/bin/timeout", "--kill-after=2", "16", "sh", "-c", "x"]
