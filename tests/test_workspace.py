@@ -1,7 +1,10 @@
 """The workspace container's run command: no network, no host paths, no capabilities."""
 
 import asyncio
+import json
+import os
 import re
+import time
 from pathlib import Path
 
 import pytest
@@ -547,8 +550,8 @@ def test_a_server_thats_not_ubuntus_is_named_as_it_is():
 
 
 class FakePodman:
-    """podman's answers for the build's clean-up, scripted: images (id -> (tag, parent)) and Buildah's
-    containers (id -> image id)."""
+    """podman's answers for the build's clean-up, scripted: images (id -> (tag, parent[, its steps' history]))
+    and Buildah's containers (id -> image id)."""
 
     def __init__(self, images, containers):
         self.images, self.containers, self.ran = dict(images), dict(containers), []
@@ -559,9 +562,11 @@ class FakePodman:
         if a[:2] == ["image", "inspect"] and a[3] == "{{.Id}}":
             return (0, "base\n") if "base" in self.images else (125, "no such image")
         if a[:2] == ["image", "inspect"]:
-            return 0, "".join(f"{i}|{self.images[i][1]}\n" for i in a[4:] if i in self.images)
+            history = "History" in a[3]
+            return 0, "".join(f"{i}|{self.images[i][1]}" + (f"|{self.history(i)}" if history else "") + "\n"
+                              for i in a[4:] if i in self.images)
         if a[:2] == ["images", "-a"]:
-            return 0, "".join(f"sha256:{i}|{tag}\n" for i, (tag, _) in self.images.items())
+            return 0, "".join(f"sha256:{i}|{v[0]}\n" for i, v in self.images.items())
         if a[:2] == ["ps", "-a"]:
             return 0, "".join(f"{c}|{i}|Storage\n" for c, i in self.containers.items())
         if a[:1] == ["rm"]:
@@ -569,18 +574,34 @@ class FakePodman:
                 self.containers.pop(c, None)
             return 0, ""
         if a[:2] == ["image", "rm"]:
-            if any(parent == a[2] for _, parent in self.images.values()):
+            if any(v[1] == a[2] for v in self.images.values()):
                 return 2, "image has dependent child images"
-            return (0, "") if self.images.pop(a[2], None) else (1, "no such image")
+            if a[2] not in self.images:
+                return 1, "no such image"
+            deleted, iid = [], a[2]             # as Podman does: and those below it left with nothing on them
+            while iid in self.images and not any(v[1] == iid for k, v in self.images.items() if k not in deleted):
+                deleted.append(iid)
+                iid = self.images[iid][1] if self.images[iid][0] == "<none>:<none>" or iid == a[2] else ""
+            for d in deleted:
+                del self.images[d]
+            return 0, "".join(f"Deleted: {d}\n" for d in deleted)
         if a[:1] == ["build"]:
             self.containers["c-step3"] = "l2"          # the step it was in when it failed
             return 1, "E: Failed to fetch https://snapshot.ubuntu.com/x  503  Service Unavailable [IP: 1.2.3.4 443]"
         return 0, ""
 
+    def history(self, iid: str) -> str:
+        steps = []
+        while iid in self.images:
+            steps = list(self.images[iid][2:3] and self.images[iid][2]) + steps
+            iid = self.images[iid][1]
+        return json.dumps([{"created_by": step} for step in steps])
 
-async def test_a_failed_build_removes_the_containers_it_left_and_only_those(monkeypatch, tmp_path):
+
+async def test_a_failed_build_removes_what_it_left_and_nothing_of_a_build_of_the_users_meanwhile(monkeypatch, tmp_path):
+    """The user's own builds may be from the very same base image, and run while the app's does: their
+    containers and scratch folders were new since it began too, and went with it when it failed."""
     fake = FakePodman({"base": ("docker.io/library/ubuntu:<none>", "")}, {"theirs": "someimage"})
-    monkeypatch.setattr(podman, "run", fake.run)
 
     async def missing(tag):
         return False
@@ -591,41 +612,85 @@ async def test_a_failed_build_removes_the_containers_it_left_and_only_those(monk
     monkeypatch.setattr(pins, "CLAUDE_SHA256", __import__("hashlib").sha256(b"cli").hexdigest())
     monkeypatch.setattr(podman, "_ca_bundle", lambda: "/etc/ssl/certs/ca-certificates.crt")
     tmp = tmp_path / "vartmp"
-    (tmp / "buildah-context-111").mkdir(parents=True)          # someone else's, from before
+    (tmp / "buildah111").mkdir(parents=True)              # someone else's, from before
     monkeypatch.setenv("TMPDIR", str(tmp))
-    real_run = fake.run
+    users_build_too = False
 
     async def run(argv, **kw):
         if argv[1:2] == ["build"]:
-            (tmp / "buildah-context-222").mkdir()               # this build's scratch, left when it failed
+            scratch = Path(kw["env"]["TMPDIR"])
+            assert scratch.parent == tmp and scratch.name.startswith(podman.SCRATCH_PREFIX)
+            (scratch / "buildah222" / "overlay").mkdir(parents=True)     # this build's, left when it failed
+            for line in ("STEP 1/9: FROM base", "STEP 2/9: ARG APT_URI", "--> 0123456789ab",
+                         "STEP 3/9: ENV LANG=C.UTF-8", "--> Using cache " + "ab" * 32, "--> " + "ab" * 6, "STEP 4/9: RUN x"):
+                kw["on_line"](line)
+            fake.containers.update({"c-from": "base", "c-arg": "0123456789ab" + "0" * 52, "c-run": "ab" * 32})
+            if users_build_too:                                 # the user's, begun from the same base meanwhile
+                fake.containers.update({"u-from": "base", "u-run": "cd" * 32})
+                (tmp / "buildah333").mkdir()
+            return 1, "E: Failed to fetch https://snapshot.ubuntu.com/x  503  Service Unavailable [IP: 1.2.3.4 443]"
         if argv[1:3] == ["unshare", "sh"]:
             assert argv[4] == podman.UNMOUNT_AND_REMOVE
             import shutil
             for p in argv[6:]:
                 shutil.rmtree(p)
-        return await real_run(argv, **kw)
+        return await fake.run(argv, **kw)
     monkeypatch.setattr(podman, "run", run)
     with pytest.raises(podman.BuildError):
         await podman.build_image()
-    assert fake.containers == {"theirs": "someimage"} and ["rm", "-f", "c-step3"] in fake.ran
-    assert [p.name for p in tmp.iterdir()] == ["buildah-context-111"]
+    assert fake.containers == {"theirs": "someimage"}
+    assert [p.name for p in tmp.iterdir()] == ["buildah111"]
+    users_build_too = True
+    with pytest.raises(podman.BuildError):
+        await podman.build_image()
+    # its FROM's container and the user's are alike: both are kept (they hold nothing)
+    assert fake.containers == {"theirs": "someimage", "c-from": "base", "u-from": "base", "u-run": "cd" * 32}
+    assert sorted(p.name for p in tmp.iterdir()) == ["buildah111", "buildah333"]
 
 
-async def test_removing_takes_the_builds_leftovers_built_on_the_base_and_nothing_else(monkeypatch):
+async def test_a_builds_scratch_left_by_an_app_that_ended_meanwhile_goes_once_its_old(monkeypatch, tmp_path):
+    monkeypatch.setenv("TMPDIR", str(tmp_path))
+    old, new, users = (tmp_path / f"{podman.SCRATCH_PREFIX}old"), (tmp_path / f"{podman.SCRATCH_PREFIX}new"), tmp_path / "buildah1"
+    for d in (old, new, users):
+        (d / "buildah9").mkdir(parents=True)
+    os.utime(old, (time.time() - podman.STALE_SCRATCH - 60,) * 2)
+    os.utime(users, (time.time() - podman.STALE_SCRATCH - 60,) * 2)
+
+    async def run(argv, **kw):
+        assert argv[1:3] == ["unshare", "sh"]
+        import shutil
+        for p in argv[6:]:
+            shutil.rmtree(p)
+        return 0, ""
+    monkeypatch.setattr(podman, "run", run)
+    assert await podman._remove_stale_scratch() == [str(old)]
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["buildah1", f"{podman.SCRATCH_PREFIX}new"]
+
+
+async def test_removing_takes_the_builds_leftovers_and_nothing_of_the_users_built_on_the_same_base(monkeypatch, tmp_path):
+    """The user's own builds may be on the very image the app's is (their `ubuntu:24.04` is that one):
+    the app's layers are told by their history, which has its build's arguments."""
+    monkeypatch.setenv("TMPDIR", str(tmp_path))
+    ubuntu = ["/bin/sh -c #(nop)  ARG RELEASE", "/bin/sh -c #(nop) ADD file:43d4 in / "]
     fake = FakePodman({
-        "base": ("docker.io/library/ubuntu:<none>", ""),
-        "l1": ("<none>:<none>", "base"), "l2": ("<none>:<none>", "l1"), "l3": ("<none>:<none>", "l2"),
-        "mine": ("localhost/my-app:1", "l3"),                 # the user's own, tagged: never
+        "base": ("docker.io/library/ubuntu:<none>", "", ubuntu),
+        "l1": ("<none>:<none>", "base", ["/bin/sh -c #(nop) ARG APT_URI"]),          # below one that has them
+        "l2": ("<none>:<none>", "l1", ["/bin/sh -c #(nop) ARG APPIMAGETOOL_URL APPIMAGETOOL_SHA256 RUNTIME_URL "
+                                       "RUNTIME_SHA256 CLAUDE_SHA256"]),
+        "l3": ("<none>:<none>", "l2", ["|6 APPIMAGETOOL_SHA256=ed4c APT_URI=https://snapshot.ubuntu.com/ubuntu/x/ "
+                                       "CLAUDE_SHA256=98ab RUNTIME_SHA256=27c1 /bin/sh -c apt-get install"]),
+        "mine": ("localhost/my-app:1", "l3", ["/bin/sh -c make"]),     # the user's own, tagged: never
+        "u1": ("<none>:<none>", "base", ["/bin/sh -c apt-get install -y build-essential"]),   # the user's own
+        "u2": ("<none>:<none>", "u1", ["/bin/sh -c #(nop) COPY file:aa in /build "]),
         "other": ("<none>:<none>", "elsewhere"), "elsewhere": ("docker.io/library/debian:13", ""),
-    }, {"w0": "base", "w2": "l2", "users": "elsewhere"})
+    }, {"w0": "base", "w2": "l2", "users": "elsewhere", "users-step": "u2"})
     monkeypatch.setattr(podman, "run", fake.run)
     removed = await podman._remove_build_leftovers()
-    assert set(fake.containers) == {"users"}
-    assert set(fake.images) == {"base", "l1", "l2", "l3", "mine", "other", "elsewhere"}     # l3 has a child: kept
+    assert set(fake.containers) == {"w0", "users", "users-step"} and removed == ["build container w2"]
+    assert set(fake.images) == {"base", "l1", "l2", "l3", "mine", "u1", "u2", "other", "elsewhere"}     # l3 has a child
     del fake.images["mine"]
-    fake.containers = {}
     removed = await podman._remove_build_leftovers()
-    assert set(fake.images) == {"base", "other", "elsewhere"} and removed == [
+    assert set(fake.images) == {"base", "u1", "u2", "other", "elsewhere"} and removed == [
         "build layer l3", "build layer l2", "build layer l1"]
 
 

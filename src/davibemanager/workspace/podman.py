@@ -23,6 +23,7 @@ import os
 import re
 import shutil
 import tempfile
+import time
 from pathlib import Path
 from typing import Callable
 from urllib.parse import urlparse
@@ -145,11 +146,11 @@ def _ca_bundle() -> str:
 
 
 async def run(argv: list[str], *, timeout: float = 120, input: bytes | None = None,
-              on_line: Callable[[str], None] | None = None) -> tuple[int, str]:
-    """Run a podman command; returns (exit code, combined output)."""
+              on_line: Callable[[str], None] | None = None, env: dict[str, str] | None = None) -> tuple[int, str]:
+    """Run a podman command; returns (exit code, combined output). `env`: set for it, besides this app's."""
     proc = await asyncio.create_subprocess_exec(
         *argv, stdin=asyncio.subprocess.PIPE if input is not None else asyncio.subprocess.DEVNULL,
-        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
+        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT, env={**os.environ, **env} if env else None)
     out: list[str] = []
 
     def take(line: bytes) -> None:
@@ -247,21 +248,27 @@ async def build_image(on_line: Callable[[str], None] | None = None, *, source: s
                     "RUNTIME_SHA256", "CLAUDE_SHA256"):
             argv += ["--build-arg", f"{key}={getattr(pins, key)}"]
         argv += ["-f", str(Path(ctx) / "Containerfile"), ctx]
-        before, scratch = await build_containers(), _build_scratch()
+        await _remove_stale_scratch()
+        before, made, scratch = await build_containers(), [], _scratch_dir()
+
+        def seen(line: str) -> None:
+            if m := BUILT.match(line):
+                made.append(m.group(1))
+            if on_line:
+                on_line(line)
         rc = None
         try:
-            rc, out = await run(argv, timeout=3600, on_line=on_line)
+            rc, out = await run(argv, timeout=3600, on_line=seen, env={"TMPDIR": str(scratch)})
         except asyncio.TimeoutError:
             raise BuildError("Preparing the sandbox took over an hour, and was stopped. Its downloads may be very slow "
                              "just now: it goes on from where it got to when it's tried again.", "",
                              kind="network") from None
         finally:
-            if rc != 0:
-                # a build that failed, or was stopped, leaves a Buildah container for each step it began,
-                # and its scratch folders (one holds a copy of the build's files, the CLI's 200 MB among
-                # them); stopping it gently doesn't help. Only those it made are removed. Its finished
-                # steps' layers stay, so the next build starts from them
-                await asyncio.shield(_remove_build_debris(before, scratch))
+            # a build that failed, or was stopped, leaves a Buildah container for each step it began, and
+            # its scratch folders (one holds a copy of the build's files, the CLI's 200 MB among them);
+            # stopping it gently doesn't help. Only those it made are removed. Its finished steps' layers
+            # stay, so the next build starts from them
+            await asyncio.shield(_after_build(before, made, scratch, failed=rc != 0))
     if rc != 0:
         raise build_failure(out)
     return tag
@@ -288,23 +295,77 @@ done
 """
 
 
-def _build_scratch() -> set[Path]:
-    """Buildah's scratch folders (in TMPDIR, else /var/tmp, as Buildah chooses)."""
-    tmp = Path(os.environ.get("TMPDIR") or "/var/tmp")
+# A build's own scratch folder, its TMPDIR, where Buildah puts its scratch folders (and nothing of another
+# build's, the user's own, is put): in TMPDIR, else /var/tmp, where Buildah would put them anyway.
+SCRATCH_PREFIX = "davibemanager-build-"
+STALE_SCRATCH = 2 * 3600            # older than a build may take: left by an app that ended while it built
+# What a build prints of each step's image, made or found made ("--> 1f93904d4361", "--> Using cache <id>")
+BUILT = re.compile(r"^--> (?:Using cache )?([0-9a-f]{12,64})\s*$")
+
+
+def _scratch_root() -> Path:
+    return Path(os.environ.get("TMPDIR") or "/var/tmp")
+
+
+def _scratch_dir() -> Path:
+    return Path(tempfile.mkdtemp(prefix=SCRATCH_PREFIX, dir=_scratch_root()))
+
+
+async def _after_build(before: dict[str, str], made: list[str], scratch: Path, *, failed: bool) -> None:
+    if failed:
+        await _remove_build_debris(before, made)
+    await _remove_scratch(scratch)
+
+
+async def _remove_build_debris(before: dict[str, str], made: list[str]) -> None:
+    """The Buildah containers a failed or stopped build left: each on the image its step began from,
+    which is one the build said it made (or found made), or the base image for its FROM. On that one,
+    a build of the user's begun meanwhile from that very image (theirs may be the same one) has one
+    too, and the two aren't told apart: it's removed only when it's the one there (it holds nothing)."""
+    new = {c: image for c, image in (await build_containers()).items() if c not in before}
+    ours = [c for c, image in new.items() if any(image.startswith(i) for i in made)]
+    base = await _base_id()
+    on_base = [c for c, image in new.items() if base and image == base]
+    if made and len(on_base) == 1:
+        ours += on_base
+    await _remove_containers(ours)
+
+
+async def _remove_scratch(scratch: Path) -> None:
+    """A build's scratch folder, and what a failed or stopped one left in it: in Podman's user namespace,
+    as what its steps wrote there belongs to this user's subordinate ids, and the build context's overlay
+    is still mounted there."""
     try:
-        return {p for p in tmp.glob("buildah*") if p.is_dir() and not p.is_symlink()}
+        left = sorted(str(p) for p in scratch.iterdir())
     except OSError:
-        return set()
+        return
+    if left:
+        await run([podman(), "unshare", "sh", "-c", UNMOUNT_AND_REMOVE, "sh", *left], timeout=120)
+    try:
+        scratch.rmdir()
+    except OSError:
+        pass
 
 
-async def _remove_build_debris(containers: dict[str, str], scratch: set[Path]) -> None:
-    """What a failed or stopped build left, of its own: what wasn't there before it began."""
-    await _remove_containers([c for c in await build_containers() if c not in containers])
-    new = sorted(str(p) for p in _build_scratch() - scratch)
-    if new:
-        # in Podman's user namespace: what the build's steps wrote there belongs to this user's subordinate
-        # ids, and the build context's overlay is still mounted there
-        await run([podman(), "unshare", "sh", "-c", UNMOUNT_AND_REMOVE, "sh", *new], timeout=120)
+async def _remove_stale_scratch() -> list[str]:
+    """Scratch folders of builds the app didn't see end (it ended while they ran)."""
+    removed = []
+    try:
+        old = [p for p in _scratch_root().glob(f"{SCRATCH_PREFIX}*") if p.is_dir() and not p.is_symlink()
+               and time.time() - p.stat().st_mtime > STALE_SCRATCH]
+    except OSError:
+        return []
+    for p in sorted(old):
+        await _remove_scratch(p)
+        if not p.exists():
+            removed.append(str(p))
+    return removed
+
+
+async def _base_id() -> str:
+    """The pinned base image's id: "" if it isn't here."""
+    rc, out = await run([podman(), "image", "inspect", "--format", "{{.Id}}", pins.BASE_IMAGE])
+    return out.strip() if rc == 0 else ""
 
 
 async def _remove_containers(ids: list[str]) -> None:
@@ -746,43 +807,68 @@ async def remove_all(sandbox: str = APP_SANDBOX) -> list[str]:
     return removed
 
 
+# The build arguments the app's image declares: each of its steps' images has them in its history, from
+# the first steps on (the few before those are below one that has them)
+OWN_ARGS = ("APPIMAGETOOL_SHA256", "RUNTIME_SHA256", "CLAUDE_SHA256")
+
+
+def _own_history(history: str) -> bool:
+    """Whether an image's history (`{{json .History}}`) is of the app's image: it declares OWN_ARGS."""
+    try:
+        steps = json.loads(history)
+    except ValueError:
+        return False
+    text = " ".join(str(s.get("created_by", "")) for s in steps if isinstance(s, dict)) if isinstance(steps, list) else ""
+    return all(re.search(rf"\b{a}\b", text) for a in OWN_ARGS)
+
+
 async def _remove_build_leftovers() -> list[str]:
     """What builds of the app's image left: the untagged images of their steps, and the Buildah containers
-    of steps a stopped build had begun. Theirs alone: each is built on the pinned base image, which is
-    found by following their parents (nothing of the user's is built on that exact image by chance)."""
-    rc, out = await run([podman(), "image", "inspect", "--format", "{{.Id}}", pins.BASE_IMAGE])
-    base = out.strip() if rc == 0 else ""
+    of steps a stopped build had begun. Theirs alone. Being built on the pinned base image doesn't say so:
+    the user's own builds may be on that very image (an `ubuntu:24.04` of theirs that is the same one), so
+    it's their history that does (OWN_ARGS). A Buildah container on the base image itself (a FROM's) may be
+    either's, and is kept (it holds nothing; Podman's reset then says it's there)."""
+    removed = await _remove_stale_scratch()
+    base = await _base_id()
     if not base:
-        return []
+        return removed
     rc, out = await run([podman(), "images", "-a", "--no-trunc", "--format", "{{.ID}}|{{.Repository}}:{{.Tag}}"])
     tags = {}
     for line in out.splitlines() if rc == 0 else []:
         iid, _, tag = line.partition("|")
         tags[iid.removeprefix("sha256:")] = tag
-    parents = {}
+    parents, marked = {}, []
     if tags:
-        rc, out = await run([podman(), "image", "inspect", "--format", "{{.Id}}|{{.Parent}}", *tags])
+        rc, out = await run([podman(), "image", "inspect", "--format", "{{.Id}}|{{.Parent}}|{{json .History}}", *tags])
         for line in out.splitlines() if rc == 0 else []:
-            iid, _, parent = line.partition("|")
+            iid, _, rest = line.partition("|")
+            parent, _, history = rest.partition("|")
             parents[iid] = parent.removeprefix("sha256:")
-
-    def depth(iid: str) -> int:
-        """How many steps above the base image `iid` is: 0 if it isn't built on it."""
-        for n in range(1, 200):
+            if _own_history(history):
+                marked.append(iid)
+    ours: dict[str, int] = {}           # the app's images: how many steps above the base image each is
+    for iid in marked:
+        below = []
+        while iid and iid != base and len(below) < 200:
+            below.append(iid)
             iid = parents.get(iid, "")
-            if not iid:
-                return 0
-            if iid == base:
-                return n
-        return 0
-    removed = []
-    stale = [c for c, image in (await build_containers()).items() if image == base or depth(image)]
+        if iid == base:
+            for n, i in enumerate(reversed(below), 1):
+                ours[i] = n
+    stale = [c for c, image in (await build_containers()).items() if image in ours]
     await _remove_containers(stale)
     removed += [f"build container {c[:12]}" for c in stale]
-    ours = sorted((i for i, tag in tags.items() if tag == "<none>:<none>" and depth(i)), key=depth, reverse=True)
-    for iid in ours:                    # the last steps first: an image with others built on it can't go
-        if (await run([podman(), "image", "rm", iid], timeout=120))[0] == 0:
-            removed.append(f"build layer {iid[:12]}")
+    gone: set[str] = set()
+    for iid in sorted((i for i in ours if tags.get(i) == "<none>:<none>"), key=ours.get, reverse=True):
+        # the last steps first: an image with others built on it can't go. Podman takes the ones below
+        # it that are left with nothing built on them along with it, and says which
+        if iid in gone:
+            continue
+        rc, out = await run([podman(), "image", "rm", iid], timeout=120)
+        if rc == 0:
+            deleted = {iid} | set(re.findall(r"^Deleted: (?:sha256:)?(\S+)\s*$", out, re.M))
+            gone |= deleted
+            removed += [f"build layer {i[:12]}" for i in sorted(deleted, key=lambda i: -ours.get(i, 0))]
     return removed
 
 
