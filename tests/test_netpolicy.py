@@ -131,3 +131,12 @@ def test_this_computers_own_networks_are_never_public_for_the_workspace():
     assert not netpolicy.is_global_ip("2a02:8108:1:2::abcd", lan) and netpolicy.is_global_ip("2a02:8108:9:9::1", lan)
     for carried in ("64:ff9b::7f00:1", "2002:7f00:1::1", "::ffff:10.0.0.1"):
         assert not netpolicy.is_global_ip(carried)
+
+
+def test_an_address_urlparse_cant_take_or_an_ip_with_a_dot_after_it_is_refused():
+    with pytest.raises(InsecureURL, match="isn't an address the app can use"):
+        check_url("http://[::1]@evil.example/v1")
+    assert not is_secure("http://[::1]@evil.example/v1")
+    with pytest.raises(InsecureURL):
+        check_url("http://192.168.1.50.:8080/v1")      # a name to the resolver: DNS says where it goes
+    assert check_url("http://192.168.1.50:8080/v1")

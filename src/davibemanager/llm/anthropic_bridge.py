@@ -186,6 +186,26 @@ def _sse(event: str, data: dict) -> bytes:
     return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n".encode()
 
 
+def _calls_and_stop(result) -> tuple[list, str]:
+    """The tool calls to hand over, and why the reply stopped. Cut off at its length ("length"), it says
+    so (max_tokens) whatever it holds: a call cut short in it, whose input can't be read, isn't handed
+    over as one with no input (run with nothing it fails, and the model, never told why, writes it again)."""
+    if result is None:
+        return [], "end_turn"
+    finish = result.finish_reason or "stop"
+    calls = list(result.tool_calls or [])
+    if finish == "length":
+        return [c for c in calls if _readable(c.arguments)], "max_tokens"
+    return calls, "tool_use" if calls else _STOP.get(finish, "end_turn")
+
+
+def _readable(raw: str) -> bool:
+    try:
+        return isinstance(json.loads(raw or "{}"), dict)
+    except ValueError:
+        return False
+
+
 def _arguments(raw: str) -> dict:
     try:
         value = json.loads(raw or "{}")
@@ -236,7 +256,8 @@ async def sse(events: AsyncIterator[tuple[str, object]], model: str, input_estim
     if text_open:
         yield _sse("content_block_stop", {"type": "content_block_stop", "index": index})
         index += 1
-    for call in (result.tool_calls if result else []):
+    calls, stop = _calls_and_stop(result)
+    for call in calls:
         yield _sse("content_block_start", {"type": "content_block_start", "index": index, "content_block": {
             "type": "tool_use", "id": call.id or f"toolu_{secrets.token_hex(8)}", "name": call.name, "input": {}}})
         yield _sse("content_block_delta", {"type": "content_block_delta", "index": index, "delta": {
@@ -247,7 +268,6 @@ async def sse(events: AsyncIterator[tuple[str, object]], model: str, input_estim
     stats["output_tokens"] = usage.get("completion_tokens")
     if usage:
         stats["usage"] = usage
-    stop = "tool_use" if result and result.tool_calls else _STOP.get((result.finish_reason if result else "") or "stop", "end_turn")
     yield _sse("message_delta", {"type": "message_delta", "delta": {"stop_reason": stop, "stop_sequence": None},
                                  "usage": {"input_tokens": usage.get("prompt_tokens", input_estimate),
                                            "output_tokens": usage.get("completion_tokens", 0)}})
@@ -263,11 +283,11 @@ async def message(events: AsyncIterator[tuple[str, object]], model: str, input_e
         elif kind == "done":
             result = val
     content: list[dict] = [{"type": "text", "text": text}] if text else []
-    for call in (result.tool_calls if result else []):
+    calls, stop = _calls_and_stop(result)
+    for call in calls:
         content.append({"type": "tool_use", "id": call.id or f"toolu_{secrets.token_hex(8)}", "name": call.name,
                         "input": _arguments(call.arguments)})
     usage = (result.usage if result else None) or {}
-    stop = "tool_use" if result and result.tool_calls else _STOP.get((result.finish_reason if result else "") or "stop", "end_turn")
     return {"id": f"msg_{secrets.token_hex(12)}", "type": "message", "role": "assistant", "model": model,
             "content": content, "stop_reason": stop, "stop_sequence": None,
             "usage": {"input_tokens": usage.get("prompt_tokens", input_estimate), "output_tokens": usage.get("completion_tokens", 0)}}

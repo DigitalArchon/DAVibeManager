@@ -44,7 +44,10 @@ def _ip(host: str) -> ipaddress.IPv4Address | ipaddress.IPv6Address | None:
 
 def is_local_host(host: str | None) -> bool:
     """localhost, loopback, private, link-local or `.local`. An empty host is not local."""
-    host = (host or "").lower().rstrip(".")
+    host = (host or "").lower()
+    if host.endswith(".") and _ip(host.rstrip(".")) is not None:
+        return False                    # 192.168.1.50. is a name to the resolver, not that address: DNS says where
+    host = host.rstrip(".")
     if not host:
         return False
     if host == "localhost" or host.endswith(".localhost") or host.endswith(".local"):
@@ -55,7 +58,11 @@ def is_local_host(host: str | None) -> bool:
 
 def is_secure(url: str) -> bool:
     """https anywhere, or http to a local address."""
-    parsed = urlparse(url)
+    try:
+        parsed = urlparse(url)
+        parsed.hostname
+    except ValueError:
+        return False
     if parsed.scheme == "https":
         return bool(parsed.hostname)
     return parsed.scheme == "http" and is_local_host(parsed.hostname)
@@ -64,8 +71,12 @@ def is_secure(url: str) -> bool:
 def check_url(url: str, what: str = "This address") -> str:
     """Return `url` unchanged if the app may use it, else raise InsecureURL saying why."""
     url = (url or "").strip()
-    parsed = urlparse(url)
-    if parsed.scheme not in ("http", "https") or not parsed.hostname:
+    try:
+        parsed = urlparse(url)
+        host = parsed.hostname
+    except ValueError as e:              # one urlparse can't take (http://[::1]@evil.example/)
+        raise InsecureURL(f"{what} isn't an address the app can use ({e}): {url[:80]!r}") from None
+    if parsed.scheme not in ("http", "https") or not host:
         raise InsecureURL(f"{what} must be a full https:// URL (got {url[:80]!r})")
     if not is_secure(url):
         raise InsecureURL(

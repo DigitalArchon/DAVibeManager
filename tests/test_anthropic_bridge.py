@@ -248,3 +248,21 @@ async def test_the_gateway_sends_images_to_a_model_that_sees_and_describes_them_
             assert "sees" not in log[-1]
     finally:
         await g.stop()
+
+
+async def test_a_reply_cut_off_at_its_length_says_so_and_hands_over_no_call_it_cut_short():
+    """finish_reason "length" in the middle of a Write: not a tool call with no input (run with nothing it
+    fails, and the model, never told why, writes it all again, paid each time), but max_tokens."""
+    from davibemanager.llm import anthropic_bridge as bridge
+    from davibemanager.llm.client import ToolCall, TurnResult
+
+    async def events():
+        yield "text", "Writing it."
+        yield "done", TurnResult(content="Writing it.", finish_reason="length", tool_calls=[
+            ToolCall("call_1", "Read", '{"file_path": "/work/a.c"}'),
+            ToolCall("call_2", "Write", '{"file_path": "/work/zoom.c", "content": "#include <gtk/gtk.h>\\nstatic void on_')])
+    msg = await bridge.message(events(), "z-ai/glm-5.3", 100)
+    assert msg["stop_reason"] == "max_tokens"
+    assert [(c["name"], c["input"]) for c in msg["content"] if c["type"] == "tool_use"] == [("Read", {"file_path": "/work/a.c"})]
+    streamed = b"".join([c async for c in bridge.sse(events(), "z-ai/glm-5.3", 100)]).decode()
+    assert '"stop_reason": "max_tokens"' in streamed and '"Write"' not in streamed
