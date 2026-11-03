@@ -1,5 +1,5 @@
-"""TEE models on nano-gpt: attestation before anything is sent, and a signature check on
-every reply. Ported from SealedLore (its providers/tee.py, Sept 2026); the checks are the same.
+"""TEE models on nano-gpt: attestation before anything is sent. Ported from SealedLore (its
+providers/tee.py, Sept 2026); the checks are the same.
 
 nano-gpt's `TEE/*` models run inside a trusted execution environment. Two
 calls let a client check that (docs.nano-gpt.com/api-reference/tee-verification):
@@ -15,7 +15,9 @@ calls let a client check that (docs.nano-gpt.com/api-reference/tee-verification)
   "partial" attestation: see its docstring.
 - `GET {base}/tee/signature/{completion id}?model=&signing_algo=ecdsa` returns
   a `text` and an EIP-191 `signature`; the signer recovered from them must be
-  the attested address (llm/ethsig.py).
+  the attested address (llm/ethsig.py). `verify_reply` checks that, but the app
+  doesn't call it: the signed record isn't tied to the reply it gets (below),
+  so it would prove nothing about that reply.
 
 What this proves: a genuine, current, non-debug Intel TDX machine (and, when
 evidence is offered, NVIDIA GPUs) holds the key, bound to our nonce, and a

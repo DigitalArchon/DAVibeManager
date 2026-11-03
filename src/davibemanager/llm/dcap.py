@@ -420,7 +420,12 @@ def _signed_json(
     raw = text[start : end + 1]
     document = json.loads(text)
     signer = x509.load_pem_x509_certificates(chain_pem.encode())
-    verify_chain(signer[:-1] if len(signer) > 1 else signer, root, now)
+    leaf = signer[:-1] if len(signer) > 1 else signer
+    # Intel's TCB signing certificate, issued by the root itself: not just any certificate under the root
+    # (a platform's PCK certificate, whose key an out-of-date platform can give up, would rate its own TCB)
+    if len(leaf) != 1 or _common_name(leaf[0]) != "Intel SGX TCB Signing":
+        raise DcapError(f"Intel's {key} isn't signed by Intel's TCB signing certificate")
+    verify_chain(leaf, root, now)
     if not _raw_verify(
         signer[0].public_key(), bytes.fromhex(document["signature"]), raw.encode("utf-8")
     ):
@@ -503,8 +508,17 @@ def module_status(tcb_info: dict[str, Any], quote: Quote) -> str | None:
     raise DcapError(f"the {name} module (SVN {minor}) is older than any Intel lists")
 
 
-def qe_status(identity: dict[str, Any], qe_report: bytes) -> str:
-    """The quoting enclave's status. Raises DcapError when it is not Intel's QE."""
+# Intel's TDX quoting enclave, as Intel's own identity of it says (tdx/certification/v4/qe/identity):
+# checked on every quote, whether or not that can be fetched now. It's what makes the attestation key the
+# QE's, not any enclave's a platform certified; without it, Intel's collateral being out of reach (or
+# made so) would let such an enclave sign a quote of its own making.
+INTEL_TD_QE = {"id": "TD_QE", "mrsigner": "DC9E2A7C6F948F17474E34A7FC43ED030F7C1563F1BABDDF6340C82E0E54A8C5",
+               "isvprodid": 2, "miscselect": "00000000", "miscselectMask": "FFFFFFFF",
+               "attributes": "11000000000000000000000000000000", "attributesMask": "FBFFFFFFFFFFFFFF0000000000000000"}
+
+
+def qe_is_intels(identity: dict[str, Any], qe_report: bytes) -> None:
+    """Raises DcapError when the quoting enclave isn't Intel's QE as `identity` describes it."""
     if identity.get("id") != "TD_QE":
         raise DcapError(f"Intel's QE identity is for {identity.get('id')}, not TD_QE")
     (miscselect,) = struct.unpack_from("<I", qe_report, 16)
@@ -520,6 +534,11 @@ def qe_status(identity: dict[str, Any], qe_report: bytes) -> str:
     (product,) = struct.unpack_from("<H", qe_report, 256)
     if product != identity["isvprodid"]:
         raise DcapError("the quoting enclave is not Intel's TDX QE")
+
+
+def qe_status(identity: dict[str, Any], qe_report: bytes) -> str:
+    """The quoting enclave's status. Raises DcapError when it is not Intel's QE."""
+    qe_is_intels(identity, qe_report)
     (svn,) = struct.unpack_from("<H", qe_report, 258)
     for level in identity.get("tcbLevels", []):
         if svn >= level["tcb"]["isvsvn"]:
@@ -579,6 +598,7 @@ def _verify(raw: bytes, session: httpx.Client, now: datetime) -> Result:
         raise DcapError("the quoting enclave does not vouch for the attestation key")
     if not _raw_verify(_key_from_xy(quote.attestation_key), quote.signature, quote.signed):
         raise DcapError("the quote's signature does not verify")
+    qe_is_intels(INTEL_TD_QE, quote.qe_report)      # with Intel's collateral or without it
 
     sgx = sgx_extension(
         pck.extensions.get_extension_for_oid(x509.ObjectIdentifier(SGX_EXTENSION)).value.value

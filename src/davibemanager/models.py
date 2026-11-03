@@ -50,7 +50,7 @@ class Models:
         self._caps: dict[str, dict[str, dict]] = {}   # provider -> model id -> capabilities
         self.caps_http = None                         # httpx client override (tests)
         self._unsupported: dict[tuple[str, str], set[str]] = {}   # generation settings a model's route refused
-        self._tee: dict[tuple[str, str], tuple[tee_mod.TeeClient, float, dict]] = {}
+        self._tee: dict[tuple[str, str, str], tuple[tee_mod.TeeClient, float, dict]] = {}
         self.tee_factory: Callable | None = None      # tests: (base_url, key, model) -> TeeClient
         self.client_factory: Callable | None = None   # tests: (provider, model) -> client
         self.private_lister: Callable | None = None   # tests: base_url -> private model ids
@@ -350,7 +350,7 @@ class Models:
         if detect_tier(model, prov.base_url, prov.tier_overrides) != "tee":
             return None
         async with self._attest_lock:
-            hit = self._tee.get((prov.name, model))
+            hit = self._tee.get((prov.name, prov.base_url, model))     # another address: attested again
             if hit and time.monotonic() - hit[1] < TEE_REATTEST_SECONDS:
                 return hit[2]
             make = self.tee_factory or tee_mod.TeeClient
@@ -364,6 +364,6 @@ class Models:
                 client.close()
                 self._log("enclave_attestation_failed", model=model, error=str(e))
                 raise UserError(f"{model}'s TEE attestation didn't hold, so nothing was sent to it: {e}") from e
-            self._tee[(prov.name, model)] = (client, time.monotonic(), att.to_dict())
+            self._tee[(prov.name, prov.base_url, model)] = (client, time.monotonic(), att.to_dict())
             self._log("enclave_attested", model=model, **att.to_dict())
             return att.to_dict()

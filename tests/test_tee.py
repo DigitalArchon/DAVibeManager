@@ -612,3 +612,68 @@ def test_intels_collateral_that_arrived_but_cant_be_read_refuses(real):
     client = httpx.Client(transport=httpx.MockTransport(handler))
     with pytest.raises(dcap.DcapError, match="could not be read"):
         dcap.verify(bytes.fromhex(real["intel_quote"]), client, now=at(real))
+
+
+def test_intels_tcb_ratings_count_only_signed_by_its_own_tcb_signing_certificate():
+    """Not by any certificate under Intel's root: a platform's PCK certificate (whose key an out-of-date
+    platform can give up) would otherwise rate its own platform's TCB."""
+    from datetime import UTC, datetime, timedelta
+
+    from cryptography import x509
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import ec
+    from cryptography.hazmat.primitives.asymmetric.utils import decode_dss_signature
+
+    from davibemanager.llm import dcap
+    now = datetime.now(UTC)
+
+    def cert(name, key, issuer, issuer_key, ca):
+        named = lambda n: x509.Name([x509.NameAttribute(x509.NameOID.COMMON_NAME, n)])  # noqa: E731
+        return (x509.CertificateBuilder().subject_name(named(name)).issuer_name(named(issuer))
+                .public_key(key.public_key()).serial_number(x509.random_serial_number())
+                .not_valid_before(now - timedelta(days=1)).not_valid_after(now + timedelta(days=1))
+                .add_extension(x509.BasicConstraints(ca=ca, path_length=None), critical=True)
+                .sign(issuer_key, hashes.SHA256()))
+    root_key, ca_key, pck_key = (ec.generate_private_key(ec.SECP256R1()) for _ in range(3))
+    root = cert("Intel SGX Root CA", root_key, "Intel SGX Root CA", root_key, True)
+    ca = cert("Intel SGX PCK Platform CA", ca_key, "Intel SGX Root CA", root_key, True)
+    pck = cert("Intel SGX PCK Certificate", pck_key, "Intel SGX PCK Platform CA", ca_key, False)
+    raw = '{"id":"TDX","version":3,"tcbLevels":[{"tcbStatus":"UpToDate"}]}'
+    r, s = decode_dss_signature(pck_key.sign(raw.encode(), ec.ECDSA(hashes.SHA256())))
+    content = ('{"tcbInfo":' + raw + ',"signature":"' + (r.to_bytes(32, "big") + s.to_bytes(32, "big")).hex() + '"}').encode()
+    chain = b"".join(c.public_bytes(serialization.Encoding.PEM) for c in (pck, ca, root)).decode()
+    with pytest.raises(dcap.DcapError, match="TCB signing certificate"):
+        dcap._signed_json(content, "tcbInfo", chain, root, now)
+
+
+def test_without_nvidias_keys_all_but_its_signature_is_still_checked(real, monkeypatch):
+    """NVIDIA's keys can't be fetched: its verdict counts as unchecked (a partial attestation), but evidence
+    made for another nonce (replayed) or out of date is refused all the same; and keys fetched before,
+    though more than an hour ago, are still NVIDIA's: used when no fresh ones can be had."""
+    monkeypatch.setitem(nras._keys, "keys", {})
+    with pytest.raises(nras.KeysUnavailable):
+        nvidia(real, jwks={"no": "keys"})
+    with pytest.raises(nras.NrasError, match="nonce"):
+        nvidia(real, jwks={"no": "keys"}, nonce="00" * 32)
+    with pytest.raises(nras.NrasError, match="validity window"):
+        nvidia(real, jwks={"no": "keys"}, now=real["now"] + 86400)
+    assert nvidia(real) == 8                              # fetched now: kept
+    monkeypatch.setitem(nras._keys, "at", 0.0)            # long ago
+    assert nvidia(real, jwks={"no": "keys"}) == 8
+
+
+def test_the_quoting_enclave_must_be_intels_whether_or_not_intels_collateral_can_be_had(real, monkeypatch):
+    """It's what makes the attestation key the QE's, not any enclave's the platform certified: checked
+    against Intel's TD_QE identity even when Intel's collateral is out of reach (or made so)."""
+    quote = dcap.parse_quote(bytes.fromhex(real["intel_quote"]))
+    dcap.qe_is_intels(dcap.INTEL_TD_QE, quote.qe_report)                  # the real one is Intel's
+    other = bytearray(quote.qe_report)
+    other[128:160] = b"\x11" * 32                                          # signed by another key
+    with pytest.raises(dcap.DcapError, match="not signed by Intel"):
+        dcap.qe_is_intels(dcap.INTEL_TD_QE, bytes(other))
+    checked = []
+    real_check = dcap.qe_is_intels
+    monkeypatch.setattr(dcap, "qe_is_intels", lambda identity, report: checked.append(identity) or real_check(identity, report))
+    monkeypatch.setattr(dcap, "_cache", {})
+    result = intel(real, intel_status=503)
+    assert not result.collateral and checked == [dcap.INTEL_TD_QE]
