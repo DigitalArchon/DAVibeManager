@@ -191,6 +191,10 @@ def test_the_newest_release_in_the_same_naming_is_found():
     assert versions.newer("v0.40.0-rc1", ["v0.38.0", "v0.40.0-rc1", "v0.40.0"]) == "v0.40.0"   # a pre-release, then its release
     assert versions.newer("3.12.7", GTHUMB_TAGS) is None                      # pre-releases don't count
     assert versions.newer("a1b2c3d", GTHUMB_TAGS) is None                     # a commit: nothing to compare with
+    # a digit in the project's name isn't its version (Xfce's apps name their releases so)
+    assert versions.newer("xfce4-terminal-1.1.3", ["xfce4-terminal-1.1.3", "xfce4-terminal-1.1.4"]) == "xfce4-terminal-1.1.4"
+    assert versions.newer("v4l-utils-1.24.1", ["v4l-utils-1.24.1", "v4l-utils-1.26.1"]) == "v4l-utils-1.26.1"
+    assert versions.newer("xfce4-panel-4.18.5", ["xfce4-panel-4.18.5", "xfce4-panel-4.19.0pre1"]) is None
     out = "abc\trefs/tags/3.12.6\ndef\trefs/tags/3.12.7\nxyz\trefs/heads/main\n"
     assert versions.tags_from_ls_remote(out) == ["3.12.6", "3.12.7"]
 

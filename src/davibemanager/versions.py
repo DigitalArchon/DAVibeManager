@@ -9,8 +9,11 @@ _PRERELEASE = re.compile(r"alpha|beta|rc|pre|dev|snapshot|nightly|test|(?:^|[._-
 
 
 def parse(tag: str) -> tuple[str, tuple[int, ...], str] | None:
-    """("v", (0, 39, 0), "") for "v0.39.0": the text before the version, its numbers, the rest."""
-    m = _NUMBERS.search(tag or "")
+    """("v", (0, 39, 0), "") for "v0.39.0": the text before the version, its numbers, the rest. The
+    version is the first run of numbers with a dot or underscore in it (else the first run): a digit
+    in the project's name isn't it ("xfce4-terminal-1.1.3" is 1.1.3, not 4)."""
+    runs = list(_NUMBERS.finditer(tag or ""))
+    m = next((r for r in runs if re.search(r"[._]", r.group())), runs[0] if runs else None)
     if not m or len(m.group()) > 40:
         return None
     return tag[:m.start()], tuple(int(x) for x in re.split(r"[._]", m.group())), tag[m.end():]
