@@ -1300,7 +1300,10 @@ class Engine:
         r = self._request(rid)
         if r.status != "done":
             raise UserError("There is no output to send yet.")
-        text, _, _ = self._clean(r.preview if text is None else str(text))
+        # the card's text is cleaned already: cleaned again, its "[... N lines omitted ...]" would be cut too
+        # (it's over the limit by its own line), and it would read as edited. What the user changed is.
+        edited = text is not None and str(text).replace("\r\n", "\n") != r.preview
+        text = self._clean(str(text))[0] if edited else r.preview
         r.sent_text, r.status, r.note = text, "sent", (note.strip() or r.note)
         self._outside().add(text)
         head = f"The user ran it{' as administrator' if r.as_root else ''}"
@@ -1310,11 +1313,11 @@ class Engine:
                  else f". It was stopped after {r.seconds:.0f} seconds (time limit)." if r.timed_out
                  else f". Exit code {r.exit_code}.")
         parts = [head, fence(text) if text.strip() else "(no output)"]
-        if text != r.preview:
+        if edited:
             parts.append("(The user edited the output before sending it.)")
         if r.note:
             parts.append(f"The user's note: {r.note}")
-        self.log("request_sent", id=r.id, auto=auto, chars=len(text), edited=text != r.preview)
+        self.log("request_sent", id=r.id, auto=auto, chars=len(text), edited=edited)
         self._request_changed(r)
         self._resolve("request", r.id, "\n".join(parts))
 

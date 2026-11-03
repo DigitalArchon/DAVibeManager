@@ -14,8 +14,8 @@ from typing import Any, Awaitable, Protocol
 from ..llm.prompts import BUILDER_TOOL_DOCS, QUESTIONS_SCHEMA
 
 # apt package names (Debian policy), optionally with an architecture or version: nothing that
-# could be read as an apt option or a path
-PACKAGE_RE = re.compile(r"^[a-z0-9][a-z0-9+.-]*(:[a-z0-9-]+)?(=[A-Za-z0-9.+:~-]+)?$")
+# could be read as an apt option or a path, and no "-" at the end (apt-get install removes "git-")
+PACKAGE_RE = re.compile(r"^[a-z0-9][a-z0-9+.-]*(:[a-z0-9-]+)?(=[A-Za-z0-9.+:~-]+)?(?<!-)$")
 MAX_PACKAGES = 60
 
 

@@ -52,7 +52,10 @@ _SUMMARY_KEYS = {"Bash": "command", "Read": "file_path", "Write": "file_path", "
                  "WebFetch": "url", "WebSearch": "query", "mcp__host__web_search": "query", "Task": "description", "Agent": "description"}
 # host tools show as their own cards, not as steps
 CARD_TOOLS = {"mcp__host__ask_user", "mcp__host__offer_build", "mcp__host__request_host_command", "mcp__host__show_screenshot",
-              "mcp__host__deliver"}
+              "mcp__host__deliver", "mcp__host__suggest_app_chat", "mcp__host__send_findings"}
+# what the user reads as the assistant telling them: its message, and the cards that say something to them
+# (an app chat to start, what it found), which a turn may end on, as their tools' descriptions say
+TELLS = ("text", "suggest", "findings")
 
 
 # Models that think before acting (Opus) sometimes put their whole answer in their thinking and go
@@ -83,7 +86,7 @@ def asks_in_text(entry: dict) -> bool:
 def told_user(entry: dict) -> bool:
     """Whether the last thing in the chat for this turn (thinking aside) is a message to the user."""
     shown = [p for p in entry["parts"] if p["t"] != "thinking"]
-    return bool(shown) and shown[-1]["t"] == "text"
+    return bool(shown) and shown[-1]["t"] in TELLS
 
 
 def turn_summary(entry: dict) -> tuple[str, str]:
@@ -118,14 +121,20 @@ def write_wrapper(path: Path, container: str) -> Path:
 
 
 def summarize_tool(name: str, data: dict) -> str:
+    """A step's line in the list. Its input is as the model wrote it, of any shape (Claude Code itself
+    refuses one that's wrong, and the model tries again): a list as a string, a string for a list."""
+    if not isinstance(data, dict):
+        return ""
     if name == "mcp__host__install_packages":
-        return " ".join(map(str, data.get("packages") or []))[:300]
+        packages = data.get("packages")
+        return " ".join(map(str, packages if isinstance(packages, list) else [packages] if packages else []))[:300]
     key = _SUMMARY_KEYS.get(name)
     if key and data.get(key):
         return str(data[key]).replace("\n", " ⏎ ")[:300]
     if name == "TodoWrite":
-        todos = data.get("todos") or []
-        active = next((t.get("activeForm") or t.get("content") for t in todos if t.get("status") == "in_progress"), "")
+        todos = data.get("todos")
+        active = next((t.get("activeForm") or t.get("content") for t in (todos if isinstance(todos, list) else [])
+                       if isinstance(t, dict) and t.get("status") == "in_progress"), "")
         return str(active)[:300]
     return ""
 
@@ -168,6 +177,7 @@ class BuilderSession:
         self.tasks: dict[str, dict] = {}
         self._state: str | None = None             # the CLI's session state: running, idle (None: not told)
         self._ended: list = []                     # [error] of the latest result, until the CLI is idle
+        self._stopping = False                     # the user pressed Stop in the turn in progress
         self.stderr_tail: list[str] = []
 
     @property
@@ -239,6 +249,7 @@ class BuilderSession:
         self.entry = entry
         self._tools = {}
         self._ended = []
+        self._stopping = False
         try:
             await self._client.query(text)
         except Exception:
@@ -254,6 +265,13 @@ class BuilderSession:
 
     async def interrupt(self) -> None:
         if self._client is not None and self.busy:
+            self._stopping = True
+            if self._ended:
+                # its result is in already, and only what it left running goes on (no new result comes):
+                # the turn ends now, as it would have once the CLI was idle
+                self._ended = []
+                self._finish(error="stopped")
+                return
             await self._client.interrupt()
 
     async def close(self) -> None:
@@ -295,112 +313,136 @@ class BuilderSession:
             entry["parts"].append({"t": "steps", "items": [rec]})
 
     async def _read(self) -> None:
-        from claude_agent_sdk import (TERMINAL_TASK_STATUSES, AssistantMessage, ResultMessage, StreamEvent,
-                                      SystemMessage, TextBlock, ThinkingBlock, ToolResultBlock, ToolUseBlock, UserMessage)
         try:
             async for msg in self._client.receive_messages():
-                entry = self.entry
-                if isinstance(msg, SystemMessage):
-                    data = msg.data if isinstance(msg.data, dict) else {}
-                    sid = data.get("session_id")
-                    if msg.subtype == "init" and sid and sid != self.session_id:
-                        self.session_id = sid
-                        self._on_session(sid)
-                    elif msg.subtype == "session_state_changed":
-                        self._state = data.get("state")
-                        if self._state == "running" and entry is None and self._on_wake:
-                            # e.g. a build it left running in the background has finished
-                            self.entry, self._tools, self._ended = self._on_wake(), {}, []
-                        elif self._state == "idle" and self._ended and entry is not None:
-                            await self._settle()
-                    elif msg.subtype == "task_started" and data.get("task_id"):
-                        rec = self._tools.get(data.get("tool_use_id") or "")
-                        self.tasks[str(data["task_id"])] = {
-                            "description": str(data.get("description") or (rec or {}).get("summary") or "")[:200],
-                            "since": time.time(),
-                            "background": bool((rec or {}).get("background")) or data.get("task_type") == "local_agent"}
-                    elif msg.subtype in ("task_notification", "task_updated"):
-                        status = data.get("status") or (data.get("patch") or {}).get("status")
-                        if status in TERMINAL_TASK_STATUSES:
-                            self.tasks.pop(str(data.get("task_id")), None)
-                    elif msg.subtype == "api_retry" and entry is not None:
-                        # the CLI is retrying a failed model request (it tries ten times, for minutes)
-                        entry["retry"] = {"attempt": data.get("attempt"), "max": data.get("max_retries"),
-                                          "status": data.get("error_status"), "error": data.get("error")}
-                        self._on_change(entry)
-                    continue
-                if entry is None and self._state == "running" and self._on_wake \
-                        and isinstance(msg, (AssistantMessage, StreamEvent)) and not msg.parent_tool_use_id:
-                    # it went on by itself without saying "running" again (e.g. after the user stopped it)
-                    entry = self.entry = self._on_wake()
-                    self._tools, self._ended = {}, []
-                if entry is None:
-                    continue                        # nothing of ours is in progress
-                if isinstance(msg, StreamEvent):
-                    ev = msg.event or {}
-                    delta = ev.get("delta") or {}
-                    if msg.parent_tool_use_id:
-                        continue                    # a subagent's stream: its steps show instead
-                    if ev.get("type") == "content_block_delta" and delta.get("type") == "text_delta":
-                        self._emit("delta", kind="text", text=delta.get("text", ""))
-                    elif ev.get("type") == "content_block_delta" and delta.get("type") == "thinking_delta":
-                        self._emit("delta", kind="thinking", text="")
-                    continue
-                if isinstance(msg, AssistantMessage):
-                    entry.pop("retry", None)
-                    if msg.error:
-                        entry.setdefault("errors", []).append(str(msg.error))
-                    for block in msg.content:
-                        if isinstance(block, TextBlock) and not msg.parent_tool_use_id and block.text.strip():
-                            self._text(entry, block.text)
-                        elif isinstance(block, ThinkingBlock) and not msg.parent_tool_use_id and block.thinking.strip():
-                            self._thinking(entry, block.thinking)
-                        elif isinstance(block, ToolUseBlock) and block.name not in CARD_TOOLS:
-                            rec = {"id": block.id, "tool": block.name, "summary": summarize_tool(block.name, block.input or {}),
-                                   "status": "running", "at": time.time(), **({"sub": True} if msg.parent_tool_use_id else {}),
-                                   **({"background": True} if (block.input or {}).get("run_in_background") else {})}
-                            self._tools[block.id] = rec
-                            self._step(entry, rec)
-                    entry["model"] = msg.model or entry.get("model", "")
-                    self._on_change(entry)
-                elif isinstance(msg, UserMessage) and isinstance(msg.content, list):
-                    changed = False
-                    for block in msg.content:
-                        if isinstance(block, ToolResultBlock) and block.tool_use_id in self._tools:
-                            rec = self._tools[block.tool_use_id]
-                            rec["status"] = "error" if block.is_error else "done"
-                            rec["output"] = _result_text(block.content)[-1500:]
-                            changed = True
-                    if changed:
-                        self._on_change(entry)
-                elif isinstance(msg, ResultMessage):
-                    if msg.session_id and msg.session_id != self.session_id:
-                        self.session_id = msg.session_id
-                        self._on_session(msg.session_id)
-                    # not msg.total_cost_usd: Claude Code prices every model as Claude, and its figure adds
-                    # up over the session; the gateway counts the tokens instead (Engine.spend)
-                    entry["usage"] = msg.usage
-                    error = None
-                    if msg.terminal_reason in ("aborted_streaming", "aborted_tools"):
-                        error = "stopped"
-                    elif msg.is_error:
-                        error = "; ".join(msg.errors or []) or (msg.result or "") or msg.subtype
-                    self._ended = [error]
-                    # more to come while it's running (the user stopping it is the end, whatever runs on)
-                    if self._state in (None, "idle") or error == "stopped":
-                        await self._settle()
+                try:
+                    await self._take(msg)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as e:  # noqa: BLE001 - one message the app couldn't take in isn't the end of the session
+                    self._stderr(f"[DA Vibe Manager] a message from Claude Code couldn't be taken in: {type(e).__name__}: {e}")
         except asyncio.CancelledError:
             raise
         except Exception as e:  # noqa: BLE001 - the CLI went away; say so and let the next send reconnect
-            detail = "\n".join(self.stderr_tail[-6:])
-            self._client, self.tasks = None, {}
-            if self.entry is not None:
-                self._finish(error=f"the assistant stopped unexpectedly: {e}" + (f"\n{detail}" if detail else ""))
+            await self._gone(f"the assistant stopped unexpectedly: {e}")
+            return
+        await self._gone("the assistant stopped unexpectedly")      # its output ended, without a word of why
+
+    async def _gone(self, why: str) -> None:
+        """Claude Code has gone: its turn ends, saying so, and the client goes too (its process with it, so
+        nothing of it carries on unseen); the next send starts it again."""
+        detail = "\n".join(self.stderr_tail[-6:])
+        client, self._client, self.tasks = self._client, None, {}
+        if self.entry is not None:
+            self._finish(error=why + (f"\n{detail}" if detail else ""))
+        if client is not None:
+            try:
+                await asyncio.wait_for(client.disconnect(), 10)
+            except Exception:  # noqa: BLE001 - gone already
+                pass
+
+    async def _take(self, msg) -> None:
+        """One message of the CLI's, into the entry of the turn in progress."""
+        from claude_agent_sdk import (TERMINAL_TASK_STATUSES, AssistantMessage, ResultMessage, StreamEvent,
+                                      SystemMessage, TextBlock, ThinkingBlock, ToolResultBlock, ToolUseBlock, UserMessage)
+        entry = self.entry
+        if isinstance(msg, SystemMessage):
+            data = msg.data if isinstance(msg.data, dict) else {}
+            sid = data.get("session_id")
+            if msg.subtype == "init" and sid and sid != self.session_id:
+                self.session_id = sid
+                self._on_session(sid)
+            elif msg.subtype == "session_state_changed":
+                self._state = data.get("state")
+                if self._state == "running" and entry is None and self._on_wake:
+                    # e.g. a build it left running in the background has finished
+                    self.entry, self._tools, self._ended = self._on_wake(), {}, []
+                elif self._state == "idle" and self._ended and entry is not None:
+                    await self._settle()
+            elif msg.subtype == "task_started" and data.get("task_id"):
+                rec = self._tools.get(data.get("tool_use_id") or "")
+                self.tasks[str(data["task_id"])] = {
+                    "description": str(data.get("description") or (rec or {}).get("summary") or "")[:200],
+                    "since": time.time(),
+                    "background": bool((rec or {}).get("background")) or data.get("task_type") == "local_agent"}
+            elif msg.subtype in ("task_notification", "task_updated"):
+                status = data.get("status") or (data.get("patch") or {}).get("status")
+                if status in TERMINAL_TASK_STATUSES:
+                    self.tasks.pop(str(data.get("task_id")), None)
+            elif msg.subtype == "api_retry" and entry is not None:
+                # the CLI is retrying a failed model request (it tries ten times, for minutes)
+                entry["retry"] = {"attempt": data.get("attempt"), "max": data.get("max_retries"),
+                                  "status": data.get("error_status"), "error": data.get("error")}
+                self._on_change(entry)
+            return
+        if entry is None and self._state == "running" and self._on_wake \
+                and isinstance(msg, (AssistantMessage, StreamEvent)) and not msg.parent_tool_use_id:
+            # it went on by itself without saying "running" again (e.g. after the user stopped it)
+            entry = self.entry = self._on_wake()
+            self._tools, self._ended = {}, []
+        if entry is None:
+            return                        # nothing of ours is in progress
+        if isinstance(msg, StreamEvent):
+            ev = msg.event or {}
+            delta = ev.get("delta") or {}
+            if msg.parent_tool_use_id:
+                return                    # a subagent's stream: its steps show instead
+            if ev.get("type") == "content_block_delta" and delta.get("type") == "text_delta":
+                self._emit("delta", kind="text", text=delta.get("text", ""))
+            elif ev.get("type") == "content_block_delta" and delta.get("type") == "thinking_delta":
+                self._emit("delta", kind="thinking", text="")
+            return
+        if isinstance(msg, AssistantMessage):
+            entry.pop("retry", None)
+            if msg.error:
+                entry.setdefault("errors", []).append(str(msg.error))
+            for block in msg.content:
+                if isinstance(block, TextBlock) and not msg.parent_tool_use_id and block.text.strip():
+                    self._text(entry, block.text)
+                elif isinstance(block, ThinkingBlock) and not msg.parent_tool_use_id and block.thinking.strip():
+                    self._thinking(entry, block.thinking)
+                elif isinstance(block, ToolUseBlock) and block.name not in CARD_TOOLS:
+                    rec = {"id": block.id, "tool": block.name, "summary": summarize_tool(block.name, block.input or {}),
+                           "status": "running", "at": time.time(), **({"sub": True} if msg.parent_tool_use_id else {}),
+                           **({"background": True} if isinstance(block.input, dict) and block.input.get("run_in_background") else {})}
+                    self._tools[block.id] = rec
+                    self._step(entry, rec)
+            entry["model"] = msg.model or entry.get("model", "")
+            self._on_change(entry)
+        elif isinstance(msg, UserMessage) and isinstance(msg.content, list):
+            changed = False
+            for block in msg.content:
+                if isinstance(block, ToolResultBlock) and block.tool_use_id in self._tools:
+                    rec = self._tools[block.tool_use_id]
+                    rec["status"] = "error" if block.is_error else "done"
+                    rec["output"] = _result_text(block.content)[-1500:]
+                    changed = True
+            if changed:
+                self._on_change(entry)
+        elif isinstance(msg, ResultMessage):
+            if msg.session_id and msg.session_id != self.session_id:
+                self.session_id = msg.session_id
+                self._on_session(msg.session_id)
+            # not msg.total_cost_usd: Claude Code prices every model as Claude, and its figure adds
+            # up over the session; the gateway counts the tokens instead (Engine.spend)
+            entry["usage"] = msg.usage
+            error = None
+            if msg.terminal_reason in ("aborted_streaming", "aborted_tools"):
+                error = "stopped"
+            elif msg.is_error:
+                error = "; ".join(msg.errors or []) or (msg.result or "") or msg.subtype
+            self._ended = [error]
+            # more to come while it's running (the user stopping it is the end, whatever runs on)
+            if self._state in (None, "idle") or error == "stopped":
+                await self._settle()
 
     async def _settle(self) -> None:
         """The CLI is done: end the entry, or first ask for the message or question card it lacks."""
         entry, (error,) = self.entry, self._ended
         self._ended = []
+        if self._stopping:
+            self._finish(error=error or "stopped")      # never asked to carry on once the user stopped it
+            return
         if error is None and not told_user(entry) and not entry.get("nudged"):
             since, done = turn_summary(entry)
             entry["nudged"] = True
@@ -418,6 +460,7 @@ class BuilderSession:
 
     def _finish(self, error: str | None) -> None:
         entry, self.entry = self.entry, None
+        self._stopping = False
         if entry is None:
             return
         for part in entry["parts"]:

@@ -24,7 +24,8 @@ def test_the_wrapper_passes_only_the_named_variables_into_the_container(tmp_path
     assert oct(path.stat().st_mode & 0o777) == "0o700"
 
 
-@pytest.mark.parametrize("bad", [["-o", "APT::x"], ["foo;rm -rf /"], ["../x"], ["Foo"], [], ["a b"], ["--purge"]])
+@pytest.mark.parametrize("bad", [["-o", "APT::x"], ["foo;rm -rf /"], ["../x"], ["Foo"], [], ["a b"], ["--purge"],
+                                 ["git-"], ["meson=1.3.2-"]])   # apt-get install removes a "git-"
 def test_package_names_are_checked_before_apt_sees_them(bad):
     with pytest.raises(ValueError):
         check_packages(bad)
@@ -949,3 +950,79 @@ async def test_a_build_left_running_after_its_turn_is_still_shown_until_it_finis
     await clients[0].queue.put(SystemMessage("task_notification", {"subtype": "task_notification", "task_id": "t9",
                                                                    "status": "completed"}))
     await wait_for(lambda: engine.activity is None, "shown no more once it's done")
+
+
+async def test_a_step_written_in_an_odd_shape_doesnt_end_the_turn(builder_env):
+    """Models other than Claude write a tool's input in shapes of their own (a list as a string): Claude
+    Code refuses it and the model tries again, and the turn goes on. Only the step's line is plainer."""
+    engine, _, _, clients = builder_env
+
+    async def script(c, text):
+        await c.queue.put(AssistantMessage([TextBlock("Planning."), ToolUseBlock(
+            "t1", "TodoWrite", {"todos": '[{"content": "Build", "status": "in_progress"}]'})], "m"))
+        await c.queue.put(UserMessage([ToolResultBlock("t1", "InputValidationError: todos must be an array", True)]))
+        await c.queue.put(AssistantMessage([ToolUseBlock("t2", "Bash", "not even an object"),
+                                            TextBlock("Built it.")], "m"))
+        await c.queue.put(result())
+    engine._script = script
+    engine.send("Build it")
+    await wait_for(lambda: engine.conv.chat[-1]["kind"] == "assistant", "turn end")
+    entry = engine.conv.chat[-1]
+    assert "error" not in entry and entry["parts"][-1]["text"] == "Built it." and len(clients) == 1
+    assert [i["status"] for i in entry["parts"][1]["items"]] == ["error", "done"]
+
+
+async def test_when_claude_code_goes_away_its_turn_ends_and_the_next_message_starts_it_again(builder_env):
+    """Its output ends in the middle of a turn (it exited without an error): the turn ends saying so,
+    rather than staying busy for good, and nothing of the old process is left running."""
+    engine, _, _, clients = builder_env
+    gone, disconnected = object(), []
+
+    async def script(c, text):
+        if len(clients) == 1:
+            await c.queue.put(AssistantMessage([TextBlock("Building."), ToolUseBlock("t1", "Bash", {"command": "make"})], "m"))
+            await c.queue.put(gone)
+        else:
+            await c.queue.put(AssistantMessage([TextBlock("I'm back.")], "m"))
+            await c.queue.put(result())
+
+    class Ending(FakeClaude):
+        async def receive_messages(self):
+            while (m := await self.queue.get()) is not gone:
+                yield m
+
+        async def disconnect(self):
+            disconnected.append(self)
+    engine.builder_client_factory = lambda o: clients.append(Ending(o, script)) or clients[-1]
+    engine.send("Build it")
+    await wait_for(lambda: engine.conv.chat[-1]["kind"] == "assistant", "turn end")
+    assert "stopped unexpectedly" in engine.conv.chat[-1]["error"] and not engine.busy
+    assert disconnected == clients and engine.builder._client is None
+    engine.send("Are you there?")
+    await wait_for(lambda: len(engine.conv.chat) == 4, "the next turn")
+    assert len(clients) == 2 and engine.conv.chat[-1]["parts"][-1]["text"] == "I'm back."
+
+
+async def test_stop_after_the_turns_result_ends_it_and_the_assistant_isnt_asked_to_go_on(builder_env):
+    """Its result is in, but what it left running (a background agent) keeps the CLI going, so the turn
+    waits for it to be idle: Stop then ends the turn at once, and nothing tells the assistant to carry on."""
+    engine, _, _, clients = builder_env
+    sent = []
+
+    async def script(c, text):
+        sent.append(text)
+        if len(sent) == 1:
+            await c.queue.put(state("running"))
+            await c.queue.put(AssistantMessage([TextBlock("I'll build it."), ToolUseBlock(
+                "t1", "Agent", {"description": "build gThumb", "run_in_background": True})], "m"))
+            await c.queue.put(UserMessage([ToolResultBlock("t1", "Agent started in the background", False)]))
+            await c.queue.put(result())
+    engine._script = script
+    engine.send("Build it")
+    await wait_for(lambda: engine.builder and engine.builder._ended, "the result")
+    assert engine.busy                                  # the agent still runs
+    engine.stop_turn()
+    await wait_for(lambda: not engine.busy, "the turn's end")
+    await engine.builder._client.queue.put(state("idle"))
+    await asyncio.sleep(0.05)
+    assert engine.conv.chat[-1]["error"] == "stopped" and len(sent) == 1        # no nudge to go on

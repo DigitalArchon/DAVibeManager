@@ -5,7 +5,7 @@ feature to one app (its prompt, its tools, told which app)."""
 import asyncio
 
 import pytest
-from claude_agent_sdk import AssistantMessage, TextBlock
+from claude_agent_sdk import AssistantMessage, TextBlock, ToolUseBlock
 
 from davibemanager import apps
 from davibemanager.conversation import Conversation
@@ -230,3 +230,23 @@ async def test_asking_the_assistant_twice_for_an_update_starts_it_once(builder_e
     gate.set()
     await wait_for(lambda: not engine.busy, "turn end")
     assert [e["kind"] for e in engine.conv.chat] == ["user", "assistant"]
+
+
+async def test_a_turn_may_end_on_a_card_that_tells_the_user_something(builder_env):
+    """An app chat to start, or what it found: the card says it, so the turn ends there, without being
+    asked again (and paying again) for a message. Nor is the card's call a step of its own."""
+    engine, _, _, _ = builder_env
+    await engine.new_chat("computer")
+    queries = []
+
+    async def script(c, text):
+        queries.append(text)
+        await c.queue.put(AssistantMessage([TextBlock("gThumb can't do that, but an app chat can add it."),
+                                            ToolUseBlock("t1", "mcp__host__suggest_app_chat", {"app": "gThumb"})], "m"))
+        await wait_for(lambda: engine.builder.entry["parts"], "the text")
+        await engine.builder_suggest_app({"app": "gThumb", "wish": "Zoom by dragging a box"})
+        await c.queue.put(result())
+    engine._script = script
+    engine.send("I wish gThumb could zoom by dragging a box")
+    await wait_for(lambda: not engine.busy and engine.conv.chat[-1]["kind"] == "assistant", "the turn's end")
+    assert len(queries) == 1 and [p["t"] for p in engine.conv.chat[-1]["parts"]] == ["text", "suggest"]

@@ -119,6 +119,20 @@ async def test_nothing_runs_until_the_user_says_so_and_the_output_waits_for_revi
     assert "abcdefghijklmnopqrstuvwx" not in result
 
 
+async def test_long_output_sent_as_it_was_shown_is_sent_as_it_was_shown(env):
+    """What the card shows is shortened already ("[... 600 lines omitted ...]"): sent back as it is, it's
+    neither shortened again (its count cut to "1 lines") nor said to have been edited."""
+    engine, _, _ = env
+    task, rid = await ask(engine, {"command": "seq 1000", "purpose": "test", "risk": "read_only"})
+    engine.run_request(rid)
+    await wait_for(lambda: engine.requests[rid].status == "done", "run")
+    r = engine.requests[rid]
+    assert r.truncated and "600 lines omitted" in r.preview
+    engine.send_request(rid, r.preview)                  # the card's text, unchanged
+    result = await task
+    assert "600 lines omitted" in result and "edited the output" not in result and r.sent_text == r.preview
+
+
 async def test_declining_tells_the_assistant_and_runs_nothing(env, tmp_path):
     engine, _, _ = env
     marker = tmp_path / "ran"
