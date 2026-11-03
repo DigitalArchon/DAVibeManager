@@ -2057,18 +2057,24 @@ function autosize() {
 
 async function send(ev) {
   ev?.preventDefault();
+  // one at a time: the box is emptied once the message is sent (its files put into the sandbox first),
+  // and Enter held down or pressed again meanwhile would send it again
+  if (S.sending) return;
   const message = $("#input").value.trim();
   if (S.files.some((f) => f.uploading)) { toast("Wait a moment: the files are still being added.", "info", 3000); return; }
   const files = S.files.filter((f) => f.id);
   if (!message && !files.length) return;
-  await guarded(async () => {
-    await api("POST", "/api/send", { message, attachments: files.map((f) => f.id) });
-    $("#input").value = "";
-    for (const f of files) if (f.url) URL.revokeObjectURL(f.url);
-    S.files = S.files.filter((f) => !files.includes(f));
-    renderFiles();
-    autosize();
-  });
+  S.sending = true;
+  try {
+    await guarded(async () => {
+      await api("POST", "/api/send", { message, attachments: files.map((f) => f.id) });
+      $("#input").value = "";
+      for (const f of files) if (f.url) URL.revokeObjectURL(f.url);
+      S.files = S.files.filter((f) => !files.includes(f));
+      renderFiles();
+      autosize();
+    });
+  } finally { S.sending = false; }
 }
 
 // ---- files the user attaches: added at once (a picture is cleaned of its hidden details there),

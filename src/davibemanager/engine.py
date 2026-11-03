@@ -1811,6 +1811,9 @@ class Engine:
         remembers, and is told once what happened), and the files they attached are put back too. Only work
         the assistant hadn't delivered is lost."""
         self._sandbox_idle()
+        if self._workspace_task and not self._workspace_task.done():
+            # deleted under a start in progress, it would be half made (a build killed leaves its parts)
+            raise UserError("Wait for the sandbox to finish starting first.")
         lost = await self._clear_sandbox()
         # what came from this computer stays known: the sessions that were kept hold it
         self._set_workspace(state="stopped")

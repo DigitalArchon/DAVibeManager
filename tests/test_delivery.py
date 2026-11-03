@@ -427,6 +427,10 @@ async def test_resetting_waits_for_builds_and_then_carries_on_as_if_nothing_happ
     with pytest.raises(UserError, match="being built"):
         await engine.reset_workspace()
     engine.app_manager.building.clear()
+    engine._workspace_task = asyncio.get_running_loop().create_future()     # the sandbox still starting
+    with pytest.raises(UserError, match="finish starting"):
+        await engine.reset_workspace()
+    engine._workspace_task = None
     engine._packages_installed = {"meson"}
     c = engine.conv
     c.session = "s-kept"
