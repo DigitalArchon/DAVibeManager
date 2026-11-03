@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from io import BytesIO
 
-from PIL import Image
+from PIL import Image, ImageOps
 
 MAX_PIXELS = 40_000_000
 MAX_SIDE = 10_000
@@ -44,8 +44,11 @@ def clean(raw: bytes, convert: bool = False) -> tuple[bytes, str]:
             im.seek(0)                                   # first frame only (APNG, GIF)
             if max(im.size) > MAX_SIDE:
                 raise ValueError(f"image is {im.size[0]}x{im.size[1]}, over {MAX_SIDE}px")
+            if im.size[0] * im.size[1] > MAX_PIXELS:     # (Pillow itself only warns up to twice that)
+                raise ValueError(f"image is {im.size[0]}x{im.size[1]}, over {MAX_PIXELS // 1_000_000} million pixels")
             alpha = fmt != "JPEG" and (im.mode in ("RGBA", "LA", "PA") or "transparency" in im.info)
-            pixels = im.convert("RGBA" if alpha else "RGB")
+            # upright, as it's seen: the orientation a phone writes in its EXIF goes with the rest of that
+            pixels = ImageOps.exif_transpose(im).convert("RGBA" if alpha else "RGB")
             fmt = "JPEG" if fmt == "JPEG" else "PNG"
     except (OSError, Image.DecompressionBombError, SyntaxError) as e:
         raise ValueError(f"not a readable PNG or JPEG image ({e})") from e

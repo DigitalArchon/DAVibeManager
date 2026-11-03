@@ -516,6 +516,8 @@ class Engine:
                 raise UserError("Where apps are installed is a full path, such as ~/Applications.")
             if where.resolve() == Path.home().resolve():
                 raise UserError("Apps go in a folder of their own, not straight in your home folder.")
+            if "%" in folder:
+                raise UserError("Menus can't start a program from a folder with % in its name: choose another one.")
         if "container_memory" in data and not re.fullmatch(r"\d+[kmg]?", str(data["container_memory"]).strip().lower()):
             raise UserError("The sandbox memory limit must look like 8g or 4096m.")
         if "container_cpus" in data and not re.fullmatch(r"\d+(\.\d+)?", str(data["container_cpus"]).strip()):

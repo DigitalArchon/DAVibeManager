@@ -5,6 +5,7 @@ installing into Gear Lever, Shelly or a menu entry of our own, with a way back."
 import asyncio
 import json
 import os
+import re
 import stat
 from pathlib import Path
 
@@ -991,3 +992,24 @@ async def test_the_change_log_is_read_from_the_apps_own_copy_of_the_official_sou
     await engine.app_manager.check("gthumb")
     call = next(c for c in sb.calls if c[:2] == ["python3", "-I"] and c[3] == scripts.CHANGELOG)
     assert call[5] == appmanager.AppManager.mirror_path(GTHUMB) and sb.mirrored
+
+
+@pytest.mark.parametrize("folder", ["My Apps", "My $Apps", 'say "hi"', "back\\slash", "tick`s`"])
+def test_a_menu_entry_starts_the_app_wherever_its_folder_is(folder):
+    """As the Desktop Entry spec reads Exec: a value's string escapes first (\\\\ is one backslash), then
+    the Exec rules ($ " ` and \\ escaped inside quotes). GLib refused the entry, or ran another path."""
+    from davibemanager import appimage
+    path = f"/home/u/{folder}/gThumb-dvm.AppImage"
+    value = appimage._quote(path)
+    escapes = {"s": " ", "n": "\n", "t": "\t", "r": "\r", "\\": "\\"}          # the only ones a string has
+    assert all(m.group(1) in escapes for m in re.finditer(r"\\(.)", value)), value  # (GLib refuses any other)
+    unescaped = re.sub(r"\\(.)", lambda m: escapes[m.group(1)], value)
+    assert unescaped.startswith('"') and unescaped.endswith('"')
+    assert re.sub(r'\\(["`$\\])', r"\1", unescaped[1:-1]) == path
+
+
+def test_an_install_folder_menus_cant_start_programs_from_is_refused(env):
+    from davibemanager.models import UserError
+    engine, _, _ = env
+    with pytest.raises(UserError, match="%"):
+        engine.save_settings({"install_dir": "~/50%off"})

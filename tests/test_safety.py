@@ -173,3 +173,23 @@ def test_an_image_the_assistant_made_is_read_as_png_or_jpeg_only():
     with pytest.raises(ValueError):
         images.clean(gif.getvalue())
     assert images.clean(gif.getvalue(), convert=True)[1] == "png"        # the user's own pictures: converted
+
+
+def test_a_photo_stays_upright_and_one_too_big_isnt_decoded():
+    from io import BytesIO
+
+    from PIL import Image
+
+    from davibemanager.safety import images
+    im = Image.new("RGB", (300, 400), "white")            # taken sideways: the phone says to turn it
+    exif = Image.Exif()
+    exif[0x0112] = 6                                       # Orientation: rotate 90° clockwise to view
+    raw = BytesIO()
+    im.save(raw, "JPEG", exif=exif.tobytes())
+    out, ext = images.clean(raw.getvalue())
+    with Image.open(BytesIO(out)) as cleaned:
+        assert ext == "jpg" and cleaned.size == (400, 300) and not cleaned.getexif()
+    big = BytesIO()
+    Image.new("1", (9000, 8000)).save(big, "PNG")          # 72 million pixels, a few KB packed
+    with pytest.raises(ValueError, match="million pixels"):
+        images.clean(big.getvalue())

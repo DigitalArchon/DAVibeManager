@@ -120,7 +120,10 @@ def menu_entry(original: str, exec_path: str, icon: str, app_id: str) -> str:
 
 
 def _quote(path: str) -> str:
-    """A path as a .desktop Exec argument."""
+    """A path as a .desktop Exec argument: quoted, with what the Exec rules escape escaped ($ " ` and a
+    backslash), and then every backslash doubled, since a value's string escapes are undone before the
+    Exec rules are read (the spec's four backslashes for one); a % doubled, as field codes are written."""
     if re.fullmatch(r"[\w./+-]+", path):
         return path
-    return '"' + re.sub(r'(["`$\\])', r"\\\1", path) + '"'
+    quoted = re.sub(r'(["`$\\])', r"\\\1", path).replace("\\", "\\\\").replace("%", "%%")
+    return f'"{quoted}"'
