@@ -1868,12 +1868,13 @@ class Engine:
                 self._removal = {"state": "done", "podman": False}
                 self.emit("toast", level="ok", text="The sandbox is removed. Podman is still installed.")
                 return
-            # Podman's own storage goes too, but only if nothing of the user's is left in it
+            # Podman's own storage goes too, but only if nothing of the user's is left in it, and only when
+            # Podman itself goes (passt alone, the app's, leaves the user's own Podman as it was)
+            p = podmansetup.removal()
             others = await podman.anything_else() if shutil.which("podman") else []
-            if not others and shutil.which("podman"):
+            if not others and shutil.which("podman") and p is not None and "podman" in p["packages"]:
                 rc, out = await podman.reset_storage()
                 app_log("podman_storage_reset", ok=rc == 0, output=out.strip()[-500:])
-            p = podmansetup.removal()
             if p is None:
                 self._removal = {"state": "done", "podman": True, "kept": others}
                 return
@@ -1885,8 +1886,12 @@ class Engine:
             self._changed()
             app_log("podman_uninstall", command=p["command"])
             error, out = await self._install_as_admin(p["command"], what="uninstall")
-            if not error and shutil.which("podman"):
+            # what was uninstalled is what the app had installed: passt alone, beside the user's own Podman,
+            # leaves Podman there, as it should
+            if not error and "podman" in p["packages"] and shutil.which("podman"):
                 error = "It finished, but Podman is still there."
+            elif not error and (still := [x for x in p["packages"] if x != "podman" and shutil.which(x)]):
+                error = f"It finished, but {', '.join(still)} is still there."
             if error:
                 app_log("podman_uninstall_failed", error=error, output=out[-2000:])
                 self._removal = {"state": "failed", "error": error, "output": out[-4000:], "kept": others}
@@ -2795,9 +2800,10 @@ class Engine:
             if rc != 0:
                 raise CheckFailed(label, out)
             line = next((l for l in out.splitlines() if l.startswith("@@OUT ")), "")
-            if len(line.split()) != 3:
+            path, _, sha = line[6:].rpartition(" ")           # its name may have spaces: the hash is last
+            if not path or not re.fullmatch(r"[0-9a-f]{64}", sha):
                 raise CheckFailed(label, "The build left no AppImage the app could find.")
-            return line.split()[1], line.split()[2]
+            return path, sha
         except podman.PodmanError as e:
             raise CheckFailed("start", str(e)) from None
 

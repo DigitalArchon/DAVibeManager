@@ -152,8 +152,21 @@ def test_an_earlier_tree_is_kept_aside_not_lost(gitenv):
     (gitenv / "tree" / "unsaved.txt").write_text("work of an earlier chat")
     rc, _ = carry(gitenv, "v1", "v1", pairs)
     assert rc == 0 and not (gitenv / "tree" / "unsaved.txt").exists()
-    kept = list((gitenv / ".old").iterdir())
+    kept = list((gitenv / ".old" / "tree").iterdir())
     assert len(kept) == 1 and (kept[0] / "unsaved.txt").read_text() == "work of an earlier chat"
+
+
+def test_making_one_apps_tree_never_clears_out_another_apps_kept_trees(gitenv):
+    """gthumb's and gthumb-2's (a second app of that name) trees kept aside are each the app's own."""
+    up = upstream(gitenv)
+    pairs = changes(gitenv, up)
+    other = gitenv / ".old" / "tree-2" / "20261101-120000-1"
+    other.mkdir(parents=True)
+    (other / "unsaved.txt").write_text("the other app's work")
+    for _ in range(5):
+        carry(gitenv, "v1", "v1", pairs)
+    assert (other / "unsaved.txt").read_text() == "the other app's work"
+    assert len(list((gitenv / ".old" / "tree").iterdir())) == 3            # its own: the newest three
 
 
 def test_inspect_reads_each_commits_change_and_merges(gitenv):
@@ -188,3 +201,26 @@ def test_a_patch_from_before_trailers_gets_its_change_named_and_still_applies(gi
     git(work, "am", "-q", str(gitenv / "named.patch"))
     assert git(work, "log", "--format=%(trailers:key=DVM-Change,valueonly)", "v1..HEAD").split() == ["zoom", "zoom"]
     assert "Signed-off-by: dev" in git(work, "log", "-1", "--format=%B")
+
+
+def test_the_change_log_reads_the_news_lines_with_the_app_s_own_git_settings(gitenv):
+    """As the app runs it (podman.AGENT_ENV: no external diff program of a repository's, set to nothing),
+    git diff mustn't die: the release's new NEWS lines are what security fixes are often only in."""
+    from davibemanager.workspace import podman
+    up = gitenv / "proj"
+    up.mkdir()
+    git(up, "init", "-q", "-b", "main")
+    write(up, "NEWS", "1.0: first\n")
+    git(up, "add", "-A"); git(up, "commit", "-qm", "One"); git(up, "tag", "1.0")
+    write(up, "NEWS", "1.1: fixes CVE-2026-12345, a crafted file overflow\n1.0: first\n")
+    git(up, "add", "-A"); git(up, "commit", "-qm", "Two"); git(up, "tag", "1.1")
+    env = dict(os.environ)
+    agent = podman.AGENT_ENV
+    for flag, value in zip(agent[::2], agent[1::2]):
+        k, v = value.split("=", 1)
+        if k.startswith("GIT_CONFIG_"):
+            env[k] = v
+    out = subprocess.run(["python3", "-c", scripts.CHANGELOG, str(up), str(gitenv / "log"), "1.0", "1.1"],
+                         capture_output=True, text=True, env=env, check=True).stdout
+    news = json.loads(out.strip().splitlines()[-1])["news"]
+    assert "CVE-2026-12345" in news["NEWS"]

@@ -230,6 +230,17 @@ async def test_the_users_own_containers_keep_podmans_store(removable):
     assert did["reset"] == 0 and engine._removal["kept"] == did["others"]
 
 
+async def test_uninstalling_the_passt_the_app_put_beside_the_users_own_podman_leaves_their_podman(removable):
+    """The app installed only passt (Podman was the user's): that is what goes, their Podman and what
+    it holds stay, and it's done (not "Podman is still there", every time)."""
+    engine, did = removable
+    podmansetup.record_install(["passt"])
+    engine.remove_sandbox(True)
+    await wait_for(lambda: engine._removal.get("state") in ("done", "failed"), "the removal")
+    assert engine._removal["state"] == "done", engine._removal
+    assert did["ran"] == [("pacman -Rs --noconfirm passt", True)] and did["reset"] == 0
+
+
 async def test_an_uninstall_that_didnt_work_says_why(removable, monkeypatch):
     engine, did = removable
 

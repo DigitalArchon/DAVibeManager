@@ -58,6 +58,9 @@ MIRROR_USER = "999:999"
 MIRROR_HOME = "/var/lib/dvm"
 # seconds the output of a command that has exited may take to end (see run)
 LINGER = 2
+# Podman's own log lines, which it prints with every command in some setups (cgroups v1, a key of
+# containers.conf it doesn't know, no systemd session for the user): not its answer, which the app parses
+_PODMAN_LOG = re.compile(r'(?:WARN|INFO|DEBU)\[\d+\] |time="[^"]*" level=(?:warning|info|debug) ')
 
 
 class PodmanError(RuntimeError):
@@ -87,6 +90,8 @@ async def works() -> str:
         code, out = await run([podman(), "info", "--format", "{{.Host.Security.Rootless}}"], timeout=60)
     except (OSError, PodmanError) as e:
         return str(e)
+    except asyncio.TimeoutError:        # (the install that asked would wait on "installing" for good)
+        return "Podman didn't answer within a minute."
     return "" if code == 0 and out.strip() == "true" else (out.strip() or f"podman info failed ({code})")[-1500:]
 
 
@@ -147,12 +152,25 @@ async def run(argv: list[str], *, timeout: float = 120, input: bytes | None = No
         stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
     out: list[str] = []
 
+    def take(line: bytes) -> None:
+        text = line.decode("utf-8", errors="replace")
+        out.append(text)
+        if on_line:
+            on_line(text.rstrip("\n"))
+
     async def read():
-        while line := await proc.stdout.readline():
-            text = line.decode("utf-8", errors="replace")
-            out.append(text)
-            if on_line:
-                on_line(text.rstrip("\n"))
+        # in pieces, the lines put together here: readline() gives up on a line over 64 KB (a change log's
+        # JSON, a build's progress bar), and with nothing read any more the command blocks on its output
+        parts: list[bytes] = []
+        while chunk := await proc.stdout.read(65536):
+            while (i := chunk.find(b"\n")) != -1:
+                parts.append(chunk[:i + 1])
+                take(b"".join(parts))
+                parts, chunk = [], chunk[i + 1:]
+            if chunk:
+                parts.append(chunk)
+        if parts:
+            take(b"".join(parts))
 
     async def pump():
         reader = asyncio.ensure_future(read())
@@ -178,6 +196,8 @@ async def run(argv: list[str], *, timeout: float = 120, input: bytes | None = No
 
     try:
         rc = await asyncio.wait_for(pump(), timeout)
+        if os.path.basename(argv[0]) == "podman":
+            out[:] = [line for line in out if not _PODMAN_LOG.match(line)]
     except (asyncio.TimeoutError, asyncio.CancelledError):
         if proc.returncode is None:
             proc.kill()
@@ -762,15 +782,19 @@ async def clear_apt_cache() -> bool:
 
 async def anything_else() -> list[str]:
     """What else this user has in Podman, once the app's things are gone: containers (Podman's and
-    Buildah's), images and volumes. [] means Podman's storage holds nothing but leftovers."""
+    Buildah's), images, volumes, pods, secrets and networks of their own (a reset deletes them all).
+    [] means Podman's storage holds nothing but leftovers."""
     found = []
     for what, argv in (("container", ["ps", "-a", "--external", "--format", "{{.Names}}"]),
                        ("image", ["images", "--format", "{{.Repository}}:{{.Tag}}"]),
-                       ("volume", ["volume", "ls", "--format", "{{.Name}}"])):
+                       ("volume", ["volume", "ls", "--format", "{{.Name}}"]),
+                       ("pod", ["pod", "ls", "--format", "{{.Name}}"]),
+                       ("secret", ["secret", "ls", "--format", "{{.Name}}"]),
+                       ("network", ["network", "ls", "--format", "{{.Name}}"])):
         rc, out = await run([podman(), *argv], timeout=60)
         if rc != 0:
             return [f"Podman couldn't list its {what}s: {out.strip()[-200:]}"]
-        found += [f"{what} {x}" for x in out.split() if x != "<none>:<none>"]
+        found += [f"{what} {x}" for x in out.split() if x != "<none>:<none>" and not (what == "network" and x == "podman")]
     return found
 
 

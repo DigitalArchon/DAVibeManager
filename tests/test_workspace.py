@@ -8,6 +8,8 @@ import pytest
 
 from davibemanager.workspace import pins, podman
 
+REAL_RUN = podman.run          # before no_real_podman stands in for it (a test runs a fake podman)
+
 
 @pytest.fixture(autouse=True)
 def fake_podman(monkeypatch):
@@ -459,6 +461,29 @@ async def test_a_refused_setting_never_stays_in_the_running_settings(env):
         assert engine.ready
     engine.save_settings({"install_dir": "~/Apps", "container_memory": "4096m", "container_cpus": "2.5", "ui_mode": "browser"})
     assert (s.install_dir, s.container_memory, s.container_cpus, s.ui_mode) == ("~/Apps", "4096m", "2.5", "browser")
+
+
+async def test_a_line_longer_than_64_kb_is_read_whole_and_what_follows_it_too():
+    """A change log's JSON is one line, a build's progress bar can be one: neither is lost, and the
+    command doesn't block on output nobody reads any more."""
+    lines = []
+    rc, out = await asyncio.wait_for(podman.run(
+        ["python3", "-c", "import sys; sys.stdout.write('x' * 200000 + '\\n@@HEAD abc\\n' + 'y' * 300000 + '\\n')"],
+        timeout=10, on_line=lines.append), 10)
+    assert rc == 0 and out.splitlines() == ["x" * 200000, "@@HEAD abc", "y" * 300000] and lines[1] == "@@HEAD abc"
+
+
+async def test_podmans_own_warnings_arent_taken_for_its_answer(tmp_path, monkeypatch):
+    """In some setups Podman warns with every command (cgroups v1, a containers.conf key it doesn't
+    know): "WARN[0000] …\nrunning" isn't a state, and the sandbox would never be seen to start."""
+    fake = tmp_path / "bin" / "podman"
+    fake.parent.mkdir()
+    fake.write_text('#!/bin/sh\necho \'WARN[0000] "/" is not a shared mount, this could cause issues\' >&2\n'
+                    'echo \'time="2026-11-03T21:00:00+01:00" level=warning msg="Failed to decode the keys"\' >&2\necho running\n')
+    fake.chmod(0o755)
+    monkeypatch.setattr(podman, "podman", lambda: str(fake))
+    monkeypatch.setattr(podman, "run", REAL_RUN)            # the fake, run for real
+    assert await podman.state("dvm-x") == "running"
 
 
 async def test_a_command_that_times_out_is_not_waited_for_through_what_it_left_running():

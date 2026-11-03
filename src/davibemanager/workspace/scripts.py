@@ -40,7 +40,7 @@ git config --system --get-all safe.directory 2>/dev/null | grep -qxF "$1" || git
 # an app's source with its changes, made by the app (never the assistant's own copy of anything):
 # a fresh clone of the mirror at $3, whose origin is the official repository, on a branch dvm/work
 # at release $5 with each change (pairs of change id and patch file, in order) carried over to it.
-# An earlier tree there is moved to .old/ (the newest three are kept). On the release they were
+# An earlier tree there is moved to .old/<its name>/ (the newest three are kept). On the release they were
 # made on ($4 = $5, or none), the changes are applied as they are. On another, each change is first
 # made again on its own release, where it applies as it is, and then cherry-picked: a merge with the
 # whole of both trees, which follows renamed files and folders (a file the change adds to a folder
@@ -55,10 +55,10 @@ export GIT_TERMINAL_PROMPT=0
 g() { git -c user.name=dvm -c user.email=dvm@sandbox -c commit.gpgsign=false -c advice.detachedHead=false "$@"; }
 echo "@@STEP apply"
 if [ -e "$tree" ]; then
-  keep="$(dirname "$tree")/.old"; name="$(basename "$tree")"
+  keep="$(dirname "$tree")/.old/$(basename "$tree")"      # each app's own (gthumb's never takes gthumb-2's)
   mkdir -p "$keep"
-  mv "$tree" "$keep/$name-$(date +%Y%m%d-%H%M%S)-$$"
-  ls -1dt "$keep/$name"-* 2>/dev/null | tail -n +4 | while IFS= read -r d; do rm -rf "$d"; done
+  mv "$tree" "$keep/$(date +%Y%m%d-%H%M%S)-$$"
+  ls -1dt "$keep"/* 2>/dev/null | tail -n +4 | while IFS= read -r d; do rm -rf "$d"; done
 fi
 mkdir -p "$(dirname "$tree")"
 git clone -q --no-checkout "$mirror" "$tree" || { echo "@@FAILED fetch: the official source isn't here"; exit 2; }
@@ -117,7 +117,7 @@ else
       if [ "$(git rev-parse HEAD)" = "$before" ]; then report "$id" merged; else report "$id" ok; fi
       continue
     fi
-    { echo "--- where it conflicts:"; git diff --name-only --diff-filter=U; git diff | head -80; } >>"$work/log" 2>&1 || true
+    { echo "--- where it conflicts:"; git diff --name-only --diff-filter=U; git diff --no-ext-diff --no-textconv | head -80; } >>"$work/log" 2>&1 || true
     g cherry-pick --abort >/dev/null 2>&1 || true
     git reset -q --hard "$before"
     if g am -q -3 --keep-cr --committer-date-is-author-date "$patch" >>"$work/log" 2>&1; then report "$id" ok
@@ -277,7 +277,8 @@ subprocess.run(["git", "-C", repo, "fetch", "-q", "--tags", "--force", upstream]
 news = {}
 for name in git("ls-tree", "--name-only", new).split("\n"):
     if re.fullmatch(r"(?i)(news|changelog|changes|release[-_ ]?notes|history)(\.(md|txt|rst|markdown))?", name.strip()):
-        diff = git("diff", "--no-color", "-U0", old, new, "--", name.strip())
+        # no program of a repository's to show it (its diff.external is set to nothing: podman.AGENT_ENV)
+        diff = git("diff", "--no-ext-diff", "--no-textconv", "--no-color", "-U0", old, new, "--", name.strip())
         added = [l[1:] for l in diff.splitlines() if l.startswith("+") and not l.startswith("+++")]
         if added:
             news[name.strip()] = "\n".join(added)[:30000]
