@@ -1816,11 +1816,10 @@ class Engine:
         remembers when one is made again). Returns how many sessions couldn't be kept."""
         await self._close_builder()
         kept: set[str] = set()
-        if self.workspace.get("state") == "running":
-            try:
-                kept = await self.backups.keep_sessions()
-            except Exception as e:  # noqa: BLE001 - those chats start their sessions afresh, as before
-                app_log("reset_sessions_not_kept", error=str(e))
+        try:
+            kept = await self.backups.keep_sessions()     # from the sandbox, running or not (backup._sessions)
+        except Exception as e:  # noqa: BLE001 - those chats start their sessions afresh, as before
+            app_log("reset_sessions_not_kept", error=str(e))
         await podman.remove_check(SANDBOX)         # it uses the sandbox's /work
         await podman.remove(SANDBOX)
         self._packages_installed = set()           # installed in the sandbox that's gone

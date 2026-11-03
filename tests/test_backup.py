@@ -11,6 +11,9 @@ import pytest
 
 from davibemanager import apps, backup, config, creds, delivery
 from davibemanager.conversation import Conversation
+from davibemanager.workspace import podman as _podman
+
+REAL_RUN = _podman.run          # before no_real_podman stands in for it (a test runs a fake podman)
 from davibemanager.models import UserError
 
 PASSWORD = "correct horse battery"
@@ -309,3 +312,25 @@ async def test_an_automatic_backup_that_fails_is_told_once_and_not_tried_every_t
     for minutes in (0, 10, 20, 70):
         await engine.backups.tick(now=start + minutes * 60)
     assert told == ["Your apps weren't backed up"] and len(tries) == 2        # at once, then an hour later
+
+
+async def test_a_stopped_sandboxs_chat_sessions_are_kept_from_its_volume(env, tmp_path, monkeypatch):
+    """A reset (or a backup) while the sandbox doesn't run, or couldn't start: the assistant's memory of the
+    chats is read from the sandbox's home volume as it lies (in Podman's user namespace), not lost."""
+    from davibemanager.workspace import podman
+    engine, _, _ = env
+    engine.workspace = {"state": "failed"}
+    engine.conv.session = "s-1"
+    engine.conv.save()
+    volume = tmp_path / "vol"
+    (volume / ".claude/projects/-work").mkdir(parents=True)
+    (volume / ".claude/projects/-work/s-1.jsonl").write_text('{"kept": true}\n')
+    (volume / ".claude/projects/-work/other.jsonl").write_text("not this chat's\n")
+    fake = tmp_path / "bin" / "podman"
+    fake.parent.mkdir(exist_ok=True)
+    fake.write_text(f'#!/bin/sh\ncase "$1" in volume) echo "{volume}";; unshare) shift; exec "$@";; esac\n')
+    fake.chmod(0o755)
+    monkeypatch.setattr(podman, "podman", lambda: str(fake))
+    monkeypatch.setattr(podman, "run", REAL_RUN)
+    kept = await engine.backups.keep_sessions()
+    assert kept == {"s-1"}

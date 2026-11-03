@@ -70,6 +70,7 @@ OWN_SETTINGS = ("install_dir", "app_home", "container_memory", "container_cpus",
 # what of the data folder goes in (besides each app's kept builds)
 DATA = ("apps", "conversations", "screens", "outside.json", "runtime-x86_64")
 RETRY_AFTER = 3600                  # an automatic backup that failed is tried again after this long
+MAX_SESSIONS = 2 << 30              # the chats' sessions read from a stopped sandbox, at most
 
 
 class BackupError(UserError):
@@ -422,12 +423,17 @@ class Backups:
         self.e.emit("backups", backups=self.view())
 
     async def _sessions(self, into: Path) -> Path | None:
-        """The chats' Claude Code sessions, copied out of the sandbox (if it runs)."""
-        if self.e.workspace.get("state") != "running":
-            return None
+        """The chats' Claude Code sessions, copied out of the sandbox: from the running sandbox, else from
+        its home volume as it lies (_sessions_kept), so that a reset or a backup of a stopped sandbox (one
+        that couldn't start, too) keeps the assistant's memory of the chats."""
         ids = sorted({c.session for c in map(_load, Conversation.list_all()) if c and c.session})
         if not ids:
             return None
+        if self.e.workspace.get("state") != "running":
+            try:
+                return await self._sessions_kept(into, ids)
+            except (OSError, ValueError, tarfile.TarError, podman.PodmanError, asyncio.TimeoutError):
+                return None
         rc, out = await podman.exec_agent(self.e.sandbox, ["sh", "-c", 'cd "$0" 2>/dev/null && for s in "$@"; do '
                                                             'find . -maxdepth 2 -name "$s.jsonl" -type f; done', SESSIONS, *ids],
                                           timeout=60)
@@ -439,6 +445,36 @@ class Backups:
             except podman.PodmanError:
                 pass
         return into if rels else None
+
+    async def _sessions_kept(self, into: Path, ids: list[str]) -> Path | None:
+        """These sessions read from the sandbox's home volume while the sandbox doesn't run: its files are the
+        container's users', so they're read inside Podman's user namespace (podman unshare), as a tar."""
+        vol = podman.volume_names(self.e.sandbox)[1]
+        rc, out = await podman.run([podman.podman(), "volume", "inspect", "--format", "{{.Mountpoint}}", vol], timeout=30)
+        mount = out.strip().splitlines()[-1] if rc == 0 and out.strip() else ""
+        if not mount.startswith("/"):
+            return None
+        script = ('cd "$1/.claude/projects" 2>/dev/null || exit 0; shift; '
+                  'for s in "$@"; do find . -maxdepth 2 -name "$s.jsonl" -type f; done | tar -cf - -T - 2>/dev/null')
+        proc = await asyncio.create_subprocess_exec(
+            podman.podman(), "unshare", "sh", "-c", script, "sh", mount, *ids,
+            stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
+        try:
+            data, _ = await asyncio.wait_for(proc.communicate(), 300)
+        except asyncio.TimeoutError:
+            proc.kill()
+            raise
+        if not data:
+            return None
+        found = 0
+        with tarfile.open(fileobj=io.BytesIO(data[:MAX_SESSIONS])) as tar:
+            for m in tar.getmembers():
+                name = m.name.removeprefix("./")
+                if m.isfile() and re.fullmatch(r"[\w.-]+/[\w-]+\.jsonl", name) and m.size <= MAX_SESSIONS:
+                    (into / name).parent.mkdir(parents=True, exist_ok=True)
+                    (into / name).write_bytes(tar.extractfile(m).read())
+                    found += 1
+        return into if found else None
 
     async def backup(self, password: str | None = None, auto: bool = False) -> dict:
         """A backup in the backup folder, with the password given (or saved). Returns what's in it."""
