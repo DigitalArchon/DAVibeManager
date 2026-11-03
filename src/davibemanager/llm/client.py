@@ -25,8 +25,9 @@ SENSITIVITY_TIERS = {
 
 
 def is_private_mode(model_id: str) -> bool:
-    """NanoGPT Private Mode: only ever sent sealed (llm/private_mode.py)."""
-    return model_id.startswith("private/")
+    """NanoGPT Private Mode: only ever sent sealed (llm/private_mode.py). However it's written
+    ("Private/…", a space before it): when in doubt, sealed."""
+    return str(model_id or "").strip().lower().startswith("private/")
 
 
 def is_local_url(base_url: str) -> bool:

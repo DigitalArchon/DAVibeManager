@@ -266,3 +266,38 @@ async def test_a_reply_cut_off_at_its_length_says_so_and_hands_over_no_call_it_c
     assert [(c["name"], c["input"]) for c in msg["content"] if c["type"] == "tool_use"] == [("Read", {"file_path": "/work/a.c"})]
     streamed = b"".join([c async for c in bridge.sse(events(), "z-ai/glm-5.3", 100)]).decode()
     assert '"stop_reason": "max_tokens"' in streamed and '"Write"' not in streamed
+
+
+async def _post(g, body):
+    async with httpx.AsyncClient(transport=httpx.AsyncHTTPTransport(uds=str(g.model_socket)), base_url="http://gw") as c:
+        return await c.post("/v1/messages", headers={"authorization": f"Bearer {g.token}"}, content=json.dumps(body))
+
+
+async def test_a_private_chat_is_never_sent_to_a_model_in_the_clear(tmp_path):
+    """A chat begun on private GLM, the models then changed (its Claude Code still asks for private GLM, with
+    all that was said), or a private model with quick tasks on a plain one: sealed, or refused, never sent
+    in the clear in its place; nor a request without a model."""
+    fake, log = FakePrivate(), []
+    models = {"now": ("z-ai/glm-5.3", "z-ai/glm-5.3-flash")}
+    g = Gateway(tmp_path / "gw", lambda: Upstream("https://nano-gpt.com/api/v1", "bearer", lambda: "sk", models["now"],
+                                                 provider="NanoGPT", chat=lambda m: fake),
+                on_event=log.append, http=httpx.AsyncClient(transport=httpx.MockTransport(lambda r: pytest.fail("no plaintext"))))
+    await g.start()
+    try:
+        msg = {"stream": True, "messages": [{"role": "user", "content": "what we said in private"}]}
+        r = await _post(g, {**msg, "model": "private/glm-5-3"})                  # the models were changed since
+        assert r.status_code == 403 and not fake.calls and "isn't sent to another in the clear" in r.text
+        models["now"] = ("private/glm-5-3", "z-ai/glm-5.3-flash")                # quick tasks on a plain model
+        for model in ("z-ai/glm-5.3-flash", "claude-haiku-4-5", None):
+            r = await _post(g, {**msg, **({"model": model} if model else {})})
+            assert r.status_code == 403 and not fake.calls, model
+        models["now"] = ("private/glm-5-3", "private/glm-5-3")                   # (an empty one is the same model)
+        r = await _post(g, msg)                                                  # no model: the private one, sealed
+        assert r.status_code == 200 and fake.calls[-1][0] == "private/glm-5-3"
+        r = await _post(g, {**msg, "model": "Private/GLM-5-3 "})                 # however it's written: sealed
+        assert r.status_code == 200 and fake.calls[-1][0] == "private/glm-5-3"
+        async with httpx.AsyncClient(transport=httpx.AsyncHTTPTransport(uds=str(g.model_socket)), base_url="http://gw") as c:
+            r = await c.post("/v1/messages", headers={"authorization": f"Bearer {g.token}"}, content=b'["not", "a", "request"]')
+        assert r.status_code == 400
+    finally:
+        await g.stop()

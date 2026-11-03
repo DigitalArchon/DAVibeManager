@@ -48,6 +48,7 @@ from .gateway import Gateway, Upstream, openai_usage
 from .hostenv import host_env
 from .hostrun import HostRequest
 from .llm import anthropic_bridge, capabilities, prompts, websearch
+from .llm.client import is_private_mode
 from .models import KeyringWait, Models, UserError
 from .netpolicy import InsecureURL, check_url
 from .safety import images as images_mod
@@ -233,6 +234,7 @@ class Engine:
         # a turn begun but not with the assistant yet (its app's source being prepared, Claude Code
         # connecting): {"entry", "stop": the user pressed Stop, "early": messages they wrote meanwhile}
         self._starting: dict | None = None
+        self._builder_stale = False           # the assistant's models changed: its Claude Code is made again
         self._attached: dict[str, dict] = {}  # files attached in the window, not sent yet (id -> its record)
         self._unplaced: list[dict] = []       # files sent while the sandbox wasn't running: put there first
         self._background: set[asyncio.Task] = set()
@@ -510,6 +512,13 @@ class Engine:
         # checked first: a value that's refused must never stay in the settings the app runs with
         if "builder_model" in data and not str(data["builder_model"]).strip():
             raise UserError("The assistant needs a model: type one, or pick GLM 5.3, private GLM 5.3 or Claude Opus 5.5.")
+        chosen = {k: str(data.get(k, getattr(s, k)) or "").strip()
+                  for k in ("builder_model", "builder_small_model", "builder_vision_model")}
+        if is_private_mode(chosen["builder_model"]) and any(
+                v and not is_private_mode(v) for v in (chosen["builder_small_model"], chosen["builder_vision_model"])):
+            raise UserError("With a private model, the models for quick tasks and for images must be private too (or "
+                            "empty, to use the same one): what the assistant is given would otherwise go to them in "
+                            "the clear.")
         if "install_dir" in data:
             folder = str(data["install_dir"]).strip()
             where = Path(os.path.expanduser(folder)) if folder else None
@@ -533,6 +542,8 @@ class Engine:
                     raise UserError(f"{key} must be a number.") from None
         for key in self.SETTINGS_STR:
             if key in data:
+                if key.startswith("builder_") and str(data[key]).strip() != getattr(s, key):
+                    self._builder_stale = True
                 setattr(s, key, str(data[key]).strip())
         if "output_mode" in data:
             if data["output_mode"] not in OUTPUT_MODES:
@@ -799,6 +810,7 @@ class Engine:
             return
         if not self.ready:
             raise UserError(self.assistant_status()["error"])
+        self._sealed_check()                    # before anything of it is shown or kept
         if self.busy:
             self._interject(content, shown=True, text=message, files=files)
             return
@@ -1061,6 +1073,15 @@ class Engine:
                 self._note(f"Your message couldn't reach the assistant: {e}")
         self._spawn(go())
 
+    def _sealed_check(self) -> bool:
+        """Whether the assistant's models are private (sealed end to end); raises if this chat ran on one and
+        they aren't now: all of it would go along (its session, resumed), to a model that isn't sealed."""
+        sealed = self.models.builder_target()[3] == "e2ee"
+        if self.conv.sealed and not sealed:
+            raise UserError("This chat was with a private model, so it's only ever sent sealed: choose the private "
+                            "model again in Settings to go on with it, or start a new chat.")
+        return sealed
+
     def _start_turn(self, content: str, note: bool = True, prepare: Callable[[], Awaitable[str]] | None = None) -> None:
         """A turn with this message. `note`: the first of an app chat's session starts with the app's
         note about its app (and its source prepared for the assistant); off when the caller wrote its own.
@@ -1069,6 +1090,14 @@ class Engine:
         The turn is busy from here on, its entry live, also while it's prepared and Claude Code connects
         (minutes, for a big app's source): nothing else starts meanwhile, a message written then reaches
         the assistant straight after it has the turn, and Stop ends it before the assistant starts on it."""
+        sealed = self._sealed_check()
+        if self._builder_stale and self.builder is not None and not self.builder.busy:
+            old, self.builder = self.builder, None      # its Claude Code has the models before in its settings
+            self._spawn(old.close())
+        self._builder_stale = False
+        if sealed and not self.conv.sealed:
+            self.conv.sealed = True
+            self.conv.save()
         builder = self._ensure_builder()
         if prepare is None:
             content = self._with_about(content)
@@ -1933,6 +1962,8 @@ class Engine:
         prov, model, small, tier = self.models.builder_target()
         chat = (lambda m: self.models.client(prov, m)) if prov.base_url else None
         vision = self.cfg.settings.builder_vision_model.strip()
+        if is_private_mode(model) and vision and not is_private_mode(vision):
+            vision = ""                         # what it's shown would go to it in the clear: none at all
         return Upstream(base_url=prov.builder_url, auth=prov.builder_auth, key=lambda: self.models.key(prov),
                         models=(model, small), provider=prov.name, tier=tier, chat=chat,
                         guard=lambda m: self.models.tee_guard(prov, m),
@@ -1942,8 +1973,10 @@ class Engine:
 
     async def _describe_image(self, data_url: str, context: str) -> str:
         """The vision helper: a model that can see describes an image for the assistant."""
-        prov = self.models.builder_target()[0]
+        prov, main = self.models.builder_target()[:2]
         model = self.cfg.settings.builder_vision_model
+        if is_private_mode(main) and not is_private_mode(model):
+            raise UserError(f"{model} isn't private, and the assistant's model is: the picture isn't sent to it.")
         messages = [{"role": "system", "content": anthropic_bridge.VISION_PROMPT},
                     {"role": "user", "content": [
                         {"type": "text", "text": "What the assistant is doing: " + (context.strip() or "(not said)")},

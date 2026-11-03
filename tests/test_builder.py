@@ -1026,3 +1026,43 @@ async def test_stop_after_the_turns_result_ends_it_and_the_assistant_isnt_asked_
     await engine.builder._client.queue.put(state("idle"))
     await asyncio.sleep(0.05)
     assert engine.conv.chat[-1]["error"] == "stopped" and len(sent) == 1        # no nudge to go on
+
+
+async def test_a_private_chat_stays_private(builder_env):
+    """Its quick-task and picture models are private too (or the same one), never a plain one beside it;
+    once it has run sealed, it isn't carried on with a model in the clear (its session would go along);
+    and when the models change, its Claude Code is made again with them."""
+    from davibemanager.engine import UserError
+    engine, _, _, clients = builder_env
+    s = engine.cfg.settings
+    s.builder_model, s.builder_small_model, s.builder_vision_model = "private/glm-5-3", "", ""
+    with pytest.raises(UserError, match="must be private too"):
+        engine.save_settings({"builder_small_model": "z-ai/glm-5.3-flash"})
+    with pytest.raises(UserError, match="must be private too"):
+        engine.save_settings({"builder_vision_model": "z-ai/glm-5.3-flash"})
+    assert s.builder_small_model == "" and s.builder_vision_model == ""
+    s.builder_vision_model = "z-ai/glm-5.3-flash"                    # set before this check existed
+    assert engine._builder_upstream().describe is None                # no picture goes to it in the clear
+    with pytest.raises(UserError, match="isn't private"):
+        await engine._describe_image("data:image/png;base64,AAAA", "")
+    s.builder_vision_model = ""
+    engine._script = said("Sealed hello.")
+    engine.send("A private question")
+    await wait_for(lambda: len(engine.conv.chat) == 2, "the answer")
+    assert engine.conv.sealed and engine.models.builder_target()[3] == "e2ee"
+    first = engine.builder
+    engine.save_settings({"builder_model": "z-ai/glm-5.3"})
+    with pytest.raises(UserError, match="only ever sent sealed"):
+        engine.send("And now in the clear?")
+    assert len(engine.conv.chat) == 2                                # not even shown as sent
+    engine.save_settings({"builder_model": "private/kimi-k3"})
+    engine.send("Back to private")
+    await wait_for(lambda: len(engine.conv.chat) == 4, "the second answer")
+    assert engine.builder is not first and clients[-1].options.env["ANTHROPIC_MODEL"] == "private/kimi-k3"
+
+
+def said(text):
+    async def script(c, sent):
+        await c.queue.put(AssistantMessage([TextBlock(text)], "m"))
+        await c.queue.put(result())
+    return script

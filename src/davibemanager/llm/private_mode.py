@@ -43,6 +43,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import re
 import secrets
 import time
 from dataclasses import asdict, dataclass
@@ -209,8 +210,9 @@ class Enclave:
     """The attested enclave one provider seals to; re-attests when stale or rotated."""
 
     def __init__(self, relay: str, verifier: Verifier = tinfoil_verify,
-                 clock: Callable[[], float] = time.monotonic):
+                 clock: Callable[[], float] = time.monotonic, on_attested: Callable[[Attestation], None] | None = None):
         self.relay = relay
+        self._on_attested = on_attested     # each new attestation, for the log (and an older release, for the user)
         # Ours, not NanoGPT's: see the module docstring. In memory only.
         self.cache_secret = secrets.token_hex(32)
         self._verifier = verifier
@@ -241,6 +243,11 @@ class Enclave:
                     raise PrivateModeError(
                         f"the private model's enclave couldn't be attested: {e}; nothing was sent") from e
                 self._at = self._clock()
+                if self._on_attested:
+                    try:
+                        self._on_attested(self._verified.attestation)
+                    except Exception:  # noqa: BLE001 - only its report
+                        pass
             return self._verified
 
     def invalidate(self, verified: Verified | None = None) -> None:
@@ -421,8 +428,10 @@ class PrivateModeClient:
                                      json=body, headers=headers) as resp:
                 if resp.status_code >= 400:
                     text = (await resp.aread()).decode(errors="replace")
-                    raise PrivateModeError(f"Private Mode request failed (HTTP {resp.status_code}): {text[:300]}",
-                                           resp.status_code, text)
+                    # written by NanoGPT's relay, not the enclave: never sealed, so said as that, and short
+                    said = " ".join(re.sub(r"[\x00-\x1f\x7f]", " ", text).split())[:200]
+                    raise PrivateModeError(f"Private Mode request failed (HTTP {resp.status_code}); NanoGPT's relay "
+                                           f"said (unauthenticated): {said}", resp.status_code, text)
                 from ehbp.protocol import RESPONSE_NONCE_HEADER
                 # EHBP passes a reply that isn't a success through as it came, unsealed: one the relay made
                 # itself (a 302 with a verdict in it) would pass for the enclave's. Only a sealed one counts.

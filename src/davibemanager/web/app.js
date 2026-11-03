@@ -1927,7 +1927,11 @@ function settingsPanel() {
   const model = h("input", { type: "text", class: "mono", value: s.builder_model });
   const small = h("input", { type: "text", class: "mono", value: s.builder_small_model, placeholder: "empty = the same model" });
   const vision = h("input", { type: "text", class: "mono", value: s.builder_vision_model, placeholder: "for models that can't see images" });
-  const preset = { "z-ai/glm-5.3": "glm", "private/glm-5-3": "private", "anthropic/claude-opus-5.5": "claude" }[s.builder_model] || "custom";
+  // private only when what the assistant is given goes nowhere else in the clear (quick tasks, pictures)
+  const isPrivate = (m) => /^\s*private\//i.test(m || "");
+  const allPrivate = isPrivate(s.builder_model) && [s.builder_small_model, s.builder_vision_model].every((m) => !m || isPrivate(m));
+  const preset = s.builder_model === "private/glm-5-3" ? (allPrivate ? "private" : "custom")
+    : { "z-ai/glm-5.3": "glm", "anthropic/claude-opus-5.5": "claude" }[s.builder_model] || "custom";
   const pickInto = (input, title) => nano?.base_url ? h("button", { class: "small", onclick: () => pickModel(title, nano.name, async (id) => { input.value = id; }) }, "Choose…") : null;
   const customBox = h("div", { class: preset === "custom" ? "" : "hidden" },
     h("div", { class: "field" }, h("span", {}, "Model"), h("div", { class: "row" }, model, pickInto(model, "The assistant's model"))),
@@ -1952,15 +1956,19 @@ function settingsPanel() {
       radio("so", "changes", s.second_opinion, "On anything that changes your computer", null, () => save({ second_opinion: "changes" })),
       radio("so", "all", s.second_opinion, "On every command", null, () => save({ second_opinion: "all" })),
       radio("so", "off", s.second_opinion, "Only when I ask", null, () => save({ second_opinion: "off" })),
-      h("div", { class: "row small" }, "Reviewer: ", h("span", { class: "mono" }, reviewer || "not set"), reviewer.startsWith("private/") ? h("span", { class: "chip private" }, "private") : null,
+      isPrivate(s.builder_model) && !isPrivate(reviewer) ? h("div", { class: "warnbox small" },
+        `The assistant is private, but second opinions go to ${reviewer || "no reviewer"} in the clear: the commands it reads come from your private chat. `,
+        nano ? h("button", { class: "small", onclick: () => save({ review_model: `${nano.name}|private/glm-5-3` }, "Second opinions are private too now.") }, "Make them private too") : null) : null,
+      h("div", { class: "row small" }, "Reviewer: ", h("span", { class: "mono" }, reviewer || "not set"), isPrivate(reviewer) ? h("span", { class: "chip private" }, "private") : null,
         nano?.base_url ? h("button", { class: "small", onclick: () => pickModel("Reviewer", nano.name, (id) => api("POST", "/api/settings", { review_model: `${nano.name}|${id}` })) }, "Change") : null)),
     h("div", { class: "section" }, h("h3", {}, "The assistant"),
       h("div", { class: "small muted" }, "The AI you talk to. It works in its sandbox, through NanoGPT. Any NanoGPT model works (Something else); these are the usual choices."),
       radio("am", "glm", preset, "GLM 5.3", "Included with a NanoGPT subscription. Screenshots are described to it by GLM 5.3 Flash.",
         () => save({ builder_model: "z-ai/glm-5.3", builder_small_model: "z-ai/glm-5.3-flash", builder_vision_model: "z-ai/glm-5.3-flash" }, "The assistant now uses GLM 5.3.")),
       radio("am", "private", preset, "Private GLM 5.3",
-        "End-to-end encrypted: only an attested enclave can read what it sees. Paid per use.",
-        () => save({ builder_model: "private/glm-5-3", builder_small_model: "private/glm-5-3-flash", builder_vision_model: "private/glm-5-3-flash" }, "The assistant now uses private GLM 5.3.")),
+        "End-to-end encrypted: only an attested enclave can read what it sees, its quick tasks and second opinions too. Paid per use.",
+        () => save({ builder_model: "private/glm-5-3", builder_small_model: "", builder_vision_model: "",
+          ...(nano ? { review_model: `${nano.name}|private/glm-5-3` } : {}) }, "The assistant now uses private GLM 5.3, sealed end to end.")),
       radio("am", "claude", preset, "Claude Opus 5.5", "The strongest, especially for building apps. Paid per use; NanoGPT passes what it sees to Anthropic.",
         () => save({ builder_model: "anthropic/claude-opus-5.5", builder_small_model: "" }, "The assistant now uses Claude Opus 5.5.")),
       radio("am", "custom", preset, "Something else", null, () => { customBox.classList.remove("hidden"); }),

@@ -44,6 +44,7 @@ class Models:
         self.cfg = cfg
         self._save_config = save_config
         self._emit = emit                       # emit(type, **data) to the UI
+        self._told_release: set[tuple[str, str]] = set()      # older router releases the user was told of
         self._log = log                         # log(event, **data) to the conversation's audit log
         self._models: dict[str, list[str]] = {}
         self._enclaves: dict[str, Enclave] = {}      # provider name -> attested enclave (Private Mode)
@@ -142,11 +143,25 @@ class Models:
         if is_private_mode(model):
             enclave = self._enclaves.get(prov.name)
             if enclave is None or enclave.relay != relay_url(prov.base_url):
-                enclave = self._enclaves[prov.name] = Enclave(relay_url(prov.base_url))
+                enclave = self._enclaves[prov.name] = Enclave(relay_url(prov.base_url),
+                                                              on_attested=lambda att: self._private_attested(prov, att))
         try:
             return PrivateModeClient(prov.base_url, key, enclave) if is_private_mode(model) else LLMClient(prov.base_url, key)
         except InsecureURL as e:
             raise UserError(str(e)) from None
+
+    def _private_attested(self, prov: Provider, att) -> None:
+        """A new attestation of the Private Mode enclave: in the log, and said once if it runs an older
+        release of Tinfoil's router than the newest (still verified; NanoGPT may simply be catching up)."""
+        self._log("private_enclave_attested", provider=prov.name, enclave=att.enclave, hardware=att.hardware,
+                  release=att.release_tag, digest=att.release_digest, latest=att.latest_release,
+                  latest_checked=att.latest_checked, key_sha256=att.hpke_key_sha256)
+        if att.latest_release and (prov.name, att.release_digest) not in self._told_release:
+            self._told_release.add((prov.name, att.release_digest))
+            self._emit("toast", level="info", text=(
+                f"Private Mode's enclave runs an older release of Tinfoil's router ({att.release_tag or att.release_digest[:12]}) "
+                f"than the newest ({att.latest_release}). It's verified all the same, so what you send stays sealed; "
+                "NanoGPT may not have updated it yet."))
 
     async def _private_ids(self, base_url: str) -> list[str]:
         if self.private_lister:
@@ -326,8 +341,11 @@ class Models:
         order = ("standard", "tee", "e2ee", "local")
         # the lower of the two models' tiers; private/ models are sealed by the gateway (e2ee), but it
         # doesn't attest TEE models, so on the wire those are like any standard model
-        tiers = [detect_tier(m, prov.builder_url, prov.tier_overrides) for m in (s.builder_model, small)]
+        seen = [m for m in (s.builder_model, small, s.builder_vision_model.strip()) if m]
+        tiers = [detect_tier(m, prov.builder_url, prov.tier_overrides) for m in seen]
         tier = min(("standard" if t == "tee" else t for t in tiers), key=order.index)
+        if is_private_mode(s.builder_model):
+            tier = "e2ee"       # the gateway seals the chat's every request, or refuses it (and no clear image helper)
         if not prov.base_url and not all(m.lower().startswith(("anthropic/", "claude")) for m in (s.builder_model, small)):
             raise UserError(f"Models other than Claude need {prov.name}'s chat endpoint (Settings).")
         return prov, s.builder_model, small, tier
@@ -336,7 +354,7 @@ class Models:
         want = (self.cfg.settings.review_model or "").strip()
         if not want or "|" not in want:
             raise UserError("No reviewer is set up yet (Settings → Second opinions).")
-        pname, model = want.split("|", 1)
+        pname, model = (x.strip() for x in want.split("|", 1))
         prov = self.cfg.provider(pname)
         if not prov:
             raise UserError(f"The reviewer's provider {pname} no longer exists; choose a reviewer in Settings.")

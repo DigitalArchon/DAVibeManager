@@ -286,17 +286,32 @@ class Gateway:
                 return fail(path, 401, f"No API key is stored for {up.provider}; add it in Settings.", "authentication_error")
             body = await request.body()
             model, sent_model = "", ""
+            sealed = any(is_private_mode(m) for m in up.models[:1])     # the assistant's model is private
             if body and request.method == "POST":
                 try:
                     data = json.loads(body)
                 except ValueError:
                     return fail(path, 400, "The request body isn't JSON.", "invalid_request_error")
-                if isinstance(data, dict) and "model" in data:
-                    model = sent_model = str(data["model"])
-                    if model not in up.models:
-                        # Claude Code asks for its own defaults now and then; only the chosen models are used
-                        sent_model = data["model"] = up.models[-1]
-                        body = json.dumps(data).encode()
+                if not isinstance(data, dict):
+                    return fail(path, 400, "The request body isn't a JSON object.", "invalid_request_error")
+                model = sent_model = str(data.get("model") or "")
+                if model not in up.models:
+                    # Claude Code asks for its own defaults now and then; only the chosen models are used, and
+                    # never one in the clear for what was asked of a private model (a chat begun on private GLM,
+                    # then the models changed: its Claude Code still asks for it, with all that was said)
+                    sent_model = next((m for m in reversed(up.models) if is_private_mode(m)), "") \
+                        if is_private_mode(model) else up.models[-1]
+                    if not sent_model:
+                        return fail(path, 403, f"{model} is a private model, and the assistant's models aren't private "
+                                    "now: what was asked of it isn't sent to another in the clear. Start a new chat.",
+                                    "permission_error", model=model)
+                    data["model"] = sent_model
+                    body = json.dumps(data).encode()
+            if sealed and not is_private_mode(sent_model):
+                # the assistant's model is private: everything of its chat goes sealed, or not at all
+                return fail(path, 403, f"The assistant's model is private, so {sent_model or 'a request without a model'} "
+                            "can't be used for its chat in the clear. Choose private models for quick tasks too "
+                            "(Settings), or leave them empty to use the same one.", "permission_error", model=sent_model)
             if up.chat is not None and not is_anthropic(sent_model):
                 return await self._translated(path, data if body else {}, up, sent_model, model, len(body))
             headers = {k: v for k, v in request.headers.items() if k.lower() in PASS_HEADERS}

@@ -37,6 +37,7 @@ class Conversation:
     app_name: str = ""         # an app chat's app as the user named it (a new one, not built yet)
     remake: bool = False       # an app chat that makes its app again, cleanly, from the official source
     after_reset: bool = False  # the sandbox was reset since its last turn: the next one tells the assistant
+    sealed: bool = False       # it ran on a private (end-to-end encrypted) model: it's never sent anywhere in the clear
 
     @classmethod
     def create(cls, root: Path | None = None) -> "Conversation":
@@ -67,7 +68,7 @@ class Conversation:
                    requests=list(data.get("requests", [])), questions=list(data.get("questions", [])),
                    tokens=dict(data.get("tokens") or {}), mode=data.get("mode") or _old_mode(data),
                    app=data.get("app", ""), app_name=data.get("app_name", ""), remake=bool(data.get("remake")),
-                   after_reset=bool(data.get("after_reset")))
+                   after_reset=bool(data.get("after_reset")), sealed=bool(data.get("sealed")))
 
     @staticmethod
     def list_all(root: Path | None = None) -> list[dict]:
@@ -105,7 +106,7 @@ class Conversation:
         tmp.write_text(json.dumps({"version": 1, "title": self.title, "started": self.started, "session": self.session,
                                    "chat": self.chat, "requests": self.requests, "questions": self.questions,
                                    "tokens": self.tokens, "mode": self.mode, "app": self.app, "app_name": self.app_name,
-                                   "remake": self.remake, "after_reset": self.after_reset},
+                                   "remake": self.remake, "after_reset": self.after_reset, "sealed": self.sealed},
                                   ensure_ascii=False, default=str), encoding="utf-8")
         tmp.replace(self.dir / "state.json")
 

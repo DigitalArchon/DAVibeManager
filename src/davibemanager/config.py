@@ -18,7 +18,6 @@ APP_ID = "davibemanager"
 DEFAULT_MODEL = "z-ai/glm-5.3"
 DEFAULT_FAST_MODEL = "z-ai/glm-5.3-flash"
 PRIVATE_MODEL = "private/glm-5-3"          # NanoGPT Private Mode: end-to-end encrypted (paid)
-PRIVATE_FAST_MODEL = "private/glm-5-3-flash"
 CLAUDE_MODEL = "anthropic/claude-opus-5.5"
 # how often an app's official source is asked for new releases (each app can choose its own)
 CHECK_EVERY = ("day", "week", "month", "manual")
