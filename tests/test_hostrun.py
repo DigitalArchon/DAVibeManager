@@ -74,6 +74,21 @@ async def test_an_administrators_command_is_stopped_by_roots_side_when_asked_or_
     assert res.exit_code == 3 and res.output == "hi\n"
 
 
+async def test_a_command_that_leaves_something_running_is_done_when_it_ends(tmp_path, monkeypatch):
+    """`app &` keeps the output open once the command has ended: it waited out its whole time limit
+    for it, and then stopped it, and what it had started too."""
+    monkeypatch.setattr(hostrun, "LEFT_OPEN", 0.5)
+    for as_root in (False, True):
+        mark = tmp_path / f"alive-{as_root}"
+        cmd = f"echo started; (sleep 1.5; echo later; touch {mark}) & exit 4"
+        res = await hostrun.run(cmd, as_root=as_root, timeout=30, argv=root_like(cmd) if as_root else None)
+        assert res.exit_code == 4 and not res.timed_out and not res.still_running and res.seconds < 3
+        assert res.output == "started\n" + hostrun.LEFT_NOTE
+        await asyncio.sleep(2)
+        assert mark.exists()             # left running, and what it printed later didn't end it
+    assert not hostrun._left
+
+
 async def test_a_command_that_wont_stop_is_reported_as_maybe_still_running(monkeypatch):
     """Say so, rather than that it ended: e.g. root's side that ignores the closed pipe."""
     signalled = []

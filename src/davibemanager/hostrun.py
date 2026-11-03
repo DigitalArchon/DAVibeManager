@@ -150,6 +150,13 @@ exit "$rc"
 
 
 PROMPT_TIMEOUT = 10 * 60            # how long the password may take, before the command's own time limit
+# Something a command starts in the background (`app &`) keeps its output open after it ends: that
+# isn't the command still running. Its output is read for a moment longer, then the result is in;
+# what's left running goes on (what it prints is still read, and dropped, so it isn't stopped by that).
+LEFT_OPEN = 2
+LEFT_NOTE = ("\n[It left something running in the background that still has this output open: "
+             "what that prints from here on isn't shown.]")
+_left: set[asyncio.Task] = set()     # those readers, until what they read from ends
 
 
 def argv_for(command: str, as_root: bool) -> list[str]:
@@ -171,13 +178,17 @@ async def run(command: str, *, as_root: bool = False, timeout: float = DEFAULT_T
     if not as_root:
         running.set()
 
+    left_open = False
+
     def keep(chunk: bytes) -> None:
         nonlocal size
+        if left_open:
+            return
         if size < MAX_OUTPUT:
             chunks.append(chunk[:MAX_OUTPUT - size])
         size += len(chunk)
 
-    async def read():
+    async def drain():
         pending = b""                   # before root's side says it runs: pkexec's own words, or that
         while chunk := await proc.stdout.read(65536):
             if not running.is_set():
@@ -190,6 +201,25 @@ async def run(command: str, *, as_root: bool = False, timeout: float = DEFAULT_T
                 running.set()
             keep(chunk)
         keep(pending)
+
+    async def read():
+        # to the end of its output, or until a moment after the command itself ended (LEFT_OPEN)
+        nonlocal left_open
+        draining = asyncio.ensure_future(drain())
+        try:
+            while not draining.done() and proc.returncode is None:
+                await asyncio.wait([draining], timeout=0.25)
+            if not draining.done():
+                await asyncio.wait([draining], timeout=LEFT_OPEN)
+        except BaseException:
+            draining.cancel()
+            raise
+        if not draining.done():
+            left_open = True
+            _left.add(draining)
+            draining.add_done_callback(lambda t: (_left.discard(t), t.cancelled() or t.exception()))
+            return
+        draining.result()
         await proc.wait()
 
     reader = asyncio.ensure_future(read())
@@ -221,6 +251,8 @@ async def run(command: str, *, as_root: bool = False, timeout: float = DEFAULT_T
     text = b"".join(chunks).decode("utf-8", errors="replace")
     if size > MAX_OUTPUT:
         text += f"\n[… {size - MAX_OUTPUT} more bytes not kept]"
+    if left_open:
+        text += LEFT_NOTE
     return RunResult(None if timed_out or still_running else proc.returncode, text, timed_out,
                      round(time.monotonic() - started, 2), still_running)
 
