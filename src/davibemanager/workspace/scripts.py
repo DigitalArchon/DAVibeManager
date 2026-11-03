@@ -177,6 +177,17 @@ git -C "$snap" fetch -q --no-tags --no-write-fetch-head "$src" "$@" \
 echo "@@HEAD $(git -C "$snap" rev-parse --verify refs/dvm/check)"
 """
 
+# the snapshot made root's and read-only (as root, in the clean container): the build script that runs after
+# it, as the agent's user, can't change what the app then reads of it (its info/attributes or config could
+# show the change as binary, or as another); the app's git, as that user, may still read it
+SEAL_SNAPSHOT = r"""
+set -eu
+case "$1" in /work/.dvm/snapshot.git) ;; *) exit 2;; esac
+chown -R 0:0 "$1"
+chmod -R a+rX,go-w "$1"
+git config --system --get-all safe.directory 2>/dev/null | grep -qxF "$1" || git config --system --add safe.directory "$1"
+"""
+
 # a file of the sandbox's ($1, read-only at /sandbox) copied into the clean container ($2), at most 64 KB
 COPY_IN = r"""mkdir -p "$(dirname "$2")" && head -c 65536 -- "$1" > "$2"
 """

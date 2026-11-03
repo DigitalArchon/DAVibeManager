@@ -2779,6 +2779,9 @@ class Engine:
         head = next((l.split()[1] for l in out.splitlines() if l.startswith("@@HEAD ") and len(l.split()) == 2), "")
         if rc != 0 or not re.fullmatch(r"[0-9a-f]{7,64}", head):
             raise CheckFailed("snapshot", out)
+        rc, out = await podman.exec_root(box, ["sh", "-c", sandbox_scripts.SEAL_SNAPSHOT, "sh", SNAPSHOT_REPO], timeout=120)
+        if rc != 0:
+            raise CheckFailed("snapshot", f"The app couldn't keep its copy of the commit from being changed: {out}")
         return head
 
     async def box_build(self, box: str, head: str, script: str, packages: list[str], work: str,

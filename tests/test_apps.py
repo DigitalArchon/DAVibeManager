@@ -13,6 +13,7 @@ import pytest
 from fakesandbox import DESKTOP, FakeSandbox, commit_patch, make_appimage, offered
 
 from davibemanager import appmanager, apps, delivery, integrate
+from davibemanager.workspace import podman as podman_mod
 from davibemanager.workspace import scripts
 
 GTHUMB = "https://gitlab.gnome.org/GNOME/gthumb.git"
@@ -1045,3 +1046,22 @@ async def test_an_install_doesnt_stall_the_window_and_keeps_what_was_saved_meanw
     assert ticks == 5 and time_mod.monotonic() - t < 4 and meta["status"] == "installed"
     a = apps.load("gthumb")
     assert a["installed"]["build"] == "D1" and a["update"]["checked"] == 1.0
+
+
+async def test_the_apps_copy_of_a_commit_is_sealed_before_any_build_script_runs(gthumb, monkeypatch):
+    """The build script runs as the agent's user: before it does, the snapshot the app reads the patch
+    from is made root's and read-only (its info/attributes could otherwise show the change as binary)."""
+    engine, sb, fake, told = gthumb
+    engine.cfg.settings.changelog_summary = "manual"
+    await engine.app_manager.check("gthumb")
+    assert await engine.app_manager.rebuild("gthumb")
+    assert ["sh", "-c", scripts.SEAL_SNAPSHOT, "sh", appmanager.SNAPSHOT_REPO] in sb.root_calls
+    real = sb.exec_root
+
+    async def refused(name, argv, **kw):
+        if argv[2:3] == [scripts.SEAL_SNAPSHOT]:
+            return 1, "chown: permission denied"
+        return await real(name, argv, **kw)
+    monkeypatch.setattr(podman_mod, "exec_root", refused)
+    with pytest.raises(appmanager.PortFailed, match="couldn't keep its copy"):
+        await engine.box_snapshot("dvm-sandbox-check", "/sandbox/apps/gthumb")
