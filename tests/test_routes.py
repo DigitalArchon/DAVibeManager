@@ -184,3 +184,24 @@ async def test_routed_tokens_are_paid_even_for_a_model_a_subscription_includes(e
     assert engine.spend()["included"] == pytest.approx(3 * 0.7)
     told = [e for e in emitted if e["type"] == "toast" and "didn't use the host" in e["text"]]
     assert len(told) == 1
+
+
+async def test_a_picture_described_by_a_model_on_a_chosen_host_counts_as_paid(env):
+    """The vision helper sent on the host the user chose (Fastest) is billed per use: counted so, not as
+    included in a subscription."""
+    from davibemanager import engine as engine_mod
+    engine, _, _ = env
+    engine.cfg.settings.builder_vision_model = "z-ai/glm-5.3-flash"
+
+    class Helper:
+        last_usage = {"prompt_tokens": 1000, "completion_tokens": 100, "cost": 0.35}
+    engine.models.client = lambda prov, model="": Helper()
+
+    async def complete(client, prov, model, messages):
+        return "A zoom box over a photo."
+    engine.models.complete = complete
+    engine.models.route = lambda prov, model: {"priority": "speed", "fp8": True}
+    assert await engine._describe_image("data:image/png;base64,AAAA", "") == "A zoom box over a photo."
+    ev = engine.network[-1]
+    assert ev["kind"] == "vision" and ev["route"] and ev["route_held"] is True
+    assert "z-ai/glm-5.3-flash" + engine_mod.ROUTED in engine.conv.tokens

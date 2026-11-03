@@ -154,7 +154,10 @@ class StreamAccumulator:
 
     def __init__(self) -> None:
         self.result = TurnResult()
-        self._calls: dict[int, ToolCall] = {}
+        # each call in the order it came, and the call each of the server's indexes is now: a server that gives
+        # no index, or the same one to every call, would otherwise merge them ("ReadRead", '{…}{…}')
+        self._calls: list[ToolCall] = []
+        self._at: dict[int | None, int] = {}
 
     def feed(self, chunk) -> list[tuple[str, str]]:
         events: list[tuple[str, str]] = []
@@ -179,7 +182,11 @@ class StreamAccumulator:
             self.result.content += delta.content
             events.append(("text", delta.content))
         for tc in delta.tool_calls or []:
-            call = self._calls.setdefault(tc.index, ToolCall(id="", name="", arguments=""))
+            slot = self._at.get(tc.index)
+            if slot is None or (tc.id and self._calls[slot].id and tc.id != self._calls[slot].id):
+                self._calls.append(ToolCall(id="", name="", arguments=""))
+                slot = self._at[tc.index] = len(self._calls) - 1
+            call = self._calls[slot]
             if tc.id:
                 call.id = tc.id
             if tc.function:
@@ -193,7 +200,7 @@ class StreamAccumulator:
         return events
 
     def finish(self) -> TurnResult:
-        self.result.tool_calls = [self._calls[i] for i in sorted(self._calls)]
+        self.result.tool_calls = list(self._calls)
         for i, call in enumerate(self.result.tool_calls):
             if not call.id:
                 call.id = f"call_{i}"

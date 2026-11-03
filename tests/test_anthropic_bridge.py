@@ -301,3 +301,54 @@ async def test_a_private_chat_is_never_sent_to_a_model_in_the_clear(tmp_path):
         assert r.status_code == 400
     finally:
         await g.stop()
+
+
+def test_tool_calls_a_server_gives_no_index_or_the_same_one_stay_apart():
+    """Deltas keyed by index only: two calls without one became one "ReadRead" with '{…}{…}' for input."""
+    from openai.types.chat import ChatCompletionChunk
+    from davibemanager.llm.client import StreamAccumulator
+
+    def chunk(calls, finish=None):
+        return ChatCompletionChunk.model_validate({"id": "x", "object": "chat.completion.chunk", "created": 0, "model": "m",
+                                                   "choices": [{"index": 0, "delta": {"tool_calls": calls}, "finish_reason": finish}]})
+    acc = StreamAccumulator()                                   # each call under index 0 (no index: the same)
+    for cid, path in (("a", "/a"), ("b", "/b")):
+        acc.feed(chunk([{"index": 0, "id": cid, "type": "function", "function": {"name": "Read", "arguments": f'{{"file_path": "{path}"}}'}}]))
+    acc.feed(chunk([], "tool_calls"))
+    calls = acc.finish().tool_calls
+    assert [(c.id, c.name, c.arguments) for c in calls] == [("a", "Read", '{"file_path": "/a"}'), ("b", "Read", '{"file_path": "/b"}')]
+    acc = StreamAccumulator()                                   # the usual: one call in pieces, under its index
+    for part in ('{"file_', 'path": "/a"}'):
+        acc.feed(chunk([{"index": 0, **({"id": "a", "type": "function"} if part.startswith("{") else {}),
+                         "function": {**({"name": "Read"} if part.startswith("{") else {}), "arguments": part}}]))
+    assert [(c.id, c.arguments) for c in acc.finish().tool_calls] == [("a", '{"file_path": "/a"}')]
+
+
+async def test_a_reply_that_isnt_streamed_counts_as_the_provider_billed_it(tmp_path):
+    """Its cached tokens as cached, what NanoGPT billed for a routed model, and no usage made up from the
+    gateway's own estimate when the provider gave none."""
+    from davibemanager.llm.client import TurnResult
+    log, usage = [], {"now": {"prompt_tokens": 100_000, "completion_tokens": 50, "cost": 0.0123,
+                              "prompt_tokens_details": {"cached_tokens": 90_000}}}
+
+    class Billed:
+        def stream(self, model, messages, tools=None, params=None):
+            async def go():
+                yield "text", "ok"
+                yield "done", TurnResult(content="ok", finish_reason="stop", usage=usage["now"])
+            return go()
+    g = Gateway(tmp_path / "gw", lambda: Upstream("https://nano-gpt.com/api/v1", "bearer", lambda: "sk", ("z-ai/glm-5.3",) * 2,
+                                                 provider="NanoGPT", chat=lambda m: Billed(),
+                                                 route=lambda m: {"priority": "speed", "fp8": True}),
+                on_event=log.append, http=httpx.AsyncClient(transport=httpx.MockTransport(lambda r: pytest.fail("x"))))
+    await g.start()
+    try:
+        r = await _post(g, {"model": "z-ai/glm-5.3", "messages": [{"role": "user", "content": "hi"}]})
+        assert r.status_code == 200
+        assert log[-1]["usage"] == {"input": 10_000, "output": 50, "cache_read": 90_000, "cache_write": 0, "cost": 0.0123}
+        assert log[-1]["route_held"] is True
+        usage["now"] = None
+        await _post(g, {"model": "z-ai/glm-5.3", "messages": [{"role": "user", "content": "hi"}]})
+        assert "usage" not in log[-1]
+    finally:
+        await g.stop()

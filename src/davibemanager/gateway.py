@@ -409,11 +409,15 @@ class Gateway:
                **({"sees": True} if native else {})}
         events = client.stream(model, messages, tools, params)
         if not data.get("stream"):
+            stats: dict = {}
             try:
-                reply = await bridge.message(events, model, estimate)
+                reply = await bridge.message(events, model, estimate, stats=stats)
             except Exception as e:  # noqa: BLE001
                 return err(502, f"{model}: {e}")
-            self.on_event({**rec, "seconds": round(time.monotonic() - started, 2), "usage": anthropic_usage(reply.get("usage"))})
+            # the provider's own count (cached tokens, the bill), as for a streamed reply; none if it gave none
+            # (the reply's own figures would be the gateway's estimate)
+            self.on_event(_route_held({**rec, "seconds": round(time.monotonic() - started, 2),
+                                       **({"usage": openai_usage(stats["usage"])} if stats.get("usage") else {})}))
             return JSONResponse(reply)
 
         async def body():

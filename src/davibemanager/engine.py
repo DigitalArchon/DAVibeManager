@@ -48,6 +48,7 @@ from .gateway import Gateway, Upstream, openai_usage
 from .hostenv import host_env
 from .hostrun import HostRequest
 from .llm import anthropic_bridge, capabilities, prompts, websearch
+from .llm import routes as routes_mod
 from .llm.client import is_private_mode
 from .models import KeyringWait, Models, UserError
 from .netpolicy import InsecureURL, check_url
@@ -1988,8 +1989,12 @@ class Engine:
             self._network_event({"kind": "vision", "model": model, "status": 502, "error": str(e)[:300]})
             raise
         usage = getattr(client, "last_usage", None)
-        self._network_event({"kind": "vision", "model": model, "status": 200, "seconds": round(time.monotonic() - started, 2),
-                             **({"usage": openai_usage(usage)} if usage else {})})
+        route = self.models.route(prov, model)     # a host the user chose for it: paid per use, as the gateway counts it
+        ev = {"kind": "vision", "model": model, "status": 200, "seconds": round(time.monotonic() - started, 2),
+              **({"usage": openai_usage(usage)} if usage else {}), **({"route": routes_mod.describe(route)} if route else {})}
+        if route and ev.get("usage", {}).get("cost") is not None:
+            ev["route_held"] = ev["usage"]["cost"] > 0
+        self._network_event(ev)
         return text.strip()
 
     def spend(self) -> dict:

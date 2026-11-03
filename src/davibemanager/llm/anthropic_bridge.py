@@ -274,8 +274,10 @@ async def sse(events: AsyncIterator[tuple[str, object]], model: str, input_estim
     yield _sse("message_stop", {"type": "message_stop"})
 
 
-async def message(events: AsyncIterator[tuple[str, object]], model: str, input_estimate: int) -> dict:
-    """The private model's reply as one Anthropic message (for requests that don't stream)."""
+async def message(events: AsyncIterator[tuple[str, object]], model: str, input_estimate: int,
+                  stats: dict | None = None) -> dict:
+    """The private model's reply as one Anthropic message (for requests that don't stream). `stats` gets
+    the provider's own usage, as sse gives it (its cached tokens, what NanoGPT billed)."""
     text, result = "", None
     async for kind, val in events:
         if kind == "text":
@@ -288,6 +290,8 @@ async def message(events: AsyncIterator[tuple[str, object]], model: str, input_e
         content.append({"type": "tool_use", "id": call.id or f"toolu_{secrets.token_hex(8)}", "name": call.name,
                         "input": _arguments(call.arguments)})
     usage = (result.usage if result else None) or {}
+    if stats is not None and usage:
+        stats["usage"] = usage
     return {"id": f"msg_{secrets.token_hex(12)}", "type": "message", "role": "assistant", "model": model,
             "content": content, "stop_reason": stop, "stop_sequence": None,
             "usage": {"input_tokens": usage.get("prompt_tokens", input_estimate), "output_tokens": usage.get("completion_tokens", 0)}}
