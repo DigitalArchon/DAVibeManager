@@ -22,7 +22,7 @@ import subprocess
 import time
 from contextlib import AsyncExitStack, asynccontextmanager
 from pathlib import Path
-from typing import Callable
+from typing import Awaitable, Callable
 from urllib.parse import urlparse
 
 from . import appimage as appimage_mod
@@ -230,6 +230,9 @@ class Engine:
         self._waiters: dict[tuple[str, int], asyncio.Future] = {}   # ("request"|"question", id) -> the tool's wait
         self._running: dict[int, asyncio.Event] = {}                 # request id -> its stop button
         self._queued: list[str] = []          # messages for the assistant once its turn ends
+        # a turn begun but not with the assistant yet (its app's source being prepared, Claude Code
+        # connecting): {"entry", "stop": the user pressed Stop, "early": messages they wrote meanwhile}
+        self._starting: dict | None = None
         self._attached: dict[str, dict] = {}  # files attached in the window, not sent yet (id -> its record)
         self._unplaced: list[dict] = []       # files sent while the sandbox wasn't running: put there first
         self._background: set[asyncio.Task] = set()
@@ -374,7 +377,15 @@ class Engine:
 
     @property
     def busy(self) -> bool:
-        return self.builder is not None and self.builder.busy
+        """A turn is in progress: from the moment it begins, which is before the assistant has it while
+        its app's source is prepared (that can take minutes), until it ends."""
+        return self._starting is not None or (self.builder is not None and self.builder.busy)
+
+    def _live(self) -> dict | None:
+        """The entry of the turn in progress, also while it's still being started."""
+        if self._starting is not None:
+            return self._starting["entry"]
+        return self.builder.entry if self.builder else None
 
     def snapshot(self) -> dict:
         return {
@@ -386,7 +397,7 @@ class Engine:
             "conversation": self.conv.to_dict() if self.conv else None,
             "chat": self.conv.chat if self.conv else [],
             "spend": self.spend(),
-            "live": self.builder.entry if self.busy else None,
+            "live": self._live(),
             "requests": {r.id: r.to_dict() for r in self.requests.values()},
             "questions": self.questions,
             "queued": self._queued,
@@ -687,6 +698,10 @@ class Engine:
         return (mode, same["id"], same["name"]) if same else (mode, "", app_name)
 
     async def open_chat(self, cid: str) -> None:
+        if self.conv and self.conv.id == cid:
+            # open already, the assistant perhaps working in it ("Go to its chat" of an update it's
+            # making): nothing to switch, and nothing of it (its session, attached files) to drop
+            return
         try:
             conv = Conversation.load(cid)
         except FileNotFoundError as e:
@@ -1001,7 +1016,7 @@ class Engine:
     def _interject(self, message: str, shown: bool = False, text: str | None = None, files: list[dict] | None = None) -> None:
         """A message for the assistant while it works. What the user wrote (`text`, and the files they
         attached) shows in its entry, where they wrote it."""
-        entry = self.builder.entry
+        entry = self._live()
         if shown:
             text = message if text is None else text
             entry["parts"].append({"t": "user", "text": text, "at": time.time(),
@@ -1009,6 +1024,9 @@ class Engine:
             self.log("user", text=text, during_turn=True)
             self.emit("entry", entry=entry, interjected=True)
         self.log("sent_to_ai", content=message, during_turn=True)
+        if self._starting is not None:
+            self._starting["early"].append(message)     # the assistant hasn't the turn yet: it gets it right after
+            return
 
         async def go():
             try:
@@ -1018,37 +1036,76 @@ class Engine:
                 self._note(f"Your message couldn't reach the assistant: {e}")
         self._spawn(go())
 
-    def _start_turn(self, content: str, note: bool = True) -> None:
+    def _start_turn(self, content: str, note: bool = True, prepare: Callable[[], Awaitable[str]] | None = None) -> None:
         """A turn with this message. `note`: the first of an app chat's session starts with the app's
-        note about its app (and its source prepared for the assistant); off when the caller wrote its own."""
+        note about its app (and its source prepared for the assistant); off when the caller wrote its own.
+        `prepare`: makes what is sent instead, once the turn has begun (an update's tree, prepared first).
+
+        The turn is busy from here on, its entry live, also while it's prepared and Claude Code connects
+        (minutes, for a big app's source): nothing else starts meanwhile, a message written then reaches
+        the assistant straight after it has the turn, and Stop ends it before the assistant starts on it."""
         builder = self._ensure_builder()
-        content = self._with_about(content)
-        first = note and not self.conv.session and (self.conv.mode == "app" or (self.conv.mode == "computer" and self.conv.app))
-        after_reset = self.conv.after_reset and bool(self.conv.session)
+        if prepare is None:
+            content = self._with_about(content)
+        first = note and prepare is None and not self.conv.session and (
+            self.conv.mode == "app" or (self.conv.mode == "computer" and self.conv.app))
+        after_reset = prepare is None and self.conv.after_reset and bool(self.conv.session)
         for e in self.conv.chat:
             e.pop("queued", None)
         entry = self._new_entry()
+        start = self._starting = {"entry": entry, "stop": False, "early": []}
+
+        def started() -> None:
+            if self._starting is start:
+                self._starting = None
 
         async def go():
             nonlocal content
+            sent = False
             try:
-                if first:
+                if prepare is not None or first or after_reset:
+                    self._watch()               # what the app does in the sandbox meanwhile shows in the chat
+                if prepare is not None:
+                    content = self._with_about(await prepare())
+                elif first:
                     note_text = await (self._app_note() if self.conv.mode == "app" else self._diagnose_note())
                     content = f"{note_text}\n\n{content}"
                 elif after_reset:
                     content = f"{await self._after_reset()}\n\n{content}"
                     self.conv.after_reset = False
                     self.conv.save()
-                self.log("sent_to_ai", content=content)
-                if self._unplaced:              # attached while the sandbox wasn't running
-                    files, self._unplaced = self._unplaced, []
-                    await self._place(files)
-                await builder.send(content, entry)
-                self._watch()
+                if not start["stop"]:
+                    self.log("sent_to_ai", content=content)
+                    if self._unplaced:          # attached while the sandbox wasn't running
+                        files, self._unplaced = self._unplaced, []
+                        await self._place(files)
+                    await builder.send(content, entry)
+                    sent = True
             except Exception as e:  # noqa: BLE001 - shown in the chat
-                builder.entry = None
+                started()
+                if builder.entry is entry:
+                    builder.entry = None
                 entry["error"] = str(e)
                 self._turn_end(entry)
+                return
+            finally:
+                started()                       # the app closing (cancelled) included
+            if not sent:
+                entry["error"] = "stopped"      # before the assistant had it: nothing was asked of it
+                self._turn_end(entry)
+                return
+            if start["stop"]:
+                if builder.entry is entry:
+                    await builder.interrupt()   # stopped while it connected: it ends as any stopped turn
+                return
+            for message in start["early"]:
+                try:
+                    await builder.interject(message)
+                except Exception as e:  # noqa: BLE001 - shown in the chat
+                    app_log("interject_failed", error=str(e))
+                    self._note(f"Your message couldn't reach the assistant: {e}")
+                    break
+            self._watch()
         self._spawn(go())
 
     def _builder_event(self, type_: str, **data) -> None:
@@ -1069,6 +1126,8 @@ class Engine:
         self._watch()
 
     def _turn_end(self, entry: dict) -> None:
+        if self._starting is not None and self._starting["entry"] is entry:
+            self._starting = None
         self.conv.chat.append(entry)
         texts = [p["text"] for p in entry["parts"] if p["t"] == "text"]
         self.log("assistant", text="\n\n".join(texts), error=entry.get("error"),
@@ -1095,6 +1154,12 @@ class Engine:
         self._start_turn(content)
 
     def stop_turn(self) -> None:
+        if self._starting is not None:
+            # the assistant hasn't the turn yet: it ends once what's being prepared is done (a
+            # preparation cut short would leave the app's source half made)
+            self._starting["stop"] = True
+            self.log("stopped_while_starting")
+            return
         if self.busy:
             for key, fut in list(self._waiters.items()):
                 if not fut.done():

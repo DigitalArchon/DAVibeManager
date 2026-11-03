@@ -1068,7 +1068,8 @@ class AppManager:
     async def ask_assistant(self, app_id: str, failure: PortFailed | None, tag: str = "") -> None:
         """A new chat in which the assistant makes the app's changes on the new release (or on `tag`, its
         own, for changes from a shared app): in a tree the app prepared with what carried over by
-        itself, told exactly which changes didn't and why."""
+        itself, told exactly which changes didn't and why. The chat opens with the user's request and
+        its turn under way at once; preparing the tree is the turn's first step."""
         a = self.app(app_id)
         u = a.get("update") or {}
         if self.e.busy:
@@ -1080,6 +1081,15 @@ class AppManager:
         tag = tag or u["latest"]
         apps.save({**self.app(app_id), "chat": {"id": self.e.conv.id, "tag": tag, "at": time.time()}})
         self.changed()
+        own = tag == a.get("base_ref")
+        text = (f"Please build my {a['name']} with its changes: some came from a shared app." if own
+                else f"Please update my {a['name']} to version {tag}, with the same changes.")
+        self.e._user_entry(text)
+        self.e.log("update_started", app=app_id, to=tag, after=failure.step if failure else "")
+        self.e._start_turn(text, note=False, prepare=lambda: self._update_task(a, failure, tag, text))
+
+    async def _update_task(self, a: dict, failure: PortFailed | None, tag: str, text: str) -> str:
+        """What the assistant is told to make the update (ask_assistant), its tree prepared first."""
         titles = {c["id"]: c["title"] for c in a.get("changes", [])}
         tree = self.tree(a)
         try:
@@ -1097,8 +1107,6 @@ class AppManager:
                         f"branch dvm/work at {tag}, and apply the changes' patches in order (git am -3). What failed:\n"
                         + fence(f.log[-3000:]))
         own = tag == a.get("base_ref")
-        text = (f"Please build my {a['name']} with its changes: some came from a shared app." if own
-                else f"Please update my {a['name']} to version {tag}, with the same changes.")
         why = ("The app tried by itself first: " + {"apply": "not all the saved changes carry over to the new version as they are",
                "build": "it doesn't build with the saved build script in a clean container (only its build packages "
                         "installed)",
@@ -1114,9 +1122,7 @@ class AppManager:
                                           prepared=prepared, why=why,
                                           changes="\n".join(f"- {c['id']}: {c['title']}" for c in a.get("changes", [])),
                                           addon_note=f"Keep install_to=\"{a['install_to']}\". " if a.get("install_to") else "")
-        self.e._user_entry(text)
-        self.e.log("update_started", app=app_id, to=tag, after=failure.step if failure else "")
-        self.e._start_turn(f"{text}\n\n{task}", note=False)
+        return f"{text}\n\n{task}"
 
     # ---------------------------------------------------------------- installing
 

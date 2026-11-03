@@ -490,7 +490,7 @@ async def test_stopping_ends_the_entry_whatever_still_runs(builder_env):
         await c.queue.put(AssistantMessage([TextBlock("Starting."), ToolUseBlock("t1", "Bash", {"command": "make"})], "m"))
     engine._script = script
     engine.send("Build it")
-    await wait_for(lambda: engine.busy and engine.builder.entry["parts"], "working")
+    await wait_for(lambda: engine.builder.entry and engine.builder.entry["parts"], "working")
     await engine.builder._client.queue.put(ResultMessage("success", 1, 1, False, 1, "sess-1", terminal_reason="aborted_tools"))
     await wait_for(lambda: engine.conv.chat[-1]["kind"] == "assistant", "turn end")
     assert engine.conv.chat[-1]["error"] == "stopped" and not engine.busy
@@ -520,11 +520,95 @@ async def test_a_question_straight_after_a_message_written_during_the_turn_waits
             await c.queue.put(result())
     engine._script = script
     engine.send("Build it")
-    await wait_for(lambda: engine.busy and engine.builder.entry["parts"], "working")
+    await wait_for(lambda: engine.builder.entry and engine.builder.entry["parts"], "working")
     engine.send("How long will it take?")
     gate.set()
     await wait_for(lambda: out, "the question")
     assert getattr(out[0], "typed", None) == "How long will it take?"
+
+
+async def test_a_turn_is_under_way_from_its_start_while_the_app_prepares_the_source(builder_env, monkeypatch):
+    """The first turn of an app chat waits for the app to prepare the app's source (minutes, for a big
+    one), and it's the turn in progress all that time: a second message doesn't start another turn (nor
+    another preparation of the same tree) but reaches the assistant as soon as it has the turn, and
+    the chat isn't switched from under it."""
+    from davibemanager.engine import UserError
+    engine, _, _, clients = builder_env
+    gate, prepared, got = asyncio.Event(), [], []
+
+    async def app_note():
+        prepared.append(engine.conv.id)
+        await gate.wait()
+        return "[The app's note about its app]"
+    monkeypatch.setattr(engine, "_app_note", app_note)
+
+    async def script(c, text):
+        got.append(text)
+        if len(got) == 1:
+            await c.queue.put(AssistantMessage([TextBlock("On it: it zooms, and quickly.")], "m"))
+            await asyncio.sleep(0.05)
+            await c.queue.put(result())
+    engine._script = script
+    engine.send("Make it zoom")
+    await wait_for(lambda: prepared, "the preparation")
+    assert engine.busy and not clients
+    state = engine.snapshot()
+    assert state["busy"] and state["live"]["kind"] == "assistant"           # the window shows it working
+    engine.send("And quickly, please")
+    assert prepared == [engine.conv.id] and not clients
+    with pytest.raises(UserError, match="Wait for the assistant"):
+        await engine.new_chat("computer")
+    gate.set()
+    await wait_for(lambda: engine.conv.chat[-1]["kind"] == "assistant", "turn end")
+    assert got[0].startswith("[The app's note about its app]") and got[0].endswith("Make it zoom")
+    assert got[1:] == ["And quickly, please"]
+    assert [e["kind"] for e in engine.conv.chat] == ["user", "assistant"] and not engine.busy
+    assert [p["t"] for p in engine.conv.chat[-1]["parts"]] == ["user", "text"]  # where the user wrote it
+
+
+async def test_stopping_a_turn_while_it_is_prepared_ends_it_before_the_assistant_is_asked(builder_env, monkeypatch):
+    engine, _, _, clients = builder_env
+    gate = asyncio.Event()
+
+    async def app_note():
+        await gate.wait()
+        return "[The app's note about its app]"
+    monkeypatch.setattr(engine, "_app_note", app_note)
+    engine.send("Make it zoom")
+    engine.send("Actually, leave it")
+    engine.stop_turn()
+    assert engine.busy                          # until the preparation is done: cut short, it'd leave half a tree
+    gate.set()
+    await wait_for(lambda: engine.conv.chat[-1]["kind"] == "assistant", "turn end")
+    assert engine.conv.chat[-1]["error"] == "stopped" and not engine.busy
+    assert not clients                          # nothing was asked of the assistant: it cost nothing
+
+
+async def test_going_to_the_open_chat_while_the_assistant_works_in_it_shows_it(builder_env):
+    """"Go to its chat" on an update the assistant is making: that chat is the one open (My apps was
+    only in front of it), so it's shown as it is, not refused because the assistant is busy, and
+    nothing of it is dropped. Another chat still waits until the assistant is done."""
+    from davibemanager.conversation import Conversation
+    from davibemanager.engine import UserError
+    engine, _, _, _ = builder_env
+    gate = asyncio.Event()
+
+    async def script(c, text):
+        await c.queue.put(AssistantMessage([TextBlock("Updating it.")], "m"))
+        await gate.wait()
+        await c.queue.put(result())
+    engine._script = script
+    other = Conversation.create()
+    engine.send("Please update my gThumb to version 3.12.7, with the same changes.")
+    await wait_for(lambda: engine.builder.entry and engine.builder.entry["parts"], "working")
+    cid, builder = engine.conv.id, engine.builder
+    await engine.open_chat(cid)
+    assert engine.conv.id == cid and engine.builder is builder and engine.busy
+    with pytest.raises(UserError, match="Wait for the assistant"):
+        await engine.open_chat(other.id)
+    gate.set()
+    await wait_for(lambda: not engine.busy, "turn end")
+    assert engine.conv.id == cid and engine.conv.chat[-1]["parts"][0]["text"] == "Updating it."
 
 
 async def test_the_assistant_needs_a_key_before_anything(env):

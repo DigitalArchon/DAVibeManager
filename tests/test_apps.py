@@ -232,13 +232,17 @@ async def test_when_the_changes_dont_apply_the_assistant_is_asked_with_what_fail
     # by the user's click: the assistant, in a new app chat, in a tree the app prepared with what carried
     # over, told exactly which change didn't and why
     sent = []
-    monkeypatch.setattr(engine, "_start_turn", lambda content, note=True: sent.append((content, note)))
+    monkeypatch.setattr(engine, "_start_turn", lambda content, note=True, prepare=None: sent.append((content, note, prepare)))
     await engine.app_manager.rebuild("gthumb", by_user=True)
     assert engine.conv.chat[-1]["text"] == "Please update my gThumb to version 3.12.7, with the same changes."
     assert (engine.conv.mode, engine.conv.app) == ("app", "gthumb")
-    content, note = sent[0]
+    text, note, prepare = sent[0]
     assert not note                                     # its own note: the tree is prepared for the update
-    assert sb.calls_of(scripts.CARRY)[-1][6:9] == ["/work/apps/gthumb", "3.12.6", "3.12.7"]
+    # ... as the turn's first step, once it has begun (the chat opens at once, its turn under way)
+    into_tree = lambda: [c for c in sb.calls_of(scripts.CARRY) if c[6] == "/work/apps/gthumb"]  # noqa: E731
+    assert text == engine.conv.chat[-1]["text"] and not into_tree()
+    content = await prepare()
+    assert into_tree()[-1][6:9] == ["/work/apps/gthumb", "3.12.6", "3.12.7"]
     assert "gth-image-viewer.c" in content and 'updates="gthumb"' in content
     assert "These didn't carry over" in content and "drag-a-box-to-zoom (Drag a box to zoom)" in content
     assert "not all the saved changes carry over" in content
@@ -752,10 +756,11 @@ async def test_a_build_that_stops_with_an_error_says_so_and_never_just_vanishes(
     assert any(e["type"] == "toast" and "runtime isn't the pinned one" in e["text"] for e in events)
     assert engine.conv.chat == []                                    # nobody was asked to pay for it unasked
     sent = []
-    monkeypatch.setattr(engine, "_start_turn", lambda content, note=True: sent.append(content))
+    monkeypatch.setattr(engine, "_start_turn", lambda content, note=True, prepare=None: sent.append(prepare))
     await engine.app_manager.assistant("gthumb")
-    assert "it stopped with an error" in sent[0] and "runtime isn't the pinned one" in sent[0]
-    assert "no saved build script" not in sent[0] and "3.12.7" in sent[0]
+    task = await sent[0]()
+    assert "it stopped with an error" in task and "runtime isn't the pinned one" in task
+    assert "no saved build script" not in task and "3.12.7" in task
 
 
 async def test_when_the_assistant_cant_take_over_now_the_user_is_told(gthumb, env, monkeypatch):

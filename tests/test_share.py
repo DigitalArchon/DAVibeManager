@@ -378,8 +378,10 @@ async def test_an_import_the_assistant_finishes_counts_as_built_and_its_chat_can
     await wait_for(lambda: engine.sharing.view(view["token"])["review"]["status"] == "done", "the review")
     aid = engine.sharing.accept(view["token"], name="gThumb (Sam's)")["app"]
     sb.fail["build"] = "error: gth-image-viewer.c: missing header"
-    monkeypatch.setattr(engine, "_start_turn", lambda content, note=True: None)
+    prepared = []
+    monkeypatch.setattr(engine, "_start_turn", lambda content, note=True, prepare=None: prepared.append(prepare))
     assert await engine.app_manager.rebuild(aid, by_user=True, tag="3.12.6") == ""
+    await prepared[0]()                                   # its tree, prepared as the turn's first step
     chat = engine.conv.id
     a = apps.load(aid)
     assert (engine.conv.mode, engine.conv.app) == ("app", aid)
