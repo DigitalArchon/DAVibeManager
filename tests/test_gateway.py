@@ -63,15 +63,49 @@ async def test_connect_to_a_public_address_is_relayed_and_logged(gw):
     g, events, _, _ = gw
     reply, reader, writer = await _proxy(g, b"CONNECT github.com:443 HTTP/1.1\r\nHost: github.com:443\r\n\r\n")
     assert reply.startswith(b"HTTP/1.1 200")
-    writer.write(b"hello")
+    hello = b"\x16\x03\x01hello"                       # a TLS handshake record starts so
+    writer.write(hello)
     await writer.drain()
-    assert await reader.readexactly(5) == b"HELLO"
+    assert await reader.readexactly(len(hello)) == hello.upper()
     writer.close()
     for _ in range(100):
         if events:
             break
         await asyncio.sleep(0.01)
-    assert events[-1]["host"] == "github.com" and events[-1]["status"] == 200 and events[-1]["bytes_out"] == 5
+    assert events[-1]["host"] == "github.com" and events[-1]["status"] == 200 and events[-1]["bytes_out"] == len(hello)
+
+
+async def test_only_tls_goes_through_a_connection_never_anything_in_the_clear(gw):
+    """Port 443 alone let plain http out (curl --proxytunnel http://github.com:443/?data=…)."""
+    g, events, _, _ = gw
+    reply, reader, writer = await _proxy(g, b"CONNECT github.com:443 HTTP/1.1\r\nHost: github.com:443\r\n\r\n")
+    assert reply.startswith(b"HTTP/1.1 200")
+    writer.write(b"GET /?data=secret HTTP/1.1\r\nHost: github.com\r\n\r\n")
+    await writer.drain()
+    assert await reader.read() == b""                    # closed, nothing passed on
+    writer.close()
+    for _ in range(100):
+        if events:
+            break
+        await asyncio.sleep(0.01)
+    assert events[-1]["status"] == 403 and "TLS" in events[-1]["refused"] and "bytes_out" not in events[-1]
+
+
+async def test_this_networks_public_address_is_refused_as_the_network_itself(gw):
+    """Many routers serve their settings on their public address to the network inside."""
+    g, events, _, _ = gw
+    g.public_addresses = lambda: ["140.82.112.3"]        # as the router says (NAT-PMP or UPnP)
+    g._public = (float("-inf"), ())
+    g._own_networks()
+    await g._asking
+    reply, _, writer = await _proxy(g, b"CONNECT github.com:443 HTTP/1.1\r\nHost: github.com:443\r\n\r\n")
+    assert reply.startswith(b"HTTP/1.1 403")
+    writer.close()
+    for _ in range(100):
+        if events:
+            break
+        await asyncio.sleep(0.01)
+    assert "private network" in events[-1]["refused"]
 
 
 @pytest.mark.parametrize("target,why", [

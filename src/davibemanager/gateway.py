@@ -16,6 +16,7 @@ Inside the container, socat exposes them on 127.0.0.1:8080 and :3128 (workspace/
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import json
 import os
 import secrets
@@ -30,6 +31,7 @@ import httpx
 from .llm import anthropic_bridge as bridge
 from .llm import routes
 from .llm.client import is_private_mode
+from . import netpolicy
 from .netpolicy import InsecureURL, check_url, is_global_ip, is_secure, own_networks
 
 PROXY_PORTS = frozenset({443})
@@ -37,6 +39,9 @@ PROXY_PORTS = frozenset({443})
 # messages, counting their tokens, the models), not the provider's other paid endpoints
 MODEL_PATHS = frozenset({("POST", "/v1/messages"), ("POST", "/v1/messages/count_tokens"), ("GET", "/v1/models")})
 OWN_NETWORKS_EVERY = 60
+PUBLIC_ADDRESS_EVERY = 15 * 60       # the router asked again for its public address
+# what a TLS connection starts with, the client's handshake record: 0x16 and a version, 03 01 to 03 04
+TLS_START = (b"\x16\x03\x01", b"\x16\x03\x02", b"\x16\x03\x03", b"\x16\x03\x04")
 MAX_HEADER = 16 * 1024
 CONNECT_TIMEOUT = 20
 # request headers passed through to the provider; everything else (auth, host, cookies, the
@@ -179,6 +184,11 @@ class Gateway:
     # why a host name may not be connected to ("" if it may): it carries something from this computer
     refuse_host: Callable[[str], str] = lambda host: ""
     _own: tuple | None = None
+    # this network's public IPv4 address, as its router says (netpolicy.router_public_addresses; tests: theirs),
+    # asked aside now and then: (when, its networks), and the look under way
+    public_addresses: Callable[[], list[str]] | None = None
+    _public: tuple = (float("-inf"), ())
+    _asking: asyncio.Task | None = None
     token: str = field(default_factory=lambda: secrets.token_urlsafe(32))
     _servers: list[asyncio.AbstractServer] = field(default_factory=list)
     _uvicorn: object | None = None
@@ -200,6 +210,7 @@ class Gateway:
         os.chmod(self.dir, 0o711)
         for sock in (self.model_socket, self.proxy_socket):
             sock.unlink(missing_ok=True)
+        self._ask_router()                  # before the sandbox's first connection, if the router answers quickly
         proxy = await asyncio.start_unix_server(self._proxy_client, path=str(self.proxy_socket))
         self._servers.append(proxy)
         await self._start_model_server()
@@ -422,11 +433,26 @@ class Gateway:
     # ---------------------------------------------------------------- the HTTPS proxy
 
     def _own_networks(self) -> tuple:
-        """This computer's addresses and networks, looked at again every minute (a laptop moves)."""
+        """This computer's addresses and networks, looked at again every minute (a laptop moves), and
+        the public address of the network it's on, which its router is asked for aside (never waited on)."""
         now = time.monotonic()
         if self._own is None or now - self._own[0] > OWN_NETWORKS_EVERY:
             self._own = (now, self.own_networks())
-        return self._own[1]
+        if now - self._public[0] > PUBLIC_ADDRESS_EVERY and (self._asking is None or self._asking.done()):
+            self._ask_router()
+        return self._own[1] + self._public[1]
+
+    def _ask_router(self) -> None:
+        ask = self.public_addresses or netpolicy.router_public_addresses
+        started = time.monotonic()
+
+        async def go():
+            try:
+                found = await asyncio.to_thread(ask)
+            except Exception:  # noqa: BLE001 - only a look; asked again later
+                found = []
+            self._public = (started, tuple(ipaddress.ip_network(f"{ip}/32") for ip in found))
+        self._asking = asyncio.get_running_loop().create_task(go())
 
     async def _resolve(self, host: str, port: int) -> list[str]:
         if self.resolver:
@@ -493,9 +519,20 @@ class Gateway:
                 return await self._refuse(writer, 502, f"Could not connect to {host}: {e}", rec)
             writer.write(b"HTTP/1.1 200 Connection Established\r\n\r\n")
             await writer.drain()
+            # what goes through is TLS, and nothing else: port 443 alone lets plain http or anything else in
+            # the clear out (curl --proxytunnel http://host:443/?data). The client speaks first in TLS.
+            try:
+                first = await asyncio.wait_for(reader.readexactly(3), 30)
+            except (asyncio.IncompleteReadError, asyncio.TimeoutError):
+                rec.update(status=200, error="nothing was sent through")
+                return
+            if first not in TLS_START:
+                rec.update(status=403, refused="Only TLS (HTTPS) goes through, nothing in the clear: this wasn't TLS.")
+                return
+            up_writer.write(first)
             rec["status"] = 200
             sent, received = await asyncio.gather(self._pipe(reader, up_writer), self._pipe(up_reader, writer))
-            rec.update(bytes_out=sent, bytes_in=received)
+            rec.update(bytes_out=sent + len(first), bytes_in=received)
         except Exception as e:  # noqa: BLE001 - one connection's failure never stops the gateway
             rec.setdefault("error", str(e))
         finally:

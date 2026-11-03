@@ -140,3 +140,72 @@ def test_an_address_urlparse_cant_take_or_an_ip_with_a_dot_after_it_is_refused()
     with pytest.raises(InsecureURL):
         check_url("http://192.168.1.50.:8080/v1")      # a name to the resolver: DNS says where it goes
     assert check_url("http://192.168.1.50:8080/v1")
+
+
+def test_this_computers_networks_include_its_second_addresses_and_its_sites_other_ipv6_networks(tmp_path, monkeypatch):
+    import ipaddress
+    fib = tmp_path / "fib_trie"
+    fib.write_text("Main:\n  +-- 0.0.0.0/0 3 0 5\n     |-- 0.0.0.0\n        /0 universe UNICAST\n"
+                   "     +-- 192.168.1.0/24 2 0 2\n        |-- 192.168.1.0\n           /24 link UNICAST\n"
+                   "        |-- 192.168.1.20\n           /32 host LOCAL\n        |-- 192.168.1.21\n           /32 host LOCAL\n")
+    nets = netpolicy._fib_ipv4(str(fib))
+    assert ipaddress.ip_network("192.168.1.21/32") in nets and ipaddress.ip_network("192.168.1.0/24") in nets
+    assert ipaddress.ip_network("0.0.0.0/0") not in nets
+    v6 = tmp_path / "if_inet6"
+    v6.write_text("2a0200aa00bb00010000000000000005 02 40 00 80 eth0\n")      # 2a02:aa:bb:1::5/64
+    real_open = open
+    monkeypatch.setattr("builtins.open", lambda path, *a, **k: real_open(v6 if path == "/proc/net/if_inet6" else path, *a, **k))
+    own = netpolicy.own_networks()
+    assert not is_global_ip("2a02:aa:bb:7::9", own)           # another /64 of the same site (a guest network)
+    assert is_global_ip("2a02:aa:cc::1", own)
+
+
+def test_the_router_is_asked_for_the_public_address_on_this_network_only(monkeypatch):
+    """NAT-PMP to the default gateway, else UPnP from its description: never anyone outside."""
+    import socket
+    import threading
+    srv = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    srv.bind(("127.0.0.1", 0))
+
+    def answer():
+        data, addr = srv.recvfrom(16)
+        if data == b"\x00\x00":
+            srv.sendto(b"\x00\x80\x00\x00" + b"\x00\x00\x00\x01" + socket.inet_aton("203.0.113.9"), addr)
+    threading.Thread(target=answer, daemon=True).start()
+    port = srv.getsockname()[1]
+    monkeypatch.setattr(netpolicy, "_default_gateway", lambda: "127.0.0.1")
+    real_sendto = socket.socket.sendto
+    monkeypatch.setattr(socket.socket, "sendto", lambda self, data, addr: real_sendto(self, data, ("127.0.0.1", port))
+                        if addr[1] == 5351 else real_sendto(self, data, addr))
+    assert netpolicy._natpmp_external(1.0) == "203.0.113.9"
+    srv.close()
+    monkeypatch.setattr(netpolicy, "_default_gateway", lambda: "8.8.8.8")    # not a local address: not asked
+    assert netpolicy._natpmp_external(0.2) is None
+    with pytest.raises(ValueError, match="isn't on this network"):
+        netpolicy._local_http("http://example.org/desc.xml")
+
+
+def test_upnp_gives_the_routers_public_address_from_its_description():
+    import threading
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+    desc = ("<root><device><serviceList><service><serviceType>urn:schemas-upnp-org:service:WANIPConnection:1"
+            "</serviceType><controlURL>/ctl/IPConn</controlURL></service></serviceList></device></root>")
+
+    class Router(BaseHTTPRequestHandler):
+        def log_message(self, *a):
+            pass
+
+        def do_GET(self):
+            self.send_response(200); self.end_headers(); self.wfile.write(desc.encode())
+
+        def do_POST(self):
+            assert "GetExternalIPAddress" in self.headers["SOAPAction"]
+            self.rfile.read(int(self.headers["Content-Length"]))
+            self.send_response(200); self.end_headers()
+            self.wfile.write(b"<s:Envelope><s:Body><u:GetExternalIPAddressResponse><NewExternalIPAddress>198.51.100.4"
+                             b"</NewExternalIPAddress></u:GetExternalIPAddressResponse></s:Body></s:Envelope>")
+    server = HTTPServer(("127.0.0.1", 0), Router)
+    threading.Thread(target=server.handle_request, daemon=True).start()
+    threading.Thread(target=lambda: (server.handle_request(), server.server_close()), daemon=True).start()
+    assert netpolicy._upnp_ask([f"http://127.0.0.1:{server.server_port}/rootDesc.xml"]) == "198.51.100.4"
+    assert netpolicy._upnp_ask(["http://router.example.org/rootDesc.xml"]) is None     # not this network's

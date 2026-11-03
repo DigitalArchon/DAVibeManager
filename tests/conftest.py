@@ -93,7 +93,9 @@ def no_real_podman(request, monkeypatch):
     if request.node.get_closest_marker("podman"):
         return
     from davibemanager import engine as engine_mod
+    from davibemanager import netpolicy
     from davibemanager.workspace import podman
+    monkeypatch.setattr(netpolicy, "router_public_addresses", lambda timeout=0.6: [])   # no asking this network's router
     monkeypatch.setattr(engine_mod.Engine, "_guard_sandbox", lambda self: None)
     end_guards = engine_mod._end_old_guards
     monkeypatch.setattr(engine_mod, "_end_old_guards",

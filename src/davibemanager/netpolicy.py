@@ -16,10 +16,13 @@ IPv4 address carried inside an IPv6 one (NAT64, 6to4, Teredo) is judged as that 
 from __future__ import annotations
 
 import fcntl
+import http.client
 import ipaddress
+import re
 import socket
 import struct
-from urllib.parse import urlparse
+import time
+from urllib.parse import urljoin, urlparse
 
 _PRIVATE_NETS = tuple(ipaddress.ip_network(n) for n in (
     "127.0.0.0/8", "::1/128",                                    # loopback
@@ -113,9 +116,14 @@ def is_global_ip(ip: str, own: tuple = ()) -> bool:
                for a in _carried(addr))
 
 
+SITE_PREFIX = 48          # what a home network is given of IPv6 at most: its other /64s are its other networks
+
+
 def own_networks() -> tuple:
-    """This computer's addresses and the networks they are on (from its interfaces, read now):
-    its global IPv6 prefixes above all, which are routable like anyone's."""
+    """This computer's addresses and the networks they are on (from its interfaces, read now): its
+    global IPv6 prefixes above all, which are routable like anyone's, with the whole /48 around each
+    (the rest of what the provider delegated: a guest or IoT network), and every IPv4 address it has
+    (a second one on an interface too)."""
     nets = []
     try:
         with open("/proc/net/if_inet6") as f:
@@ -124,8 +132,11 @@ def own_networks() -> tuple:
                 addr = ipaddress.IPv6Address(int(hexaddr, 16))
                 nets.append(ipaddress.IPv6Network((addr, int(plen, 16)), strict=False))
                 nets.append(ipaddress.IPv6Network((addr, 128)))
+                if addr.is_global:
+                    nets.append(ipaddress.IPv6Network((addr, SITE_PREFIX), strict=False))
     except (OSError, ValueError):
         pass
+    nets += _fib_ipv4()
     try:
         names = [n for _, n in socket.if_nameindex()]
     except OSError:
@@ -140,4 +151,128 @@ def own_networks() -> tuple:
                 continue
             nets.append(ipaddress.IPv4Network(f"{addr}/{mask}", strict=False))
             nets.append(ipaddress.IPv4Network(f"{addr}/32"))
-    return tuple(nets)
+    return tuple(dict.fromkeys(nets))
+
+
+def _fib_ipv4(path: str = "/proc/net/fib_trie") -> list:
+    """Every IPv4 address of this computer's and the networks on its links, as the kernel's routing
+    table has them (SIOCGIFADDR gives only an interface's first address)."""
+    out, last = [], None
+    try:
+        lines = open(path).read().splitlines()
+    except OSError:
+        return out
+    for line in lines:
+        if m := re.search(r"[|+]--\s+(\d+\.\d+\.\d+\.\d+)(?:/\d+)?\b", line):
+            last = m.group(1)
+        elif (m := re.match(r"\s+/(\d+)\s+(\w+)\s+(LOCAL|UNICAST)\b", line)) and last:
+            try:
+                if m.group(3) == "LOCAL":
+                    out.append(ipaddress.IPv4Network(f"{last}/32"))
+                elif m.group(2) == "link":
+                    out.append(ipaddress.IPv4Network(f"{last}/{m.group(1)}", strict=False))
+            except ValueError:
+                continue
+    return out
+
+
+# ---- this network's public IPv4 address, as its router has it (never asked of anyone outside it)
+
+def router_public_addresses(timeout: float = 0.6) -> list[str]:
+    """The public IPv4 address this network is behind, as its router says it is (NAT-PMP, else UPnP),
+    to be refused like the network itself: many routers serve their settings on it to the network
+    inside. Only this network's router is asked, at a local address; [] when it doesn't say."""
+    found = []
+    for ask in (_natpmp_external, _upnp_external):
+        try:
+            ip = ask(timeout)
+        except (OSError, ValueError, http.client.HTTPException):
+            ip = None
+        if ip and (addr := _ip(ip)) is not None and addr.version == 4 and addr.is_global:
+            found.append(str(addr))
+            break
+    return found
+
+
+def _default_gateway() -> str | None:
+    try:
+        lines = open("/proc/net/route").read().splitlines()[1:]
+    except OSError:
+        return None
+    for line in lines:
+        f = line.split()
+        if len(f) > 3 and f[1] == "00000000" and int(f[3], 16) & 0x2:        # RTF_GATEWAY
+            return socket.inet_ntoa(struct.pack("<I", int(f[2], 16)))
+    return None
+
+
+def _natpmp_external(timeout: float) -> str | None:
+    gw = _default_gateway()
+    if not gw or not is_local_host(gw):
+        return None
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+        s.settimeout(timeout)
+        s.sendto(b"\x00\x00", (gw, 5351))         # NAT-PMP: version 0, "what's my external address?"
+        data, addr = s.recvfrom(64)
+    if addr[0] == gw and len(data) >= 12 and data[0] == 0 and data[1] == 128 and data[2:4] == b"\0\0":
+        return socket.inet_ntoa(data[8:12])
+    return None
+
+
+_WAN = re.compile(r"<serviceType>\s*(urn:schemas-upnp-org:service:WAN(?:IP|PPP)Connection:\d)\s*</serviceType>")
+
+
+def _local_http(url: str, body: bytes | None = None, headers: dict | None = None, timeout: float = 2.0) -> str:
+    """One http request to a device on this network (never followed elsewhere), at most 256 KB of it."""
+    u = urlparse(url)
+    if u.scheme != "http" or not is_local_host(u.hostname):
+        raise ValueError(f"{url[:80]} isn't on this network")
+    conn = http.client.HTTPConnection(u.hostname, u.port or 80, timeout=timeout)
+    try:
+        conn.request("POST" if body is not None else "GET", u.path or "/", body=body, headers=headers or {})
+        resp = conn.getresponse()
+        if resp.status != 200:
+            raise ValueError(f"HTTP {resp.status}")
+        return resp.read(256 << 10).decode("utf-8", errors="replace")
+    finally:
+        conn.close()
+
+
+def _upnp_external(timeout: float) -> str | None:
+    search = ("M-SEARCH * HTTP/1.1\r\nHOST: 239.255.255.250:1900\r\nMAN: \"ssdp:discover\"\r\nMX: 1\r\n"
+              "ST: urn:schemas-upnp-org:device:InternetGatewayDevice:1\r\n\r\n").encode()
+    locations = []
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+        s.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, 2)
+        s.settimeout(timeout)
+        s.sendto(search, ("239.255.255.250", 1900))
+        end = time.monotonic() + timeout
+        while time.monotonic() < end:
+            try:
+                data, _ = s.recvfrom(4096)
+            except OSError:
+                break
+            if m := re.search(rb"(?im)^location:\s*(\S+)", data):
+                locations.append(m.group(1).decode("latin-1"))
+    return _upnp_ask(locations)
+
+
+def _upnp_ask(locations: list[str]) -> str | None:
+    """The external address the first of these routers (their description's addresses) gives."""
+    for loc in list(dict.fromkeys(locations))[:4]:
+        try:
+            desc = _local_http(loc)
+        except (OSError, ValueError, http.client.HTTPException):
+            continue
+        for block in re.findall(r"<service>(.*?)</service>", desc, re.S):
+            kind, ctrl = _WAN.search(block), re.search(r"<controlURL>\s*([^<\s]+)\s*</controlURL>", block)
+            if not (kind and ctrl):
+                continue
+            soap = (f'<?xml version="1.0"?><s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" '
+                    f's:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/"><s:Body>'
+                    f'<u:GetExternalIPAddress xmlns:u="{kind.group(1)}"/></s:Body></s:Envelope>').encode()
+            reply = _local_http(urljoin(loc, ctrl.group(1)), soap, {
+                "Content-Type": 'text/xml; charset="utf-8"', "SOAPAction": f'"{kind.group(1)}#GetExternalIPAddress"'})
+            if m := re.search(r"<NewExternalIPAddress>\s*([\d.]+)\s*</NewExternalIPAddress>", reply):
+                return m.group(1)
+    return None
