@@ -639,3 +639,9 @@ async def test_what_the_app_runs_in_the_sandbox_is_stopped_there_when_it_runs_ou
     assert agent[agent.index("dvm-x") + 1:] == ["/usr/bin/timeout", "--kill-after=7.5", "105", "git", "fetch"]
     assert root[root.index("dvm-x") + 1:] == ["/usr/bin/timeout", "--kill-after=7.5", "1785", "apt-get", "update"]
     assert mirror[mirror.index("dvm-x") + 1:] == ["/usr/bin/timeout", "--kill-after=2", "16", "sh", "-c", "x"]
+
+
+async def test_input_for_a_command_that_ended_without_reading_it_isnt_an_error_of_its_own():
+    """The container isn't running: podman exec ends at once, saying so, and that's what is returned."""
+    rc, out = await podman.run(["sh", "-c", "echo 'Error: no container' >&2; exit 125"], input=b"x" * (4 << 20), timeout=10)
+    assert rc == 125 and "no container" in out

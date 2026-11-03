@@ -176,9 +176,12 @@ async def run(argv: list[str], *, timeout: float = 120, input: bytes | None = No
         reader = asyncio.ensure_future(read())
         try:
             if input is not None:
-                proc.stdin.write(input)
-                await proc.stdin.drain()
-                proc.stdin.close()
+                try:
+                    proc.stdin.write(input)
+                    await proc.stdin.drain()
+                    proc.stdin.close()
+                except (BrokenPipeError, ConnectionResetError):
+                    pass                # it ended without reading it (the container isn't running): it says why
             # What a command leaves running can hold its output open for good: `podman start`'s
             # conmon did, in the app (not in a shell), so the start waited out its whole timeout.
             # proc.wait() waits for the output to close too, so the exit is watched for instead.
@@ -248,6 +251,10 @@ async def build_image(on_line: Callable[[str], None] | None = None, *, source: s
         rc = None
         try:
             rc, out = await run(argv, timeout=3600, on_line=on_line)
+        except asyncio.TimeoutError:
+            raise BuildError("Preparing the sandbox took over an hour, and was stopped. Its downloads may be very slow "
+                             "just now: it goes on from where it got to when it's tried again.", "",
+                             kind="network") from None
         finally:
             if rc != 0:
                 # a build that failed, or was stopped, leaves a Buildah container for each step it began,
