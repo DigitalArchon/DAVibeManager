@@ -958,6 +958,8 @@ class AppManager:
         otherwise hand it to the assistant (only when the user asked for it now)."""
         a = self.app(app_id)
         u = a.get("update") or {}
+        if (self.e.backups.running or {}).get("what") == "restore":
+            raise UserError("Wait for the restore to finish first: your apps are being put back.")
         if tag and tag != a.get("base_ref"):
             raise UserError(f"{a['name']} is built on {a.get('base_ref')}: a newer version is built as an update.")
         if not tag and u.get("status") not in ("available", "built"):

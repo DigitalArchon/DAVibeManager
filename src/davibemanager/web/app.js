@@ -1860,6 +1860,7 @@ function restored(out) {
   modal({ title: "Your apps are back", body: h("div", {},
     h("p", {}, `${out.apps.length} app${out.apps.length === 1 ? "" : "s"} and ${out.chats} chat${out.chats === 1 ? "" : "s"} were restored. Your apps are ready to install: they don't need building again.`),
     out.aside ? h("p", { class: "small muted" }, `What was here before is kept in ${out.aside}.`) : null,
+    ...(out.warnings || []).map((w) => h("div", { class: "warnbox small" }, w)),
     out.sessions ? null : h("p", { class: "small muted" }, "Your old chats are all there to read. The assistant's own memory of them wasn't in the backup (the sandbox wasn't running then), so if you carry one on, it starts afresh.")),
     buttons: [{ label: "Later" }, { label: "Install them all", kind: "primary", onClick: async () => {
       let n = 0;

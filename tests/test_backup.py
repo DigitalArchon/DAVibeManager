@@ -233,3 +233,79 @@ def test_the_password_and_the_folder_are_checked(env):
         engine.save_settings({"backup_dir": "backups"})
     engine.save_settings({"backup_dir": "~/Backups", "backup_auto": "day", "backup_keep": 3})
     assert engine.backups.view()["folder"].endswith("/Backups") and engine.cfg.settings.backup_auto == "day"
+
+
+async def test_after_a_restore_no_build_id_is_given_again_that_an_app_or_a_chat_still_names(env, tmp_path):
+    """One build of each app is in a backup: the others' ids aren't the apps' any more, and the next
+    build's comes after every id still named (else Beta's card, its Export and its next backup were
+    Alpha's new build, and an old chat's card showed it)."""
+    from davibemanager import delivery
+    engine, _, _ = env
+    an_app("Alpha", builds=("D1", "D3"), installed="D3")
+    an_app("Beta", builds=("D2", "D4"), installed="D2")
+    engine.conv.chat.append({"kind": "assistant", "parts": [{"t": "delivery", "id": "D5"}]})   # a build of before
+    engine.conv.save()
+    backup.write_backup(tmp_path / "b.dvmbackup", PASSWORD, engine.cfg, None)
+    await engine.backups.restore(tmp_path / "b.dvmbackup", PASSWORD)
+    assert apps.load("beta")["builds"] == ["D2"] and apps.load("alpha")["builds"] == ["D3"]
+    assert delivery.next_id(delivery.root_dir()) == "D6"
+
+
+async def test_a_restore_says_what_couldnt_be_put_in_place_rather_than_fail_half_done(env, tmp_path, memory_keyring, monkeypatch):
+    """The key can't go into the keyring (it isn't open on the new computer): the apps, chats and
+    settings are the backup's all the same, and the user is told to enter the key again."""
+    from davibemanager import creds
+    engine, _, _ = env
+    an_app()
+    backup.write_backup(tmp_path / "b.dvmbackup", PASSWORD, engine.cfg, None)
+
+    def locked(*a, **k):
+        raise creds.KeyringUnavailable("the keyring is locked")
+    monkeypatch.setattr(creds, "set_secret", locked)
+    out = await engine.backups.restore(tmp_path / "b.dvmbackup", PASSWORD)
+    assert any("enter it again in Settings" in w for w in out["warnings"]) and apps.load("gthumb")
+
+
+async def test_nothing_starts_while_a_restore_is_under_way_and_one_that_did_stops_it_before_it_changes_anything(env, tmp_path, monkeypatch):
+    from davibemanager.models import UserError
+    engine, _, _ = env
+    an_app()
+    backup.write_backup(tmp_path / "b.dvmbackup", PASSWORD, engine.cfg, None)
+    engine.backups.running = {"what": "restore", "since": 0}
+    with pytest.raises(UserError, match="Wait for the restore"):
+        engine.send("hello")
+    with pytest.raises(UserError, match="Wait for the restore"):
+        await engine.app_manager.rebuild("gthumb")
+    engine.backups.running = None
+    settle = backup.settle
+
+    def slow(work, cfg):                      # the assistant got busy while it was unpacked
+        engine._starting = {"entry": {"parts": []}, "stop": False, "early": []}
+        return settle(work, cfg)
+    monkeypatch.setattr(backup, "settle", slow)
+    before = apps.load("gthumb")
+    with pytest.raises(backup.BackupError, match="started working meanwhile"):
+        await engine.backups.restore(tmp_path / "b.dvmbackup", PASSWORD)
+    engine._starting = None
+    assert apps.load("gthumb") == before and engine.conv is not None
+
+
+async def test_an_automatic_backup_that_fails_is_told_once_and_not_tried_every_ten_minutes(env, tmp_path, monkeypatch):
+    engine, _, _ = env
+    an_app()
+    told = []
+    engine.notify = lambda title, body: told.append(title)
+    engine.cfg.settings.backup_dir, engine.cfg.settings.backup_auto = str(tmp_path / "bk"), "day"
+    (tmp_path / "bk").mkdir()
+    engine.backups.set_password(PASSWORD)
+    tries = []
+
+    def full(*a, **k):
+        tries.append(1)
+        raise OSError(28, "No space left on device")
+    monkeypatch.setattr(backup, "write_backup", full)
+    import time
+    start = time.time()                       # (a failure is stamped with the time it happened)
+    for minutes in (0, 10, 20, 70):
+        await engine.backups.tick(now=start + minutes * 60)
+    assert told == ["Your apps weren't backed up"] and len(tries) == 2        # at once, then an hour later

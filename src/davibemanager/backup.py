@@ -69,6 +69,7 @@ OWN_SETTINGS = ("install_dir", "app_home", "container_memory", "container_cpus",
                 "window_width", "window_height", "backup_dir", "backup_auto", "backup_keep")
 # what of the data folder goes in (besides each app's kept builds)
 DATA = ("apps", "conversations", "screens", "outside.json", "runtime-x86_64")
+RETRY_AFTER = 3600                  # an automatic backup that failed is tried again after this long
 
 
 class BackupError(UserError):
@@ -329,17 +330,31 @@ def settle(unpacked: Path, current: config.Config) -> tuple[config.Config, dict]
         for k in ("installed_to", "installed_via", "installed_at", "installed_files", "backups", "removed", "tried"):
             meta.pop(k, None)
         meta_path.write_text(json.dumps(meta, indent=1, ensure_ascii=False), encoding="utf-8")
+    restored = {p.parent.name for p in (data / "deliveries").glob("D*/delivery.json")}
+    named: set[str] = set(restored)             # every build id that means something, here or in a chat
     for app_path in (data / "apps").glob("*/app.json"):
         a = json.loads(app_path.read_text(encoding="utf-8"))
         was = a.get("installed") or {}
-        a.update(installed=None, previous=None, restored={"version": was.get("version", ""), "at": time.time()})
+        u = a.get("update") or {}
+        named |= {*a.get("builds", []), was.get("build", ""), (a.get("previous") or {}).get("build", ""), u.get("build", "")}
+        # only the builds that came along are its own here (one of each app's is in a backup)
+        a.update(installed=None, previous=None, restored={"version": was.get("version", ""), "at": time.time()},
+                 builds=[d for d in a.get("builds", []) if d in restored])
+        if u.get("build") and u["build"] not in restored:
+            a["update"] = {k: v for k, v in u.items() if k != "build"} | ({"status": "available"} if u.get("status") == "built" else {})
         app_path.write_text(json.dumps(a, indent=1, ensure_ascii=False), encoding="utf-8")
     have = {p.stem for p in (unpacked / "sessions").rglob("*.jsonl")} if (unpacked / "sessions").is_dir() else set()
     for state in (data / "conversations").glob("*/state.json"):
         s = json.loads(state.read_text(encoding="utf-8"))
+        named |= {p.get("id", "") for e in s.get("chat", []) for p in e.get("parts", []) if p.get("t") == "delivery"}
         if s.get("session") and s["session"] not in have:
             s["session"] = ""                   # the assistant starts it afresh; the chat is all there
             state.write_text(json.dumps(s, ensure_ascii=False), encoding="utf-8")
+    # the next build's id comes after all of them: one given again would be another app's build where an
+    # app or a chat names the one it had (its card, its latest build, Export AppImage)
+    highest = max((int(d[1:]) for d in named if re.fullmatch(r"D\d{1,9}", d or "")), default=0)
+    (data / "deliveries").mkdir(parents=True, exist_ok=True)
+    (data / "deliveries" / delivery_mod.LAST_ID).write_text(str(highest))
     keys = json.loads((unpacked / "secrets.json").read_text(encoding="utf-8")) if (unpacked / "secrets.json").is_file() else {}
     return cfg, keys.get("providers") or {}
 
@@ -496,12 +511,15 @@ class Backups:
             return
         if not self.has_password():
             return
+        err = self.state().get("error") or {}
+        if err.get("auto") and now - err.get("at", 0) < RETRY_AFTER:
+            return                              # it failed lately (a full drive): not again every ten minutes
         try:
             await self.backup(auto=True)
-        except BackupError as e:
+        except Exception as e:  # noqa: BLE001 - any reason (a full drive is an OSError): told once
             err = self.state().get("error") or {}
             if not err.get("told"):
-                self.e.notify("Your apps weren't backed up", str(e))
+                self.e.notify("Your apps weren't backed up", str(e) or type(e).__name__)
                 self._save_state(error={**err, "told": True})
 
     async def watch(self) -> None:
@@ -533,10 +551,18 @@ class Backups:
             self.changed()
             data = config.data_dir()
             work = data.with_name(f"{data.name}.restoring-{secrets.token_hex(4)}")
-            aside = ""
+            aside, warnings, removed = "", [], False
             try:
                 manifest = await asyncio.to_thread(read_backup, path, password, work)
                 cfg, keys = await asyncio.to_thread(settle, work, e.cfg)
+                # unpacking took a while: nothing may have started meanwhile (it would be cut off, its
+                # data swapped from under it)
+                if e.busy:
+                    raise BackupError("The assistant started working meanwhile: wait for it to finish (or stop it), "
+                                      "then restore again.")
+                if e.app_manager.building:
+                    raise BackupError("An app started being built meanwhile: wait for it to finish, then restore again.")
+                removed = e._removed_marker().exists()      # the user removed the sandbox: it stays removed
                 await e._close_builder()
                 e._persist()
                 e.conv = None                    # nothing of the chat open now is written after this
@@ -550,14 +576,26 @@ class Backups:
                         Path(aside).rename(data)     # what was here, back as it was
                     aside = ""
                     raise
-                if aside and (config.config_dir() / "config.toml").is_file():
-                    shutil.copy2(config.config_dir() / "config.toml", Path(aside) / "config.toml")
-                if (work / "sessions").is_dir():
-                    shutil.move(str(work / "sessions"), str(data / "restored-sessions"))
-                for name, key in keys.items():
-                    creds.set_secret("provider", name, key)
+                # from here on the apps and chats are the backup's: what goes wrong is said, never left half done
+                try:
+                    if aside and (config.config_dir() / "config.toml").is_file():
+                        shutil.copy2(config.config_dir() / "config.toml", Path(aside) / "config.toml")
+                    if removed:
+                        e._removed_marker().touch()
+                    if (work / "sessions").is_dir():
+                        shutil.move(str(work / "sessions"), str(data / "restored-sessions"))
+                except OSError as err:
+                    warnings.append(f"The chats' memory couldn't be put in place ({err}): they start afresh.")
                 e.cfg.providers, e.cfg.settings = cfg.providers, cfg.settings     # in place: the app holds e.cfg
-                e._save_config(e.cfg)
+                try:
+                    e._save_config(e.cfg)
+                except OSError as err:
+                    warnings.append(f"The settings couldn't be saved ({err}): check them in Settings.")
+                for name, key in keys.items():
+                    try:
+                        creds.set_secret("provider", name, key)
+                    except Exception as err:  # noqa: BLE001 - a keyring locked or missing: said, the rest stands
+                        warnings.append(f"The API key couldn't be put in your keyring ({err}): enter it again in Settings.")
             finally:
                 shutil.rmtree(work, ignore_errors=True)
                 self.running = None
@@ -570,10 +608,10 @@ class Backups:
             e.log("restored", path=str(path), apps=len(manifest.get("apps", [])), aside=aside)
             e._changed()
             e.app_manager.changed()
-            if e.ready and e.workspace.get("state") != "running":
+            if e.ready and e.workspace.get("state") not in ("running", "removed") and not removed:
                 e.start_workspace()
             return {"apps": manifest.get("apps", []), "chats": manifest.get("chats", 0), "aside": aside,
-                    "created": manifest.get("created"), "sessions": manifest.get("sessions", False)}
+                    "created": manifest.get("created"), "sessions": manifest.get("sessions", False), "warnings": warnings}
 
     async def place_sessions(self) -> None:
         """Chats' Claude Code sessions kept outside the sandbox (from a backup restored, or across a reset

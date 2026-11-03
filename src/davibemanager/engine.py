@@ -780,6 +780,8 @@ class Engine:
             raise UserError("Nothing to send.")
         if not self.conv:
             raise UserError("No conversation is open.")
+        if (self.backups.running or {}).get("what") == "restore":
+            raise UserError("Wait for the restore to finish first: your chats are being put back.")
         if not self.conv.mode:
             self.conv.mode = "computer"         # written straight away, without choosing: about the computer
         content = "\n\n".join(x for x in (message, self._files_note(files)) if x)
