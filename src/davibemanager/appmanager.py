@@ -1160,6 +1160,13 @@ class AppManager:
 
     def install(self, did: str) -> dict:
         """Install an AppImage build where the user's apps live (their click), replacing the one before."""
+        return self.record_install(did, *self.place_build(did))
+
+    def place_build(self, did: str) -> tuple[dict, dict | None]:
+        """The slow part of an install, which changes no record (so it can run off the event loop: a
+        Gear Lever taking its time doesn't stall the window or the assistant): the build checked against
+        its sha256 and the pinned runtime, handed to where apps live, the one before it dropped there.
+        Returns (where it went, the install before it)."""
         d, meta = self.e._delivery(did)
         a = self.app(meta["app"])
         f = d / meta["file"]
@@ -1186,6 +1193,12 @@ class AppManager:
             staged.unlink(missing_ok=True)
         before = a.get("installed")
         self._drop_replaced(a, before, info)
+        return info, before
+
+    def record_install(self, did: str, info: dict, before: dict | None) -> dict:
+        """An install's records, on the app as it is now (a look for a new version may have saved it meanwhile)."""
+        d, meta = self.e._delivery(did)
+        a = self.app(meta["app"])
         a = apps.save({**a, "installed": {**info, "build": did, "version": meta["version"], "at": time.time()},
                        "previous": before if before and before.get("build") != did else a.get("previous"),
                        "update": {**(a.get("update") or {}), **({"status": "current"} if (a.get("update") or {}).get("build") == did else {})}})
@@ -1200,17 +1213,15 @@ class AppManager:
 
     # ---------------------------------------------------------------- removing an app
 
-    def remove(self, app_id: str, keep_installed: bool = False) -> dict:
+    def remove(self, app_id: str, keep_installed: bool = False, left: str | None = None) -> dict:
         """Take an app off My apps (the user's click): uninstalled the way it was installed (unless
         `keep_installed`), its builds and record deleted, and its folders in the sandbox. Its chats
-        stay, no longer tied to it. Returns {"left": what stays on the computer, in words}."""
+        stay, no longer tied to it. Returns {"left": what stays on the computer, in words}. `left`: it
+        was uninstalled already (remove_async, off the event loop), this is what that left."""
         a = self.app(app_id)
-        if app_id in self.building:
-            raise UserError(f"{a['name']} is being built: wait for it to finish first.")
-        c = self.e.conv
-        if self.e.busy and c and c.app == app_id:
-            raise UserError(f"The assistant is working on {a['name']}: wait for it to finish (or stop it) first.")
-        left = "" if keep_installed else self._uninstall(a)
+        self._removable(a)
+        if left is None:
+            left = "" if keep_installed else self._uninstall(a)
         if keep_installed and (a.get("installed") or {}).get("path"):
             left = a["installed"]["path"]
         for m in self.e.deliveries():
@@ -1222,6 +1233,21 @@ class AppManager:
         self.e.log("app_removed", app=app_id, kept_installed=keep_installed, left=left)
         self.changed()
         return {"left": left}
+
+    def _removable(self, a: dict) -> None:
+        if a["id"] in self.building:
+            raise UserError(f"{a['name']} is being built: wait for it to finish first.")
+        c = self.e.conv
+        if self.e.busy and c and c.app == a["id"]:
+            raise UserError(f"The assistant is working on {a['name']}: wait for it to finish (or stop it) first.")
+
+    async def remove_async(self, app_id: str, keep_installed: bool = False) -> dict:
+        """remove, its uninstall (Gear Lever, Shelly, files) off the event loop, one install or removal at a time."""
+        async with self.e.install_lock:
+            a = self.app(app_id)
+            self._removable(a)
+            left = "" if keep_installed else await asyncio.to_thread(self._uninstall, a)
+            return self.remove(app_id, keep_installed, left=left)
 
     def _uninstall(self, a: dict) -> str:
         """Uninstall the app's installed build, the way it was installed. Raises UserError if it
@@ -1329,5 +1355,18 @@ class AppManager:
             meta = self.install(prev) if a.get("kind") == "appimage" else self.e.install_delivery(prev)
         except (OSError, delivery_mod.DeliveryError, appimage.AppImageError, integrate.IntegrationError) as e:
             raise UserError(f"Could not go back to it: {e}") from e
+        self.e.log("rolled_back", app=app_id, to=prev)
+        return meta
+
+    async def rollback_async(self, app_id: str) -> dict:
+        """rollback, its install off the event loop (as install_delivery_async)."""
+        a = self.app(app_id)
+        prev = (a.get("previous") or {}).get("build")
+        if not prev or a.get("kind") == "source":
+            return self.rollback(app_id)            # says why not
+        try:
+            meta = await self.e.install_delivery_async(prev)
+        except UserError as e:
+            raise UserError(str(e).replace("Could not install it", "Could not go back to it")) from e
         self.e.log("rolled_back", app=app_id, to=prev)
         return meta

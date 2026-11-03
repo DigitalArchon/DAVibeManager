@@ -1013,3 +1013,35 @@ def test_an_install_folder_menus_cant_start_programs_from_is_refused(env):
     engine, _, _ = env
     with pytest.raises(UserError, match="%"):
         engine.save_settings({"install_dir": "~/50%off"})
+
+
+async def test_an_install_doesnt_stall_the_window_and_keeps_what_was_saved_meanwhile(gthumb, monkeypatch):
+    """Gear Lever or Shelly can take seconds (minutes when stuck): the app goes on meanwhile (the window,
+    the assistant's connections), and a look for a new version saved meanwhile isn't undone by the install."""
+    import threading
+    import time as time_mod
+    engine, sb, fake, told = gthumb
+    menu = engine.app_manager.integrator()
+    started, go = threading.Event(), threading.Event()
+
+    class Slow(type(menu)):
+        def install(self, staged, app, desktop_dir):
+            started.set()
+            go.wait(5)
+            return super().install(staged, app, desktop_dir)
+    slow = Slow(menu.install_dir, menu.icons_dir)
+    monkeypatch.setattr(engine.app_manager, "integrator", lambda: slow)
+    task = asyncio.create_task(engine.install_delivery_async("D1"))
+    t = time_mod.monotonic()
+    while not started.is_set():
+        await asyncio.sleep(0.01)
+    ticks = 0
+    for _ in range(5):
+        await asyncio.sleep(0.01)                     # the loop runs on while the install waits
+        ticks += 1
+    apps.save({**apps.load("gthumb"), "update": {"status": "current", "checked": 1.0}})
+    go.set()
+    meta = await task
+    assert ticks == 5 and time_mod.monotonic() - t < 4 and meta["status"] == "installed"
+    a = apps.load("gthumb")
+    assert a["installed"]["build"] == "D1" and a["update"]["checked"] == 1.0

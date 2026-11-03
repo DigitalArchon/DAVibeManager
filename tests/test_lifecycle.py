@@ -19,10 +19,25 @@ def locked(*a, **k):
 
 
 def test_a_key_that_cant_be_read_is_not_a_key_that_isnt_there(memory_keyring, monkeypatch):
-    assert creds.get_secret("provider", "NanoGPT") is None
     monkeypatch.setattr(memory_keyring, "get_password", locked)
     with pytest.raises(creds.KeyringUnavailable, match="unlock"):
         creds.get_secret("provider", "NanoGPT")
+    monkeypatch.undo()
+    assert creds.get_secret("provider", "NanoGPT") is None          # a read that failed isn't kept
+
+
+def test_a_key_once_read_doesnt_ask_the_keyring_again(memory_keyring, monkeypatch):
+    """Every model request and redraw needs it: a keyring that locked itself again (KWallet's timeout)
+    mustn't stop the whole app on its password prompt."""
+    creds.set_secret("provider", "NanoGPT", "sk-1")
+    creds.forget()
+    assert creds.get_secret("provider", "NanoGPT") == "sk-1"
+    monkeypatch.setattr(memory_keyring, "get_password", locked)
+    assert creds.get_secret("provider", "NanoGPT") == "sk-1"
+    creds.set_secret("provider", "NanoGPT", "sk-2")                 # stored or deleted here: known at once
+    assert creds.get_secret("provider", "NanoGPT") == "sk-2"
+    creds.delete_secret("provider", "NanoGPT")
+    assert creds.get_secret("provider", "NanoGPT") is None
 
 
 def test_no_keyring_yet_is_looked_for_again(monkeypatch):
@@ -42,6 +57,7 @@ async def test_after_login_it_waits_for_the_keyring_instead_of_asking_for_the_ke
     assert engine.ready
     real = memory_keyring.get_password
     monkeypatch.setattr(memory_keyring, "get_password", locked)
+    creds.forget()                                              # as at a start just after login: nothing read yet
     assert not engine.ready and "isn't open yet" in engine.keyring_wait
     snap = engine.snapshot()
     assert not snap["ready"] and snap["keyring_wait"]           # the window waits; it doesn't ask for a key
@@ -62,6 +78,7 @@ async def test_after_login_it_waits_for_the_keyring_instead_of_asking_for_the_ke
 async def test_a_key_that_isnt_stored_still_asks_for_one(env, memory_keyring):
     engine, _, _ = env
     memory_keyring.store.clear()
+    creds.forget()                                              # (gone from the keyring by other means)
     assert not engine.ready and engine.keyring_wait == ""
 
 

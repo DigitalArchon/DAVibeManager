@@ -27,9 +27,11 @@ class MemoryKeyring(KeyringBackend):
 @pytest.fixture(autouse=True)
 def memory_keyring(tmp_path, monkeypatch):
     """Never touch the real keyring or real config/data dirs in tests."""
+    from davibemanager import creds
     backend = MemoryKeyring()
     old = keyring.get_keyring()
     keyring.set_keyring(backend)
+    creds.forget()                       # what an earlier test's keyring held isn't this one's
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
     yield backend

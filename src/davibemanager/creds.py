@@ -4,7 +4,11 @@ Right after login the keyring may not be there yet: started with the session, th
 before the Secret Service runs or before the user's keyring is unlocked. A key that can't be read
 then is not a key that isn't there: reading raises KeyringUnavailable, and a key that isn't stored
 reads as None. The keyring library picks its backend once per process; if it settled on none (no
-Secret Service yet), it is asked to look again before each use."""
+Secret Service yet), it is asked to look again before each use.
+
+What has been read is kept in memory for the rest of the run (and what is stored or deleted here
+with it): every model request and every redraw of the window needs the key, and a keyring that
+locked itself again (KWallet's timeout) would otherwise stop the whole app on its password prompt."""
 
 from __future__ import annotations
 
@@ -41,6 +45,14 @@ def backend_error() -> str | None:
     return None
 
 
+_known: dict[tuple[str, str], str | None] = {}
+
+
+def forget() -> None:
+    """Read everything from the keyring again (a restore brought other keys; tests)."""
+    _known.clear()
+
+
 def _user(kind: str, name: str) -> str:
     return f"{kind}:{name}"
 
@@ -50,13 +62,18 @@ def set_secret(kind: str, name: str, value: str) -> None:
         _backend().set_password(SERVICE, _user(kind, name), value)
     except Exception as e:  # noqa: BLE001 - said to the user as it is
         raise KeyringUnavailable(f"Your keyring couldn't store the key: {e}") from e
+    _known[(kind, name)] = value
 
 
 def get_secret(kind: str, name: str) -> str | None:
+    if (kind, name) in _known:
+        return _known[(kind, name)]
     try:
-        return _backend().get_password(SERVICE, _user(kind, name))
-    except Exception as e:  # noqa: BLE001 - locked, not running yet, or none
+        value = _backend().get_password(SERVICE, _user(kind, name))
+    except Exception as e:  # noqa: BLE001 - locked, not running yet, or none (never kept: asked again)
         raise KeyringUnavailable(str(e) or type(e).__name__) from e
+    _known[(kind, name)] = value
+    return value
 
 
 def delete_secret(kind: str, name: str) -> None:
@@ -64,6 +81,7 @@ def delete_secret(kind: str, name: str) -> None:
         _backend().delete_password(SERVICE, _user(kind, name))
     except PasswordDeleteError:
         pass
+    _known[(kind, name)] = None
 
 
 def has_secret(kind: str, name: str) -> bool:

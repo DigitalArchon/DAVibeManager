@@ -243,6 +243,7 @@ class Engine:
         self._watcher: asyncio.Task | None = None
         self._checking: dict | None = None     # the app's own build at delivery, while it runs
         self._check_lock = asyncio.Lock()      # one clean build at a time (they share a container name)
+        self.install_lock = asyncio.Lock()     # one install, removal or going back at a time
         self._guard: subprocess.Popen | None = None   # stops the sandbox if this process dies (_guard_sandbox)
         self._first_start = True
         self._podman_install: dict = {}       # installing Podman from the window: {"state": "installing" | "failed", ...}
@@ -2923,6 +2924,26 @@ class Engine:
                 return self.app_manager.install(did)
             except (OSError, delivery_mod.DeliveryError, appimage_mod.AppImageError, integrate_mod.IntegrationError) as e:
                 raise UserError(f"Could not install it: {e}") from e
+        return self._record_files_install(did, *self._install_files(did))
+
+    async def install_delivery_async(self, did: str) -> dict:
+        """install_delivery for the window: its slow part (a big AppImage checked and copied, Gear Lever or
+        Shelly asked, a source tree copied) off the event loop, so the window and the assistant's connections
+        don't stall meanwhile; its records on it. One install (or removal) at a time."""
+        d, meta = self._delivery(did)
+        async with self.install_lock:
+            try:
+                if meta["kind"] == "appimage" and meta.get("app"):
+                    info, before = await asyncio.to_thread(self.app_manager.place_build, did)
+                    return self.app_manager.record_install(did, info, before)
+                return self._record_files_install(did, *await asyncio.to_thread(self._install_files, did))
+            except (OSError, delivery_mod.DeliveryError, appimage_mod.AppImageError, integrate_mod.IntegrationError) as e:
+                raise UserError(f"Could not install it: {e}") from e
+
+    def _install_files(self, did: str) -> tuple[dict, dict | None]:
+        """Source code or an add-on copied where it goes (its own record says so): (that record, the
+        install of the app's it replaced)."""
+        d, meta = self._delivery(did)
         previous = next((m for m in reversed(self.deliveries()) if m["id"] != did and m.get("app") == meta.get("app")
                          and m.get("status") == "installed"), None) if meta.get("app") else None
         mine = [m for m in self.deliveries() if meta.get("app") and m.get("app") == meta.get("app")]
@@ -2933,6 +2954,9 @@ class Engine:
                                         kept=[b for m in mine for b in m.get("backups", [])])
         except (OSError, delivery_mod.DeliveryError) as e:
             raise UserError(f"Could not install it: {e}") from e
+        return meta, previous
+
+    def _record_files_install(self, did: str, meta: dict, previous: dict | None) -> dict:
         if previous:
             pd = delivery_mod.root_dir() / previous["id"]
             delivery_mod.record(pd, {**previous, "status": "replaced", "replaced_by": did})
@@ -2959,14 +2983,31 @@ class Engine:
             raise UserError("Only an app can be tried without installing it.")
         if meta.get("status") in ("rejected", "replaced"):
             raise UserError("This build has been set aside.")
+        target = self._trial_copy(d, meta)
+        self._start_app([str(target)], d / "desktop", meta["name"])
+        delivery_mod.record(d, {**meta, "tried": time.time()})
+        self.log("app_tried", delivery=did, sha256=meta["sha256"])
+        self.emit("deliveries", deliveries=self.deliveries())
+
+    def _trial_copy(self, d: Path, meta: dict) -> Path:
         src = d / meta["file"]
         if delivery_mod.sha256_file(src) != meta["sha256"]:
             raise UserError("This build no longer matches what was delivered, so it won't be run.")
         trial = self.runtime_dir / "trial"
         trial.mkdir(parents=True, exist_ok=True, mode=0o700)
-        target = trial / f"{did}-{meta['file']}"
+        target = trial / f"{d.name}-{meta['file']}"
         shutil.copyfile(src, target)
         os.chmod(target, 0o700)
+        return target
+
+    async def try_delivery_async(self, did: str) -> None:
+        """try_delivery, the check and copy of its AppImage off the event loop."""
+        d, meta = self._delivery(did)
+        if meta["kind"] != "appimage":
+            raise UserError("Only an app can be tried without installing it.")
+        if meta.get("status") in ("rejected", "replaced"):
+            raise UserError("This build has been set aside.")
+        target = await asyncio.to_thread(self._trial_copy, d, meta)
         self._start_app([str(target)], d / "desktop", meta["name"])
         delivery_mod.record(d, {**meta, "tried": time.time()})
         self.log("app_tried", delivery=did, sha256=meta["sha256"])

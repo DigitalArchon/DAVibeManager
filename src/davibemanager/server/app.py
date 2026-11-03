@@ -41,8 +41,15 @@ def create_app(token: str, make_engine: Callable[[Callable[[dict], None]], Engin
     """The window's app, for 127.0.0.1 only. `desktop` (app.Desktop, only in the app window)
     serves the clipboard and hides the window. `on_quit` ends the process (POST /api/quit)."""
     listeners: set[asyncio.Queue] = set()
+    loops: list[asyncio.AbstractEventLoop] = []
 
     def emit(event: dict) -> None:
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:                    # from a worker thread (asyncio.to_thread): onto the loop
+            if loops:
+                loops[0].call_soon_threadsafe(emit, event)
+            return
         for q in list(listeners):
             q.put_nowait(event)
 
@@ -52,6 +59,7 @@ def create_app(token: str, make_engine: Callable[[Callable[[dict], None]], Engin
         for old in upload_dir().glob(f"restore-*{backup_mod.SUFFIX}") if upload_dir().is_dir() else []:
             if time.time() - old.stat().st_mtime > 86400:
                 old.unlink(missing_ok=True)
+        loops.append(asyncio.get_running_loop())
         app.state.engine = make_engine(emit)
         await app.state.engine.start()
         try:
@@ -293,13 +301,13 @@ def create_app(token: str, make_engine: Callable[[Callable[[dict], None]], Engin
     @app.post("/api/deliveries/{did}/{action}")
     async def delivery_action(did: str, action: str, e: Engine = Depends(auth)):
         if action == "install":
-            return e.install_delivery(did)
+            return await e.install_delivery_async(did)
         if action == "reject":
             e.reject_delivery(did)
         elif action == "open":
             e.open_app(did)
         elif action == "try":
-            e.try_delivery(did)
+            await e.try_delivery_async(did)
         elif action == "works":
             return e.app_manager.works_here(did)
         else:
@@ -345,15 +353,15 @@ def create_app(token: str, make_engine: Callable[[Callable[[dict], None]], Engin
                     raise UserError(str(err)) from None
             return e.sharing.export(app_id)
         elif action == "export-appimage":
-            return m.export_appimage(app_id)
+            return await asyncio.to_thread(m.export_appimage, app_id)      # a big file checked and copied
         elif action == "reshare-later":
             m.reshare_later(app_id)
         elif action == "assistant":
             await m.assistant(app_id)
         elif action == "rollback":
-            return m.rollback(app_id)
+            return await m.rollback_async(app_id)
         elif action == "remove":
-            return m.remove(app_id, keep_installed=bool((body or {}).get("keep_installed")))
+            return await m.remove_async(app_id, keep_installed=bool((body or {}).get("keep_installed")))
         else:
             raise HTTPException(404)
         return {"ok": True}
