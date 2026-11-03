@@ -652,28 +652,48 @@ class Engine:
         self._drop_attached()
         self._unplaced = []
 
-    async def _switch(self, conv: Conversation) -> None:
+    def _idle(self) -> None:
         if self.busy:
             raise UserError("Wait for the assistant to finish (or stop it) first.")
-        await self._close_builder()
-        self._persist()
-        self._open(conv)
+
+    def _swap(self, conv: Conversation | None) -> BuilderSession | None:
+        """Make `conv` the open chat (None: the open one stays, for another kind of chat in it) at once,
+        with nothing awaited, so that nothing sent meanwhile goes to the chat before it. Returns the
+        assistant of the chat before, for the caller to close (Claude Code takes seconds to go)."""
+        self._idle()
+        builder, self.builder = self.builder, None
+        if conv is not None:
+            self._persist()
+            self._open(conv)
+        return builder
+
+    async def _switch(self, conv: Conversation) -> None:
+        builder = self._swap(conv)
         self._changed()
+        if builder:
+            await builder.close()
 
     async def new_chat(self, mode: str = "", app: str = "", app_name: str = "", remake: bool = False) -> None:
         """A new chat, of the kind the user chose ("" until they do): "computer", or "app" for one app,
         an app of theirs (its id) or one they named (app_name). `remake`: an app chat that makes an
         app of theirs again, cleanly, from its official source. An empty chat open now is used for it."""
+        builder = self._new_chat_now(mode, app, app_name, remake)
+        if builder:
+            await builder.close()
+
+    def _new_chat_now(self, mode: str = "", app: str = "", app_name: str = "", remake: bool = False) -> BuilderSession | None:
+        """new_chat's chat, open at once (a caller can start its turn before anything is awaited); returns
+        the assistant of the chat before, to be closed."""
         mode, app, app_name = self._chat_kind(mode, app, app_name)
         if remake and not (mode == "app" and app):
             raise UserError("Only an app you have can be started again.")
-        if not self.conv or self.conv.chat:
-            await self._switch(Conversation.create())
-        else:
-            await self._close_builder()         # its prompt and tools are the kind of chat's
+        self._idle()                            # before a chat is made that would only be left empty
+        # its prompt and tools are the kind of chat's: an empty chat open now gets a new assistant too
+        builder = self._swap(Conversation.create() if not self.conv or self.conv.chat else None)
         self.conv.mode, self.conv.app, self.conv.app_name, self.conv.remake = mode, app, app_name, bool(remake)
         self.conv.save()
         self._changed()
+        return builder
 
     def _chat_kind(self, mode: str, app: str, app_name: str) -> tuple[str, str, str]:
         mode = str(mode or "")

@@ -2,6 +2,8 @@
 there; it hands what it finds to the app's chat, or points to one for a wish) and fixing or adding a
 feature to one app (its prompt, its tools, told which app)."""
 
+import asyncio
+
 import pytest
 from claude_agent_sdk import AssistantMessage, TextBlock
 
@@ -150,3 +152,81 @@ async def test_findings_are_for_a_chat_about_the_computer_only(env):
     await engine.new_chat("app", app="gthumb")
     with pytest.raises(ValueError, match="fix it here"):
         await engine.builder_findings({"app": "gthumb", "findings": "x"})
+
+
+async def test_a_new_chat_refused_while_the_assistant_works_leaves_no_empty_chat_behind(builder_env):
+    engine, _, _, _ = builder_env
+    gate = asyncio.Event()
+
+    async def script(c, text):
+        await c.queue.put(AssistantMessage([TextBlock("Looking.")], "m"))
+        await gate.wait()
+        await c.queue.put(result())
+    engine._script = script
+    engine.send("Why is my Wi-Fi slow?")
+    before = [c["id"] for c in Conversation.list_all()]
+    for _ in range(3):
+        with pytest.raises(UserError, match="Wait for the assistant"):
+            await engine.new_chat()
+    assert [c["id"] for c in Conversation.list_all()] == before
+    gate.set()
+    await wait_for(lambda: not engine.busy, "turn end")
+
+
+async def test_what_is_sent_while_a_chat_opens_goes_to_that_chat(builder_env):
+    """Closing the chat before's assistant takes Claude Code seconds: the window shows the new chat once
+    it's open, and anything sent from then on is the new chat's, never a turn in the chat before."""
+    engine, _, _, clients = builder_env
+    engine._script = said("Hello.")
+    engine.send("First chat")
+    await wait_for(lambda: len(engine.conv.chat) == 2, "the answer")
+    old = engine.conv.id
+    gate = asyncio.Event()
+    closing = engine.builder.close
+
+    async def slow_close():
+        await gate.wait()
+        await closing()
+    engine.builder.close = slow_close
+    switching = asyncio.create_task(engine.new_chat("computer"))
+    await asyncio.sleep(0.01)
+    assert engine.conv.id != old and engine.conv.mode == "computer"   # open at once, its kind set
+    engine.send("Second chat")
+    gate.set()
+    await switching
+    await wait_for(lambda: len(engine.conv.chat) == 2, "the new chat's answer")
+    assert [e.get("text") for e in Conversation.load(old).chat if e["kind"] == "user"] == ["First chat"]
+    assert engine.conv.chat[0]["text"] == "Second chat" and clients[-1].sent.endswith("Second chat")
+
+
+async def test_asking_the_assistant_twice_for_an_update_starts_it_once(builder_env, monkeypatch):
+    """A second click while the first opens the update's chat (closing the chat before's assistant
+    takes Claude Code seconds): refused, not a second turn in the same chat."""
+    engine, _, _, _ = builder_env
+    engine._script = said("Hello.")
+    engine.send("An earlier chat")
+    await wait_for(lambda: len(engine.conv.chat) == 2, "the answer")
+    closing = engine.builder.close
+
+    async def slow_close():
+        await asyncio.sleep(0.05)
+        await closing()
+    engine.builder.close = slow_close
+    a = gthumb_app()
+    apps.save({**a, "update": {"status": "available", "latest": "3.12.7"}})
+    gate = asyncio.Event()
+
+    async def update_task(*args):
+        await gate.wait()
+        return "Please update my gThumb to version 3.12.7, with the same changes."
+    monkeypatch.setattr(engine.app_manager, "_update_task", update_task)
+    first = asyncio.create_task(engine.app_manager.assistant("gthumb"))
+    second = asyncio.create_task(engine.app_manager.assistant("gthumb"))
+    results = await asyncio.gather(first, second, return_exceptions=True)
+    assert [type(r) for r in results].count(UserError) == 1 and engine.busy
+    assert [e["kind"] for e in engine.conv.chat] == ["user"]
+    assert apps.load("gthumb")["chat"]["id"] == engine.conv.id
+    engine._script = said("On it.")
+    gate.set()
+    await wait_for(lambda: not engine.busy, "turn end")
+    assert [e["kind"] for e in engine.conv.chat] == ["user", "assistant"]

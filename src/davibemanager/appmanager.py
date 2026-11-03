@@ -1077,16 +1077,22 @@ class AppManager:
         if not self.e.ready:
             raise UserError(self.e.assistant_status()["error"])
         await self.e._sandbox_running()
-        await self.e.new_chat(mode="app", app=app_id)
-        tag = tag or u["latest"]
-        apps.save({**self.app(app_id), "chat": {"id": self.e.conv.id, "tag": tag, "at": time.time()}})
-        self.changed()
-        own = tag == a.get("base_ref")
-        text = (f"Please build my {a['name']} with its changes: some came from a shared app." if own
-                else f"Please update my {a['name']} to version {tag}, with the same changes.")
-        self.e._user_entry(text)
-        self.e.log("update_started", app=app_id, to=tag, after=failure.step if failure else "")
-        self.e._start_turn(text, note=False, prepare=lambda: self._update_task(a, failure, tag, text))
+        # from the new chat to its turn under way, nothing is awaited: no other turn can start in between
+        # (a second click, a message typed into the new chat), and the chat before is closed after
+        before = self.e._new_chat_now(mode="app", app=app_id)
+        try:
+            tag = tag or u["latest"]
+            apps.save({**self.app(app_id), "chat": {"id": self.e.conv.id, "tag": tag, "at": time.time()}})
+            self.changed()
+            own = tag == a.get("base_ref")
+            text = (f"Please build my {a['name']} with its changes: some came from a shared app." if own
+                    else f"Please update my {a['name']} to version {tag}, with the same changes.")
+            self.e._user_entry(text)
+            self.e.log("update_started", app=app_id, to=tag, after=failure.step if failure else "")
+            self.e._start_turn(text, note=False, prepare=lambda: self._update_task(a, failure, tag, text))
+        finally:
+            if before:
+                await before.close()
 
     async def _update_task(self, a: dict, failure: PortFailed | None, tag: str, text: str) -> str:
         """What the assistant is told to make the update (ask_assistant), its tree prepared first."""
