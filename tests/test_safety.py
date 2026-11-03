@@ -32,6 +32,10 @@ def test_modifying(cmd):
     "dd if=/dev/zero of=/dev/sda", "Restart-Computer -Force", "Stop-Service Spooler", "reload",
     "iptables -F", "Remove-Item C:\\temp -Recurse", "/system reboot", "diskpart", "kill -9 1234",
     "ls; sudo shutdown -r now",
+    # deleting by other means than rm -r
+    "find ~ -name '*.jpg' -delete", "find . -type f -exec rm {} +", "ls ~/x | xargs rm -f",
+    "rsync -a --delete /tmp/empty/ ~/", "git -C ~/p reset --hard", "dconf reset -f /", "flatpak uninstall --all -y",
+    "unlink ~/.bashrc", "loginctl terminate-session 2", "kill -KILL -1",
 ])
 def test_disruptive(cmd):
     assert classify(cmd)[0] == "disruptive"

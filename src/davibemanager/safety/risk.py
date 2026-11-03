@@ -37,6 +37,16 @@ DISRUPTIVE: list[tuple[re.Pattern, str]] = [
     (re.compile(r"\btruncate\s+table\b", _I), "SQL truncate"),
     (re.compile(r"\bip\s+link\s+set\s+\S+\s+down\b"), "interface down"),
     (re.compile(r"\bdocker\s+(system\s+prune|volume\s+(rm|prune)|rm\s+-f)\b"), "docker destructive"),
+    # deleting by other means than rm -r: what's found, what's not in the copy, a repository's work, settings
+    (re.compile(r"\bfind\b.*\s-(delete|exec(dir)?\s+(\S*/)?(rm|shred|unlink)\b)"), "find deleting what it finds"),
+    (re.compile(r"\bxargs\s+(-\S+\s+)*(\S*/)?(rm|shred|unlink)\b"), "deleting a list of files"),
+    (re.compile(r"\brsync\b.*\s--(delete|remove-source-files)"), "rsync deleting files"),
+    (re.compile(r"\bgit\b.*\s(reset\s+--hard|clean\s+-[a-z]*f)"), "a repository's changes discarded"),
+    (re.compile(r"\bdconf\s+reset\s+-f\b"), "desktop settings reset"),
+    (re.compile(r"\bflatpak\s+(uninstall|remove)\b.*\s--all\b"), "every Flatpak removed"),
+    (re.compile(r"\b(shred|unlink)\s"), "file destroyed"),
+    (re.compile(r"\bloginctl\s+(terminate|kill)-(session|user)\b"), "session ended"),
+    (re.compile(r"\bkill\s+-(KILL|9|TERM|15)?\s*-1\b"), "every process killed"),
     (re.compile(r"\bkubectl\s+delete\b"), "kubernetes delete"),
     # code fetched from the network or decoded at runtime and executed: unreviewable
     (re.compile(r"\b(curl|wget|fetch|Invoke-WebRequest|iwr)\b[^|;]*\|\s*(sudo\s+)?(ba|z|k|da|)sh\b", _I), "pipe to shell"),
