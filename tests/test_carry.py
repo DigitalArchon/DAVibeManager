@@ -224,3 +224,20 @@ def test_the_change_log_reads_the_news_lines_with_the_app_s_own_git_settings(git
                          capture_output=True, text=True, env=env, check=True).stdout
     news = json.loads(out.strip().splitlines()[-1])["news"]
     assert "CVE-2026-12345" in news["NEWS"]
+
+
+def test_the_change_log_reads_a_mirror_as_it_is(gitenv):
+    """The app's own copy (a bare mirror, fetched by the app as its own user): read, never fetched again."""
+    up = gitenv / "proj"
+    up.mkdir()
+    git(up, "init", "-q", "-b", "main")
+    write(up, "NEWS", "1.0: first\n")
+    git(up, "add", "-A"); git(up, "commit", "-qm", "One"); git(up, "tag", "1.0")
+    write(up, "NEWS", "1.1: second\n1.0: first\n")
+    git(up, "add", "-A"); git(up, "commit", "-qm", "Two"); git(up, "tag", "1.1")
+    mirror = gitenv / "mirror.git"
+    subprocess.run(["git", "clone", "-q", "--bare", str(up), str(mirror)], check=True)
+    out = subprocess.run(["python3", "-I", "-c", scripts.CHANGELOG, "https://example.org/nowhere.git", str(mirror), "1.0", "1.1"],
+                         capture_output=True, text=True, check=True).stdout
+    log = json.loads(out.strip().splitlines()[-1])
+    assert log["news"]["NEWS"] == "1.1: second" and log["commits"] == ["Two"]

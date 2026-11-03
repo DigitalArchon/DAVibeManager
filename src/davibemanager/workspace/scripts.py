@@ -270,10 +270,13 @@ upstream, repo, old, new = sys.argv[1:5]
 os.environ["GIT_TERMINAL_PROMPT"] = "0"
 def git(*a):
     return subprocess.run(["git", "-C", repo, *a], capture_output=True, text=True).stdout
-if not os.path.isdir(os.path.join(repo, ".git")):
-    os.makedirs(os.path.dirname(repo), exist_ok=True)
-    subprocess.run(["git", "clone", "-q", "--filter=blob:none", "--no-checkout", upstream, repo], check=True)
-subprocess.run(["git", "-C", repo, "fetch", "-q", "--tags", "--force", upstream], check=True)
+if os.path.isdir(os.path.join(repo, "objects")):
+    pass                                 # the app's own copy (a mirror), fetched already
+else:
+    if not os.path.isdir(os.path.join(repo, ".git")):
+        os.makedirs(os.path.dirname(repo), exist_ok=True)
+        subprocess.run(["git", "clone", "-q", "--filter=blob:none", "--no-checkout", upstream, repo], check=True)
+    subprocess.run(["git", "-C", repo, "fetch", "-q", "--tags", "--force", upstream], check=True)
 news = {}
 for name in git("ls-tree", "--name-only", new).split("\n"):
     if re.fullmatch(r"(?i)(news|changelog|changes|release[-_ ]?notes|history)(\.(md|txt|rst|markdown))?", name.strip()):

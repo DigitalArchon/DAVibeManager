@@ -737,8 +737,15 @@ class AppManager:
             raise UserError("There's no newer version to read about.")
         tag = u["latest"]
         await self.e._sandbox_running()
+        try:
+            # read from the app's own copy of the official repository, which the assistant can only read
+            # (a clone in its sandbox has settings it could change: another repository's history in place
+            # of the project's, its security lines and summary with it); python3 -I: nothing of its own runs
+            repo = await self.mirror(a["upstream"])
+        except PortFailed as f:
+            raise UserError(f"The change log couldn't be read: {f.log.strip()[-300:]}") from None
         rc, out = await podman.exec_agent(
-            self.e.sandbox, ["python3", "-c", scripts.CHANGELOG, a["upstream"], f"{BUILD_FOLDER}/changelog-{a['id']}", a["base_ref"], tag], timeout=300)
+            self.e.sandbox, ["python3", "-I", "-c", scripts.CHANGELOG, a["upstream"], repo, a["base_ref"], tag], timeout=300)
         try:
             log = json.loads(out.strip().splitlines()[-1]) if rc == 0 else None
         except (ValueError, IndexError):

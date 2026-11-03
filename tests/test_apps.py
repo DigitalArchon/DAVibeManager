@@ -980,3 +980,14 @@ async def test_going_back_says_why_it_couldnt(gthumb, tmp_path, monkeypatch):
     engine.cfg.settings.app_home = "omarchy"
     with pytest.raises(appmanager.UserError, match="Could not go back to it: Omarchy needs FUSE"):
         engine.app_manager.rollback("gthumb")
+
+
+async def test_the_change_log_is_read_from_the_apps_own_copy_of_the_official_source(gthumb):
+    """Not from a clone in the sandbox, whose settings the assistant could change (another repository's
+    history in place of the project's): from the mirror, which it can only read; and nothing of its own
+    (a python usercustomize in its home) runs with the script."""
+    engine, sb, fake, told = gthumb
+    engine.cfg.settings.changelog_summary = "manual"
+    await engine.app_manager.check("gthumb")
+    call = next(c for c in sb.calls if c[:2] == ["python3", "-I"] and c[3] == scripts.CHANGELOG)
+    assert call[5] == appmanager.AppManager.mirror_path(GTHUMB) and sb.mirrored
