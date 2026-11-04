@@ -27,9 +27,13 @@ rebuilt, at a time you choose.
   helps find out why, and fixes the build.
 - **Shares.** An app can go to a friend as a small `.vibe` file of your changes, which their
   computer builds from the official source, or as an AppImage to just run.
+- **Follows you to your other computers.** Your apps and their changes stay the same on all your
+  computers: they sync directly with each other through Tor whenever they're on, with no server
+  and no account. To add a computer, type the code another one shows. The code has no time
+  limit, so the computer showing it can be left on at home with nobody at it.
 
 The [manual](MANUAL.md) covers everything else: how a build goes, what it costs, updates,
-sharing, backups and how it keeps your computer safe.
+sharing, backups, syncing your computers and how it keeps your computer safe.
 
 ## Install
 
@@ -73,4 +77,6 @@ public issue.
 ## Licence
 
 AGPL-3.0-or-later. See [LICENSE](LICENSE). Vendored libraries:
-[src/davibemanager/web/vendor/NOTICE](src/davibemanager/web/vendor/NOTICE).
+[src/davibemanager/web/vendor/NOTICE](src/davibemanager/web/vendor/NOTICE). The AppImage also
+carries tor, unmodified from the Tor Expert Bundle, under its own licences (in the AppImage's
+`usr/share/licenses/tor`).

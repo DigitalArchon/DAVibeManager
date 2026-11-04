@@ -410,6 +410,13 @@ itself.**
 - **Add-ons stay out of harm's way.** An add-on is never installed where things run by
   themselves (at login, in every shell, on D-Bus), on your PATH, where keys, passwords or browser
   profiles are, or into Podman's own settings.
+- **Your computers talk only to each other.** Sync goes straight between your computers through
+  Tor, end to end, with no server in between. Each one's address lets in only the others in your
+  group (Tor's client authorization), and each proves which computer it is before anything is
+  sent. A computer you remove is shut out by every other one. What arrives is read as strictly as
+  a shared app, and an app from another computer is built here from the official source, and
+  installed only when you say so. Nothing else is synced: not your chats, your settings, your API
+  key or what's installed.
 
 ## Running from source
 
@@ -422,6 +429,9 @@ python3 -m venv --system-site-packages .venv   # system-site-packages gives acce
 .venv/bin/pip install -e ".[dev]"
 .venv/bin/davibemanager            # --hidden starts it in the tray, --browser in your web browser
 ```
+
+Syncing with your other computers needs tor too (`sudo apt install tor`); the AppImage carries
+its own.
 
 The tests:
 
