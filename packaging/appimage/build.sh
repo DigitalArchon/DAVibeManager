@@ -29,6 +29,7 @@ fetch() {  # url sha256 dest: download once into the cache, always verify
 mkdir -p /cache
 fetch "$PBS_URL" "$PBS_SHA256" /cache/python.tar.gz
 fetch "$RUNTIME_URL" "$RUNTIME_SHA256" /cache/runtime-x86_64
+fetch "$TOR_URL" "$TOR_SHA256" /cache/tor-expert-bundle.tar.gz
 
 # a Python for building (with the build tools) and a clean copy that becomes the AppImage's
 mkdir -p "$W/buildpy"
@@ -145,6 +146,70 @@ find "$W/AppDir" -name direct_url.json -delete    # build paths
 find "$W/AppDir" -name __pycache__ -type d -prune -exec rm -rf {} +
 # bytecode keyed to the source's hash, not its timestamp: reproducible, and valid on a read-only mount
 "$PY" -m compileall -q -j1 --invalidation-mode unchecked-hash "$W/AppDir/usr/python/lib" >/dev/null
+
+# Tor, for syncing the user's apps between their computers: the Tor Expert Bundle's tor and the
+# libraries it was built against (sync/tor.py BUNDLED_LIBRARIES), unmodified, in a folder of their
+# own: the bundle has no RUNPATH, so tor finds them through LD_LIBRARY_PATH, which the app sets to
+# this folder for tor alone (tor_environment). Never in usr/lib: this OpenSSL must not stand in
+# for anything else's. Left out: pluggable transports, geoip files (onion services need none).
+TORDIR="$W/AppDir/usr/lib/tor"
+LICENCES="$W/AppDir/usr/share/licenses/tor"
+read -r -a TOR_LIBS <<<"$(PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$W/AppDir/usr/python/lib/python3.12/site-packages" "$PY" -s -c \
+    'from davibemanager.sync.tor import BUNDLED_LIBRARIES; print(*BUNDLED_LIBRARIES)')"
+rm -rf "$W/tor-x" && mkdir -p "$W/tor-x" "$TORDIR" "$LICENCES"
+tar -xzf /cache/tor-expert-bundle.tar.gz -C "$W/tor-x" --no-same-owner tor/tor "${TOR_LIBS[@]/#/tor/}" \
+    docs/tor.txt docs/libevent.txt docs/openssl.txt
+install -m 755 "$W/tor-x/tor/tor" "$TORDIR/tor"
+for lib in "${TOR_LIBS[@]}"; do
+    install -m 644 "$W/tor-x/tor/$lib" "$TORDIR/$lib"
+done
+install -m 644 "$W"/tor-x/docs/{tor,libevent,openssl}.txt "$LICENCES/"
+install -m 644 /usr/share/common-licenses/GPL-3 "$LICENCES/GPL-3.0.txt"
+cat > "$LICENCES/NOTICE.txt" <<NOTICE
+DA Vibe Manager syncs the user's apps between their computers through tor, taken unmodified from
+the Tor Expert Bundle $TOR_BUNDLE_VERSION for Linux x86_64 (https://www.torproject.org/download/tor/):
+tor $TOR_VERSION and the libraries it was built against, libevent and OpenSSL 3, in usr/lib/tor. Tor
+is a program of its own, which the app starts only while the computer is paired with another.
+
+- Tor is under the 3-clause BSD license, with the licences of the code it includes (tor.txt). This
+  build is made with --enable-gpl (the onion services' proof-of-work defence), so the tor program
+  as a whole is under the GNU General Public License, version 3 (GPL-3.0.txt), as tor --version says.
+- libevent is under the 3-clause BSD license (libevent.txt); OpenSSL 3 under the Apache License 2.0
+  (openssl.txt).
+- Source: tor $TOR_VERSION is https://archive.torproject.org/tor-package-archive/tor-$TOR_VERSION.tar.gz
+  (git tag tor-$TOR_VERSION of https://gitlab.torproject.org/tpo/core/tor). The bundle is built from it
+  by Tor Browser's build system, tag tbb-$TOR_BUNDLE_VERSION-build1 of
+  https://gitlab.torproject.org/tpo/applications/tor-browser-build (projects/tor, projects/libevent
+  and projects/openssl), which also names the libraries' sources.
+- Replacing it: extract the AppImage and put your own tor in usr/lib/tor, or run the AppImage with
+  DVM_TOR set to the path of another tor.
+NOTICE
+rm -rf "$W/tor-x"
+# the bundled tor, run with the environment the app gives it (from one holding a library path tor
+# must not inherit): it says it's the version pinned, and finds its libraries in its own folder only
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$W/AppDir/usr/python/lib/python3.12/site-packages" "$PY" -s - "$TORDIR/tor" "$TOR_VERSION" <<'TOR'
+import subprocess
+import sys
+from pathlib import Path
+
+from davibemanager.sync.tor import BUNDLED_LIBRARIES, tor_environment
+
+tor, version = Path(sys.argv[1]), sys.argv[2]
+env = tor_environment(tor, {"HOME": "/nonexistent", "PATH": "/usr/bin:/bin", "LD_LIBRARY_PATH": "/elsewhere"})
+if env.get("LD_LIBRARY_PATH") != str(tor.parent):
+    sys.exit(f"the app wouldn't give tor its own libraries: {env}")
+said = subprocess.run([tor, "--version"], env=env, capture_output=True, text=True, check=True).stdout
+if f"Tor version {version}" not in said:
+    sys.exit(f"the bundled tor says {said!r}, not version {version}")
+links = subprocess.run(["ldd", tor], env=env, capture_output=True, text=True, check=True).stdout
+for line in links.splitlines():
+    name, _, found = line.strip().partition(" => ")
+    if "not found" in found:
+        sys.exit(f"tor can't find {name}")
+    if name in BUNDLED_LIBRARIES and not found.startswith(f"{tor.parent}/"):
+        sys.exit(f"tor would load {name} from {found}, not its own folder")
+print(said.splitlines()[0])
+TOR
 
 # AppDir layout (AppImage spec): entry point, desktop entry, icon, AppStream metadata
 install -m 755 "$P/AppRun" "$W/AppDir/AppRun"

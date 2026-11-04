@@ -12,6 +12,7 @@ import subprocess
 import sys
 import time
 import urllib.request
+from pathlib import Path
 
 APPDIR, OUT, NAME, MODE = sys.argv[1:5]
 ENV = {**os.environ, "XDG_CONFIG_HOME": "/tmp/smoke/config", "XDG_DATA_HOME": "/tmp/smoke/data"}
@@ -76,6 +77,13 @@ from davibemanager.workspace import pins, podman  # noqa: E402
 cli = podman.bundled_cli()
 digest = hashlib.sha256(cli.read_bytes()).hexdigest()
 check(digest == pins.CLAUDE_SHA256 and os.access(cli, os.X_OK), f"{NAME}: the bundled Claude Code CLI is the pinned one")
+
+# the tor sync runs: the AppImage's own, run as the app runs it, on this distribution
+from davibemanager.sync import tor as tor_mod  # noqa: E402
+
+bundled = Path(f"{APPDIR}/usr/lib/tor/tor")
+said = subprocess.run([bundled, "--version"], env=tor_mod.tor_environment(bundled, ENV), capture_output=True, text=True)
+check(said.returncode == 0 and said.stdout.startswith("Tor version "), f"{NAME}: the bundled tor runs ({said.stdout.splitlines()[:1] or said.stderr[-200:]})")
 
 # the page itself, rendered by the host's WebKitGTK through the bundled PyGObject
 from davibemanager.app import _bundled_girepository  # noqa: E402

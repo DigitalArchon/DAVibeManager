@@ -17,4 +17,7 @@ fi
 if [ -n "${SSL_CERT_FILE:-}" ] && [ -z "${REQUESTS_CA_BUNDLE:-}" ]; then
     export REQUESTS_CA_BUNDLE="$SSL_CERT_FILE"
 fi
+# The tor sync runs (the Tor Expert Bundle's, in usr/lib/tor): the app gives it its own folder as its
+# library path and nothing else of this environment (sync/tor.py tor_environment).
+export DVM_TOR="${DVM_TOR:-$HERE/usr/lib/tor/tor}"
 exec "$HERE/usr/python/bin/python3" -I -m davibemanager "$@"
