@@ -1722,6 +1722,10 @@ class Engine:
             return f"The {what} took too long and was stopped.", out
         if res.exit_code == 126:
             return f"The password prompt was closed, so nothing was {what}ed.", ""
+        if res.exit_code == 127 and "authentication agent" in res.output:
+            # pkexec found no polkit agent in this desktop session to ask with (nothing ran)
+            return ("Your desktop couldn't ask for your password: it has no password prompt (polkit agent) "
+                    f"running, so nothing was {what}ed. Run it yourself in a terminal instead."), out
         if res.exit_code != 0:
             return f"The {what} didn't finish (it ended with code {res.exit_code}).", out
         app_log("installed_as_admin" if what == "install" else "ran_as_admin", command=command, seconds=res.seconds)

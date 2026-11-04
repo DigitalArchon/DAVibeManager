@@ -116,7 +116,7 @@ class Conversation:
 
     def to_dict(self) -> dict:
         return {"id": self.id, "title": self.title or "New chat", "started": self.started, "dir": str(self.dir),
-                "mode": self.mode, "app": self.app, "app_name": self.app_name, "remake": self.remake}
+                "mode": self.mode, "app": self.app, "app_name": self.app_name, "remake": self.remake, "sealed": self.sealed}
 
 
 def _old_mode(data: dict) -> str:

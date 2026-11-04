@@ -488,8 +488,12 @@ function welcome() {
 function renderMode() {
   const c = S.state.conversation || {};
   const el = $("#mode");
-  const text = c.mode === "computer" ? (c.app ? `🩺 Getting ${chatAppName(c)} working here` : "🩺 Your computer") : c.mode === "app" ? (c.remake ? `📦 ${chatAppName(c)}, made again cleanly` : `📦 Improving ${chatAppName(c)}`) : "";
+  const kind = c.mode === "computer" ? (c.app ? `🩺 Getting ${chatAppName(c)} working here` : "🩺 Your computer") : c.mode === "app" ? (c.remake ? `📦 ${chatAppName(c)}, made again cleanly` : `📦 Improving ${chatAppName(c)}`) : "";
+  // sealed end to end: a chat that ran on a private model, or one the private model it has now will seal
+  const sealed = c.sealed || /^\s*private\//i.test(S.state.config?.settings?.builder_model || "");
+  const text = kind && sealed ? `${kind} · 🔒 Private` : kind;
   el.textContent = text;
+  el.title = sealed ? "Sealed end to end: only the attested enclave can read this chat" : "";
   el.classList.toggle("hidden", !text);
 }
 

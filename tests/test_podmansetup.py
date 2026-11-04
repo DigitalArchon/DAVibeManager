@@ -122,6 +122,21 @@ async def test_an_install_that_didnt_work_says_why(no_podman, monkeypatch, code,
     assert said in engine._podman_install["error"] and not started
 
 
+async def test_a_desktop_with_no_password_prompt_is_said_so(no_podman, monkeypatch):
+    """pkexec with no polkit agent in the session ends at once (127): "code 127" told the user nothing."""
+    engine, state, started, _ = no_podman
+
+    async def run(command, **kw):
+        return hostrun.RunResult(127, "Error creating textual authentication agent: Error opening current "
+                                      "controlling terminal for the process (`/dev/tty'): No such device or address\n",
+                                 False, 0.1)
+    monkeypatch.setattr(hostrun, "run", run)
+    engine.install_podman()
+    await wait_for(lambda: engine._podman_install.get("state") == "failed", "the failure")
+    error = engine._podman_install["error"]
+    assert "no password prompt (polkit agent)" in error and "terminal" in error and "127" not in error and not started
+
+
 def test_where_it_cant_be_installed_from_the_window_its_refused(no_podman, monkeypatch):
     engine, _, _, _ = no_podman
     monkeypatch.setattr(podmansetup.shutil, "which", lambda n: None)      # no pkexec, no package manager
