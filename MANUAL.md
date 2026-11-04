@@ -18,6 +18,7 @@ This is the full guide. For what DA Vibe Manager is and how to install it, see t
 - [Starting an app again, cleanly](#starting-an-app-again-cleanly)
 - [Sharing an app](#sharing-an-app)
 - [Backups](#backups)
+- [Your other computers](#your-other-computers)
 - [The sandbox](#the-sandbox)
 - [How it stays safe](#how-it-stays-safe)
 - [Running from source](#running-from-source)
@@ -261,6 +262,30 @@ them by itself every day, every week or after each new app or change, into a fol
 the first screen has **Restore a backup**. Restoring moves what was there aside instead of
 deleting it, and keeps the new computer's own settings (where apps are installed, the sandbox's
 size).
+
+## Your other computers
+
+If you use DA Vibe Manager on more than one computer, your apps can be the same on each: each
+app's changes, notes and build steps, and which systems each version works on. The computers sync
+directly with each other whenever both are on, through Tor: there's no server and no account, and
+nobody but your paired computers can find this one (Tor's client authorization: to anyone else,
+its address leads nowhere). What's installed stays each computer's own choice, and so do its
+builds, chats, settings and API key.
+
+To pair two computers, open **Settings → Your other computers** on both. On one, choose **Pair
+with another computer**: it shows a code of 12 digits, for ten minutes. On the other, choose **I
+have a code** and type it. Both then show the same six numbers: check they match on both screens,
+and say so on each. If they don't match, say so: nothing is paired. (The numbers are worked out
+on each computer from what both sent, so someone in between couldn't make them match.) The first
+sync can take a few minutes, while Tor finds each computer.
+
+An app that arrives is built on each computer by the app itself, from the official source with
+its changes, when you choose **Build it** on its card; it's installed only when you say so. When a
+change is edited on two computers before they sync, the app keeps this computer's version and asks
+which to keep (**Compare them** shows both); the one you choose replaces the other everywhere. An
+app you remove on one computer isn't removed from the others: they ask whether to remove it there
+too. **Unpair** stops the syncing with a computer, and tells it to forget this one too. Pairing
+isn't part of a backup, so restoring one never makes a new computer this one.
 
 ## The sandbox
 
