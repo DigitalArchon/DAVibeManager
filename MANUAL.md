@@ -266,26 +266,37 @@ size).
 ## Your other computers
 
 If you use DA Vibe Manager on more than one computer, your apps can be the same on each: each
-app's changes, notes and build steps, and which systems each version works on. The computers sync
-directly with each other whenever both are on, through Tor: there's no server and no account, and
-nobody but your paired computers can find this one (Tor's client authorization: to anyone else,
-its address leads nowhere). What's installed stays each computer's own choice, and so do its
-builds, chats, settings and API key.
+app's changes, notes and build steps, and which systems each version works on. Your computers sync
+directly with each other whenever they're on, through Tor: there's no server and no account, and
+nobody but your own computers can find this one (Tor's client authorization: to anyone else, its
+address leads nowhere). What's installed stays each computer's own choice, and so do its builds,
+chats, settings and API key.
 
-To pair two computers, open **Settings → Your other computers** on both. On one, choose **Pair
-with another computer**: it shows a code of 12 digits, for ten minutes. On the other, choose **I
-have a code** and type it. Both then show the same six numbers: check they match on both screens,
-and say so on each. If they don't match, say so: nothing is paired. (The numbers are worked out
-on each computer from what both sent, so someone in between couldn't make them match.) The first
-sync can take a few minutes, while Tor finds each computer.
+Your computers are a group, and it can be any size (up to 64): each one syncs with every other
+directly, so it doesn't matter which are on at a time. To add one, open **Settings → Your other
+computers** on a computer already in the group (or on either, the first time) and choose **Add a
+computer**. It shows a code of 16 digits. On the computer to add, choose **I have a code** and type
+it. The code has no time limit and works once: you can leave the first computer on at home and
+type the code on the other an hour or a week later, from anywhere. The computer you type it on
+keeps looking for the other until it's on, even after a restart, and the first computer adds it
+without anyone being there. Keep the code private until then, like a key: anyone who has it can
+add a computer. Both computers then show the same six numbers: if you can see both screens, check
+they match (if they don't, remove the computer that was added). The others in the group hear of the
+new one from each other, and the first sync with a computer just added can take a few minutes,
+while Tor finds it.
 
 An app that arrives is built on each computer by the app itself, from the official source with
 its changes, when you choose **Build it** on its card; it's installed only when you say so. When a
-change is edited on two computers before they sync, the app keeps this computer's version and asks
-which to keep (**Compare them** shows both); the one you choose replaces the other everywhere. An
-app you remove on one computer isn't removed from the others: they ask whether to remove it there
-too. **Unpair** stops the syncing with a computer, and tells it to forget this one too. Pairing
-isn't part of a backup, so restoring one never makes a new computer this one.
+change is edited on more than one computer before they sync, the app keeps this computer's version
+and asks which to keep (**Compare them** shows them side by side); the one you choose replaces the
+others on every computer. An app you remove on one computer isn't removed from the others: they
+ask whether to remove it there too.
+
+**Remove** takes a computer out of the group: every other computer hears of it and stops letting it
+in, and it's told when it's next on (it keeps its apps). **Leave** does the same from the computer
+itself. If a computer that's already in a group of its own is added to another, its whole group
+joins: the computers come together as one. The group isn't part of a backup, so restoring one never
+makes a new computer this one.
 
 ## The sandbox
 
