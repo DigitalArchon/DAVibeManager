@@ -169,6 +169,44 @@ class Upstream:
     route: Callable[[str], dict | None] = lambda model: None
 
 
+
+# With SELinux, the sandbox (a confined container: container_t) may connect only to a socket of a container's
+# type, and Fedora's policy refuses one of the user's own session without logging it (Permission denied): every
+# model request failed. So its sockets are made with that type (the container stays confined; the socket file
+# is relabelled for it by the mount's :z). /proc/thread-self/attr/sockcreate sets it for the sockets this
+# thread makes next.
+CONTAINER_SOCKET = "system_u:system_r:container_t:s0"
+SOCKCREATE = "/proc/thread-self/attr/sockcreate"
+SELINUX = "/sys/fs/selinux/enforce"
+
+
+def _sockcreate(context: str) -> bool:
+    try:
+        with open(SOCKCREATE, "wb", buffering=0) as f:
+            f.write(context.encode() or b"\n")     # an empty line puts the default back
+        return True
+    except OSError:
+        return False
+
+
+def unix_listener(path: Path) -> socket.socket:
+    """A listening unix socket at `path`, that the sandbox can connect to."""
+    labelled = os.path.exists(SELINUX) and _sockcreate(CONTAINER_SOCKET)
+    try:
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    finally:
+        if labelled:
+            _sockcreate("")
+    try:
+        sock.bind(str(path))
+        sock.listen(128)
+        sock.setblocking(False)
+    except OSError:
+        sock.close()
+        raise
+    return sock
+
+
 @dataclass
 class Gateway:
     """One project's gateway. `upstream()` is asked per request, so changes in Settings (or the
@@ -211,7 +249,7 @@ class Gateway:
         for sock in (self.model_socket, self.proxy_socket):
             sock.unlink(missing_ok=True)
         self._ask_router()                  # before the sandbox's first connection, if the router answers quickly
-        proxy = await asyncio.start_unix_server(self._proxy_client, path=str(self.proxy_socket))
+        proxy = await asyncio.start_unix_server(self._proxy_client, sock=unix_listener(self.proxy_socket))
         self._servers.append(proxy)
         await self._start_model_server()
         for sock in (self.model_socket, self.proxy_socket):
@@ -219,12 +257,12 @@ class Gateway:
 
     async def _start_model_server(self) -> None:
         import uvicorn
-        config = uvicorn.Config(self.model_app(), uds=str(self.model_socket), log_level="warning",
-                                lifespan="off", access_log=False, timeout_keep_alive=75)
+        config = uvicorn.Config(self.model_app(), log_level="warning", lifespan="off", access_log=False,
+                                timeout_keep_alive=75)
         server = uvicorn.Server(config)
         server.install_signal_handlers = lambda: None   # the app's own server handles signals
         self._uvicorn = server
-        self._uvicorn_task = asyncio.create_task(server.serve())
+        self._uvicorn_task = asyncio.create_task(server.serve(sockets=[unix_listener(self.model_socket)]))
         for _ in range(200):
             if server.started:
                 return

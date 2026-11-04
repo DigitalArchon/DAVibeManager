@@ -306,3 +306,32 @@ def test_chat_completions_usage_separates_the_cached_input():
     assert openai_usage({"prompt_tokens": 1000, "completion_tokens": 20, "prompt_tokens_details": {"cached_tokens": 800}}) == {
         "input": 200, "output": 20, "cache_read": 800, "cache_write": 0}
     assert openai_usage(None) == {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0}
+
+
+def test_with_selinux_the_sockets_are_made_for_a_confined_container(tmp_path, monkeypatch):
+    """Fedora's policy lets a confined container (container_t) connect only to a socket of a container's
+    type, and refused the gateway's, made in the user's session, without logging it: no model request got
+    through. The socket is made with that type, which is put back for whatever this thread makes next."""
+    from davibemanager import gateway as gw
+    done = []
+    real = gw.socket.socket
+
+    def made(*a, **kw):
+        done.append("socket")
+        return real(*a, **kw)
+    monkeypatch.setattr(gw.socket, "socket", made)
+    monkeypatch.setattr(gw, "_sockcreate", lambda context: done.append(context or "(default)") or True)
+    (tmp_path / "enforce").write_text("1")
+    monkeypatch.setattr(gw, "SELINUX", str(tmp_path / "enforce"))
+    s = gw.unix_listener(tmp_path / "a.sock")
+    s.close()
+    assert done == [gw.CONTAINER_SOCKET, "socket", "(default)"] and (tmp_path / "a.sock").exists()
+    done.clear()
+    monkeypatch.setattr(gw, "SELINUX", str(tmp_path / "none"))       # no SELinux: nothing is set
+    gw.unix_listener(tmp_path / "b.sock").close()
+    assert done == ["socket"]
+    done.clear()
+    monkeypatch.setattr(gw, "SELINUX", str(tmp_path / "enforce"))
+    monkeypatch.setattr(gw, "_sockcreate", lambda context: done.append(context or "(default)") and False)
+    gw.unix_listener(tmp_path / "c.sock").close()                    # it can't be set: a socket all the same
+    assert done == [gw.CONTAINER_SOCKET, "socket"]
