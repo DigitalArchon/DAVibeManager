@@ -187,3 +187,40 @@ async def test_unpairing_on_one_computer_unpairs_both_and_shuts_the_other_out(tm
         await laptop.wait(laptop.sync.unpair(peer["id"]))
     await desktop.wait(desktop.sync.stop())
     await laptop.wait(laptop.sync.stop())
+
+
+async def test_the_window_pairs_through_the_api_and_hears_why_when_it_cant(tmp_path):
+    import httpx
+
+    from davibemanager.config import Config
+    from davibemanager.engine import Engine
+    from davibemanager.server.app import create_app
+
+    net = FakeNet()
+
+    def make(emit):
+        e = Engine(Config(), emit, Path(tempfile.mkdtemp(prefix="dvm-", dir="/tmp")), save_config=lambda c: None)
+        e.start_workspace = lambda: None
+        return e
+    app = create_app("secret", make)
+    async with app.router.lifespan_context(app):
+        e = app.state.engine
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://127.0.0.1",
+                                     headers={"x-token": "secret"}) as c:
+            e.sync.available = False
+            r = await c.post("/api/sync/pair")
+            assert r.status_code == 400 and "has no Tor" in r.json()["error"]
+            e.sync.available, e.sync.make_tor = True, lambda on_change: FakeTor(net, on_change)
+            r = await c.post("/api/sync/join", json={"code": "1234 5678 9012"})
+            assert r.status_code == 400 and "mistyped" in r.json()["error"]
+            r = await c.post("/api/sync/decide", json={"same": True})
+            assert r.status_code == 400 and "nothing to check" in r.json()["error"]
+            r = await c.post("/api/sync/pair")
+            assert r.status_code == 200 and len(r.json()["code"].replace(" ", "")) == 12
+            assert (await c.get("/api/state")).json()["sync"]["pairing"]["role"] == "show"
+            r = await c.post("/api/sync/pair")
+            assert r.status_code == 400 and "under way already" in r.json()["error"]
+            assert (await c.post("/api/sync/cancel")).status_code == 200
+            assert (await c.get("/api/state")).json()["sync"]["pairing"]["step"] == "cancelled"
+            r = await c.post("/api/sync/now")
+            assert r.status_code == 400 and "isn't paired" in r.json()["error"]

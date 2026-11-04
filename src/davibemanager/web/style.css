@@ -359,3 +359,6 @@ details.change summary { cursor: pointer; }
 details.change pre.patch { max-height: 40vh; overflow: auto; }
 .card.findings textarea.cmd { width: 100%; min-height: 110px; resize: vertical; }
 .update.reshare { border-color: var(--accent); }
+/* pairing another computer (Settings: Your other computers) */
+.pair-code, .pair-digits { font: 600 26px/1.2 ui-monospace, "DejaVu Sans Mono", monospace; letter-spacing: 0.08em; padding: 4px 0; user-select: all; }
+.pair-input { font: 600 20px/1.3 ui-monospace, "DejaVu Sans Mono", monospace; letter-spacing: 0.08em; width: 100%; }

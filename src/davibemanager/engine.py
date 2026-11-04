@@ -57,6 +57,7 @@ from .safety.inject import suspicious
 from .safety.outside import OutsideData
 from .safety.redact import redact
 from .safety.truncate import head_tail
+from .sync.service import SyncService
 from .workspace import podman
 from .workspace import scripts as sandbox_scripts
 
@@ -270,6 +271,7 @@ class Engine:
         self.app_manager = appmanager_mod.AppManager(self)
         self.backups = backup_mod.Backups(self)
         self.sharing = share_mod.Sharing(self)      # one app, exported for someone else, or imported
+        self.sync = SyncService(self)               # the apps, the same on each of the user's computers
 
     # ---------------------------------------------------------------- lifecycle
 
@@ -288,6 +290,7 @@ class Engine:
         self.app_manager.migrate()
         self._spawn(self.app_manager.watch())
         self._spawn(self.backups.watch())
+        await self.sync.start()
 
     async def stop(self) -> None:
         for task in (self._workspace_task, *self._background):
@@ -305,6 +308,7 @@ class Engine:
         if self.gateway:
             await self.gateway.stop()
             self.gateway = None
+        await self.sync.stop()
         if self._guard is not None and self._guard.poll() is None:
             self._guard.terminate()             # stopped as it should be: nothing left to watch for
 
@@ -415,6 +419,7 @@ class Engine:
             "deliveries": self.deliveries(),
             "apps": self.app_manager.apps(),
             "backups": self.backups.view(),
+            "sync": self.sync.view(),
             "app_homes": integrate_mod.detect(),
             "network": self.network[-200:],
             "computer": {"os": _local_os(), "desktop": _desktop()},

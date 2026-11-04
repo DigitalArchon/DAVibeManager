@@ -504,6 +504,53 @@ def create_app(token: str, make_engine: Callable[[Callable[[dict], None]], Engin
 
     # ------------------------------------------------------------ events
 
+    # ------------------------------------------------------------ the user's other computers (sync/)
+    @app.post("/api/sync/pair")
+    async def sync_pair(e: Engine = Depends(auth)):
+        """A code for another computer to type: it comes at once, and tor starts meanwhile."""
+        return e.sync.pair_show()
+
+    @app.post("/api/sync/join")
+    async def sync_join(body: dict, e: Engine = Depends(auth)):
+        return e.sync.pair_join(str(body.get("code") or ""))
+
+    @app.post("/api/sync/decide")
+    async def sync_decide(body: dict, e: Engine = Depends(auth)):
+        e.sync.pair_decide(body.get("same") is True)
+        return {"ok": True}
+
+    @app.post("/api/sync/cancel")
+    async def sync_cancel(e: Engine = Depends(auth)):
+        await e.sync.pair_cancel()
+        return {"ok": True}
+
+    @app.post("/api/sync/name")
+    async def sync_name(body: dict, e: Engine = Depends(auth)):
+        e.sync.rename(str(body.get("name") or ""))
+        return {"ok": True}
+
+    @app.post("/api/sync/now")
+    async def sync_now(e: Engine = Depends(auth)):
+        e.sync.sync_now()
+        return {"ok": True}
+
+    @app.post("/api/sync/peers/{peer_id}/unpair")
+    async def sync_unpair(peer_id: str, e: Engine = Depends(auth)):
+        await e.sync.unpair(peer_id)
+        return {"ok": True}
+
+    @app.post("/api/sync/apps/{app_id}/keep")
+    async def sync_keep(app_id: str, e: Engine = Depends(auth)):
+        """An app another computer removed, kept on this one."""
+        e.sync.keep_here(app_id)
+        return {"ok": True}
+
+    @app.post("/api/sync/apps/{app_id}/resolve")
+    async def sync_resolve(app_id: str, body: dict, e: Engine = Depends(auth)):
+        """A change both computers edited: the user keeps this one's ("mine") or the other's ("theirs")."""
+        e.sync.resolve(app_id, str(body.get("item") or ""), str(body.get("keep") or ""))
+        return {"ok": True}
+
     @app.websocket("/ws/events")
     async def ws_events(ws: WebSocket):
         if not check(ws.query_params.get("t")):

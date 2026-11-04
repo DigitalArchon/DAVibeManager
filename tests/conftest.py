@@ -34,6 +34,7 @@ def memory_keyring(tmp_path, monkeypatch):
     creds.forget()                       # what an earlier test's keyring held isn't this one's
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     yield backend
     keyring.set_keyring(old)
 

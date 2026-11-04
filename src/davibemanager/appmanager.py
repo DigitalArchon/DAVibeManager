@@ -158,6 +158,8 @@ class AppManager:
     def changed(self) -> None:
         self.e.emit("apps", apps=self.apps())
         self.e.emit("deliveries", deliveries=self.e.deliveries())
+        if getattr(self.e, "sync", None) is not None:
+            self.e.sync.local_changed()        # the user's other computers are told
 
     def app(self, app_id: str) -> dict:
         try:
@@ -623,6 +625,8 @@ class AppManager:
         if (app.get("imported") or {}).get("built") is False:
             # a build with all its changes (check_branch keeps them), whoever made it
             app["imported"] = {**app["imported"], "built": True}
+        if (app.get("synced") or {}).get("built") is False:
+            app["synced"] = {**app["synced"], "built": True}      # what came from another computer, built here
         apps.write_file(app["id"], "series.patch", series)
         if build_script:
             apps.write_file(app["id"], "build.sh", build_script)
