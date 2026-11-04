@@ -280,10 +280,17 @@ it. The code has no time limit and works once: you can leave the first computer 
 type the code on the other an hour or a week later, from anywhere. The computer you type it on
 keeps looking for the other until it's on, even after a restart, and the first computer adds it
 without anyone being there. Keep the code private until then, like a key: anyone who has it can
-add a computer. Both computers then show the same six numbers: if you can see both screens, check
-they match (if they don't, remove the computer that was added). The others in the group hear of the
-new one from each other, and the first sync with a computer just added can take a few minutes,
-while Tor finds it.
+add a computer. Both computers then show the same six numbers (if they don't, remove the computer
+that was added).
+
+When you can see both screens, tick **I can see both screens** under the code (or, on the computer
+you type it on, **I can see the other computer's screen too**). Then both show the six numbers
+first, and the computer is added only once you've said on both that they match. If you say they
+don't, nothing is added and the code stops working, in case someone else has it. (The numbers are
+worked out on each computer from what both sent, so someone in between couldn't make them match.)
+
+The others in the group hear of the new one from each other, and the first sync with a computer
+just added can take a few minutes, while Tor finds it.
 
 An app that arrives is built on each computer by the app itself, from the official source with
 its changes, when you choose **Build it** on its card; it's installed only when you say so. When a
