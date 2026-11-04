@@ -160,7 +160,10 @@ SCHEMAS: dict[str, dict] = {
                 "additionalProperties": {"type": "object", "properties": {"notes": {"type": "string"},
                                                                           "title": {"type": "string"}},
                                          "required": ["notes"]}},
-            "run_instructions": {"type": "string", "description": "How the user runs it (and for source: builds it) on their computer."},
+            "run_instructions": {"type": "string", "description": (
+                "How the user runs it (and for source: builds it) on their computer. For an appimage or addon, this app "
+                "installs it (and Try it first opens it): never steps to download it, make it executable or move it; "
+                "say where it's opened from once it's installed, e.g. its menu entry, or the command for a terminal app.")},
             "integration": {"type": "string", "enum": ["app", "desktop", "system"], "description": (
                 "How deep it goes: app (an ordinary app the user opens), desktop (part of the desktop: file manager, panel, "
                 "window manager, settings...), system (below the desktop). The user is warned for desktop and system.")},
@@ -169,7 +172,9 @@ SCHEMAS: dict[str, dict] = {
                 "What you could not test here, specifically: e.g. the user's desktop and theme, their other apps and "
                 "extras, being their default app, real use over time.")},
             "try_steps": {"type": "array", "items": {"type": "string"}, "maxItems": 8, "description": (
-                "A short checklist for the user's first try on their computer, one check each, in plain words.")},
+                "A short checklist for the user's first try on their computer, one check each, in plain words: what to "
+                "look for once it's open. This app opens it (Try it first) and installs it, so no steps to download, "
+                "make executable or start it.")},
             "screenshots": {"type": "array", "items": {"type": "string"}, "description": "Up to 4 PNG/JPEG paths under /work showing it working."},
             "install_to": {"type": "string", "description": "addon only: the folder on the user's computer the app loads it from, as ~/…, e.g. ~/.config/mpv/scripts."},
             "build_script": {"type": "string", "description": "appimage: the PATH of a script file under /work (e.g. /work/apps/gthumb/build.sh; not the script's text) that builds and packages it from the top of a clean checkout of your branch, leaving exactly one .AppImage in $DVM_OUT (SOURCE_DATE_EPOCH is set). The app builds your commit with it once, in a clean container, delivers that build, and uses the script for future versions."},
