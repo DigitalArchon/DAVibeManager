@@ -50,8 +50,12 @@ def create_app(token: str, make_engine: Callable[[Callable[[dict], None]], Engin
             if loops:
                 loops[0].call_soon_threadsafe(emit, event)
             return
-        for q in list(listeners):
-            q.put_nowait(event)
+        if listeners:
+            # written out now, as it is: a snapshot holds the chat itself, and written when it was sent it
+            # also held a message added after it, which that message's own event then added again (shown twice)
+            text = json.dumps(event, default=str)
+            for q in list(listeners):
+                q.put_nowait(text)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -519,7 +523,7 @@ def create_app(token: str, make_engine: Callable[[Callable[[dict], None]], Engin
                     receiver.result()  # raises on disconnect
                     receiver = asyncio.create_task(ws.receive_text())
                     continue
-                await ws.send_text(json.dumps(getter.result(), default=str))
+                await ws.send_text(getter.result())
         except (WebSocketDisconnect, RuntimeError):
             pass
         finally:

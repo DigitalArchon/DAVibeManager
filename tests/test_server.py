@@ -97,3 +97,30 @@ async def test_a_backup_uploaded_to_restore_is_bounded_and_not_kept_when_refused
             r = await c.post("/api/restore/upload", content=b"x" * 500)
             assert r.status_code == 400 and "free space" in r.json()["error"]
             assert len(list((tmp_path / "uploads").iterdir())) == 1
+
+
+def test_an_event_is_sent_as_it_was_when_it_happened(tmp_path):
+    """A state's chat is the conversation's own list: written out only when the window's socket got to it,
+    it held a message added after it too, which that message's own event then added again (an update's
+    request showed twice when the assistant was asked to make it)."""
+    from starlette.testclient import TestClient
+    got = {}
+
+    def make(emit):
+        got["emit"] = emit
+        e = Engine(Config(), emit, tmp_path, save_config=lambda c: None)
+        e.start_workspace = lambda: None
+        return e
+    app = create_app("secret", make)
+    with TestClient(app) as client, client.websocket_connect("/ws/events?t=secret") as ws:
+        ws.receive_json()                                   # the state on connecting
+        chat = []
+
+        def as_the_engine_does():                           # one go on the loop, nothing awaited between
+            got["emit"]({"type": "state", "state": {"chat": chat}})
+            entry = {"kind": "user", "text": "Please update my htop"}
+            chat.append(entry)
+            got["emit"]({"type": "chat", "entry": entry})
+        client.portal.call(as_the_engine_does)
+        assert ws.receive_json() == {"type": "state", "state": {"chat": []}}
+        assert ws.receive_json()["type"] == "chat"
