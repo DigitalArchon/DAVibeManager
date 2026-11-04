@@ -52,6 +52,7 @@ RETRY_FIRST = 20
 FIRST_AFTER = 45                    # a computer just added is first pulled from this long after (its onion is on its way)
 NEW_FOR = 900                       # and counts as just added this long
 ANNOUNCE_AFTER = 5                  # a local change is told to the others this long after the last one
+EMIT_AFTER = 0.3                    # the window hears of a burst of changes this long after the first
 FIND_AGAIN, FIND_MOST = 5, 60       # a code's onion looked for again after this, doubling up to this
 CHECK_EVERY = 60                    # how often a code shown checks that its onion is still up
 FRESH_EVERY = 120                   # tor's memory of onions it couldn't find, forgotten at most this often
@@ -132,6 +133,7 @@ class SyncService:
         self._tasks: set[asyncio.Task] = set()
         self._streams = weakref.WeakSet()           # the connections open, to cut when sync stops
         self._announce: asyncio.TimerHandle | None = None
+        self._emit_soon: asyncio.TimerHandle | None = None
         self._announced: dict[str, str] = {}
         self._live: dict[str, dict] = {}            # member id -> {"syncing", "online"} (not kept)
         self._me: store.Identity | None = None
@@ -174,6 +176,16 @@ class SyncService:
                 "pairing": dict(self.pairing) if self.pairing else None, "removed": self._notice}
 
     def _changed(self) -> None:
+        """The window told, once for a burst of changes (a sync makes several)."""
+        if self._emit_soon is not None:
+            return
+        try:
+            self._emit_soon = asyncio.get_running_loop().call_later(EMIT_AFTER, self._emit)
+        except RuntimeError:                    # no loop (a test, or before the engine starts)
+            self._emit()
+
+    def _emit(self) -> None:
+        self._emit_soon = None
         self.e.emit("sync", sync=self.view())
 
     def _log(self, event: str, **data) -> None:
@@ -229,8 +241,9 @@ class SyncService:
                  if t and not t.done() and t is not asyncio.current_task()]
         for task in tasks:
             task.cancel()
-        if self._announce:
-            self._announce.cancel()
+        for handle in (self._announce, self._emit_soon):
+            if handle:
+                handle.cancel()
         self._close_all()
         for writer in list(self._streams):
             writer.transport.abort()
@@ -1003,6 +1016,8 @@ class SyncService:
         an hour, hasn't looked again since it came back on)."""
         e = self._roster().get(who)
         if e is None or e["removed"] or who in self._pulling:
+            if who in self._pulling:
+                self._again.add(who)            # pulled from again once that's done: it may have listed before the change
             await wire.send(writer, {"t": "bye"})
             return
         self._pulling[who] = asyncio.current_task()
@@ -1014,6 +1029,9 @@ class SyncService:
         finally:
             if self._pulling.get(who) is asyncio.current_task():
                 self._pulling.pop(who, None)
+            if who in self._again:
+                self._again.discard(who)
+                self._next[who] = 0
             self._wake.set()
 
     def _pulled(self, member_id: str, came: list[str]) -> None:

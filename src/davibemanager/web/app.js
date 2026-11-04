@@ -228,7 +228,11 @@ function handle(ev) {
       break;
     case "sync":
       st.sync = ev.sync;
-      if (S.panel === "settings" && !typingInPanel()) openPanel("settings");
+      // only its own section drawn again: the rest of Settings stays put (and isn't fetched again)
+      if (S.panel === "settings" && !typingInPanel()) {
+        const old = $("#panel-body [data-section=sync]");
+        if (old) old.replaceWith(syncSettings()); else openPanel("settings");
+      }
       break;
     case "apps":
       st.apps = ev.apps;
@@ -2016,7 +2020,7 @@ function syncSettings() {
     const r = await api("POST", "/api/sync/leave");
     toast(r.told ? "Left. The others hear of it from each other." : "Left, but none of your other computers could be told just now: remove this one on them.", r.told ? "ok" : "warn", 6000);
   });
-  return h("div", { class: "section" }, h("h3", {}, "Your other computers"),
+  return h("div", { class: "section", "data-section": "sync" }, h("h3", {}, "Your other computers"),
     h("div", { class: "small muted" }, "Keep your apps and their changes the same on all your computers. They sync with each other directly, through Tor, whenever they're on: no server, no account, and only computers you add can find each other. What's installed stays each computer's own choice."),
     sy.available === false ? h("div", { class: "warnbox small" }, "This copy of DA Vibe Manager has no Tor, so it can't sync. The AppImage has it built in.") : null,
     removedEl,
