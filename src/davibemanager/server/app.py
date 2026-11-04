@@ -507,17 +507,13 @@ def create_app(token: str, make_engine: Callable[[Callable[[dict], None]], Engin
     # ------------------------------------------------------------ the user's other computers (sync/)
     @app.post("/api/sync/pair")
     async def sync_pair(e: Engine = Depends(auth)):
-        """A code for another computer to type: it comes at once, and tor starts meanwhile."""
+        """A code for another computer to type, whenever it's ready: it comes at once (tor starts meanwhile),
+        and works until it's used or cancelled."""
         return e.sync.pair_show()
 
     @app.post("/api/sync/join")
     async def sync_join(body: dict, e: Engine = Depends(auth)):
         return e.sync.pair_join(str(body.get("code") or ""))
-
-    @app.post("/api/sync/decide")
-    async def sync_decide(body: dict, e: Engine = Depends(auth)):
-        e.sync.pair_decide(body.get("same") is True)
-        return {"ok": True}
 
     @app.post("/api/sync/cancel")
     async def sync_cancel(e: Engine = Depends(auth)):
@@ -534,10 +530,19 @@ def create_app(token: str, make_engine: Callable[[Callable[[dict], None]], Engin
         e.sync.sync_now()
         return {"ok": True}
 
-    @app.post("/api/sync/peers/{peer_id}/unpair")
-    async def sync_unpair(peer_id: str, e: Engine = Depends(auth)):
-        await e.sync.unpair(peer_id)
+    @app.post("/api/sync/dismiss")
+    async def sync_dismiss(e: Engine = Depends(auth)):
+        e.sync.dismiss()
         return {"ok": True}
+
+    @app.post("/api/sync/members/{member_id}/remove")
+    async def sync_remove(member_id: str, e: Engine = Depends(auth)):
+        e.sync.remove(member_id)
+        return {"ok": True}
+
+    @app.post("/api/sync/leave")
+    async def sync_leave(e: Engine = Depends(auth)):
+        return await e.sync.leave()
 
     @app.post("/api/sync/apps/{app_id}/keep")
     async def sync_keep(app_id: str, e: Engine = Depends(auth)):
@@ -551,7 +556,8 @@ def create_app(token: str, make_engine: Callable[[Callable[[dict], None]], Engin
 
     @app.post("/api/sync/apps/{app_id}/resolve")
     async def sync_resolve(app_id: str, body: dict, e: Engine = Depends(auth)):
-        """A change both computers edited: the user keeps this one's ("mine") or the other's ("theirs")."""
+        """A change edited on more than one computer: the user keeps this one's ("mine"), or takes the
+        version of the computer whose id `keep` is."""
         e.sync.resolve(app_id, str(body.get("item") or ""), str(body.get("keep") or ""))
         return {"ok": True}
 

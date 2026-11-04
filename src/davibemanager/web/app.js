@@ -1120,14 +1120,20 @@ function syncedEl(a) {
     h("div", { class: "actions" },
       h("button", { class: "small", onclick: () => removeApp(a) }, "Remove it here too"),
       h("button", { class: "small ghost", onclick: () => guarded(() => api("POST", `/api/sync/apps/${a.id}/keep`)) }, "Keep it here"))));
-  for (const c of sy.conflicts || []) {
-    const mineTitle = c.id === "build" ? "this computer's build script" : `this computer's “${(a.changes || []).find((x) => x.id === c.id)?.title || c.title}”`;
+  const choices = new Map();                  // a change (or the build script) -> each other computer's version of it
+  for (const c of sy.conflicts || []) choices.set(c.id, [...(choices.get(c.id) || []), c]);
+  for (const [item, alts] of choices) {
+    const title = alts[0].title;
+    const mineTitle = item === "build" ? "this computer's build script" : `this computer's “${(a.changes || []).find((x) => x.id === item)?.title || title}”`;
+    const who = alts.map((c) => c.from).join(" and ");
+    const keep = (which) => guarded(() => api("POST", `/api/sync/apps/${a.id}/resolve`, { item, keep: which }));
     parts.push(h("div", { class: "update" },
-      h("div", {}, h("b", {}, `${c.title}: changed on both computers.`), ` ${c.from} made its own version of it too. Which one should this app keep? The other is replaced on every computer.`),
+      h("div", {}, h("b", {}, `${title}: changed on more than one computer.`),
+        ` ${who} made ${alts.length > 1 ? "their" : "its"} own version${alts.length > 1 ? "s" : ""} of it too. Which one should this app keep? The one you choose replaces the others on every computer.`),
       h("div", { class: "actions" },
-        h("button", { class: "small ghost", onclick: () => guarded(() => compareVersions(a, c)) }, "Compare them"),
-        h("button", { class: "small", onclick: () => guarded(() => api("POST", `/api/sync/apps/${a.id}/resolve`, { item: c.id, keep: "mine" })) }, `Keep ${mineTitle}`),
-        h("button", { class: "small", onclick: () => guarded(() => api("POST", `/api/sync/apps/${a.id}/resolve`, { item: c.id, keep: "theirs" })) }, `Take ${c.from}'s`))));
+        h("button", { class: "small ghost", onclick: () => guarded(() => compareVersions(a, item)) }, "Compare them"),
+        h("button", { class: "small", onclick: () => keep("mine") }, `Keep ${mineTitle}`),
+        ...alts.map((c) => h("button", { class: "small", onclick: () => keep(c.peer) }, `Take ${c.from}'s`)))));
   }
   if (sy.built === false && !a.building && a.imported?.built !== false) {
     const titles = (a.changes || []).filter((c) => (sy.changes || []).includes(c.id)).map((c) => c.title);
@@ -1144,15 +1150,20 @@ function syncedEl(a) {
   return parts.length ? h("div", {}, parts) : null;
 }
 
-// a change both computers edited: each one's version, side by side
-async function compareVersions(a, c) {
-  const x = await api("GET", `/api/sync/apps/${a.id}/compare?item=${encodeURIComponent(c.id)}`);
-  const side = (label, notes, text) => h("div", { class: "compare-side" }, h("h3", {}, label),
-    notes ? h("div", { class: "md small", html: md(notes) }) : null,
-    h("pre", { class: "outview small" }, text || "(empty)"));
-  modal({ title: x.title, buttons: [{ label: "Close" }], body: h("div", {},
-    h("p", { class: "small muted" }, `This computer and ${x.from} each made their own version. Whichever you keep replaces the other on every computer.`),
-    h("div", { class: "compare" }, side("This computer's", x.mine_notes, x.mine), side(`${x.from}'s`, x.theirs_notes, x.theirs))) });
+// a change edited on more than one computer: each one's version, side by side, to choose from
+async function compareVersions(a, item) {
+  const x = await api("GET", `/api/sync/apps/${a.id}/compare?item=${encodeURIComponent(item)}`);
+  let m;
+  const choose = (keep) => guarded(async () => { await api("POST", `/api/sync/apps/${a.id}/resolve`, { item, keep }); m.close(); });
+  const side = (label, v, keep, button) => h("div", { class: "compare-side" }, h("h3", {}, label),
+    v.notes ? h("div", { class: "md small", html: md(v.notes) }) : null,
+    h("pre", { class: "outview small" }, v.text || "(empty)"),
+    h("div", { class: "actions" }, h("button", { class: "small", onclick: () => choose(keep) }, button)));
+  m = modal({ title: x.title, buttons: [{ label: "Close" }], body: h("div", {},
+    h("p", { class: "small muted" }, "Each of these computers made its own version. Whichever you keep replaces the others on every computer."),
+    h("div", { class: `compare${x.theirs.length > 1 ? " three" : ""}` },
+      side("This computer's", x.mine, "mine", "Keep this one"),
+      ...x.theirs.map((t) => side(`${t.from}'s`, t, t.peer, `Take ${t.from}'s`)))) });
 }
 
 // what stopped the app's own build of it (AppManager.rebuild), in words
@@ -1954,62 +1965,83 @@ function backupSettings(s, save) {
         await api("POST", "/api/backups/password", { password: "" }); }) }, "Forget it")) : null);
 }
 
-// the user's other computers (sync/): pairing one, and the ones paired with this one
-const SYNC_STEPS = { starting: "Starting Tor…", publishing: "Getting the code ready on the Tor network (this can take a minute)…",
-  finding: "Looking for the other computer on the Tor network (up to a few minutes)…", deciding: "Waiting for the other computer…" };
+// the user's other computers (sync/): the group's members, adding one with a code, removing one, leaving
 function syncSettings() {
   const sy = S.state.sync || {};
   const p = sy.pairing;
-  const live = p && !["done", "failed", "cancelled", "expired"].includes(p.step);
+  const members = sy.members || [];
+  const live = p && !["done", "failed", "cancelled"].includes(p.step);
   const name = h("input", { type: "text", value: sy.name || "", style: "width:180px" });
-  const torWords = sy.tor?.step === "connecting" || sy.tor?.step === "starting" ? ` ${sy.tor.words}` : "";
-  const pairingEl = !p ? null : p.step === "check" ? h("div", { class: "update" },
-      h("div", {}, h("b", {}, `Do both computers show these numbers?`)),
-      h("div", { class: "pair-digits" }, p.digits),
-      h("div", { class: "small muted" }, `This computer and ${p.with} each worked them out. If they're the same on both, nobody came between them.`),
-      h("div", { class: "actions" },
-        h("button", { class: "small primary", onclick: () => guarded(() => api("POST", "/api/sync/decide", { same: true })) }, "They match"),
-        h("button", { class: "small", onclick: () => guarded(() => api("POST", "/api/sync/decide", { same: false })) }, "They don't")))
-    : p.step === "waiting" ? h("div", { class: "update" },
-      h("div", {}, h("b", {}, "On your other computer,"), " open DA Vibe Manager, Settings → Your other computers → I have a code, and type:"),
+  const torWords = ["connecting", "starting"].includes(sy.tor?.step) ? ` ${sy.tor.words}` : "";
+  const cancel = h("button", { class: "small ghost", onclick: () => guarded(async () => {
+    await api("POST", "/api/sync/cancel"); await api("POST", "/api/sync/dismiss"); }) }, "Cancel");
+  const ok = h("button", { class: "small", onclick: () => guarded(() => api("POST", "/api/sync/dismiss")) }, "OK");
+  const digits = p?.digits ? h("div", { class: "small muted" }, "Both computers show ", h("b", {}, p.digits),
+    ": if you can see the other one, check it shows the same (if it doesn't, remove it).") : null;
+  const errorEl = p?.error ? h("div", { class: "small warn" }, p.error) : null;
+  let pairingEl = null;
+  if (p && live && p.role === "show") {
+    pairingEl = h("div", { class: "update" },
+      h("div", {}, h("b", {}, "On the computer to add,"), " open DA Vibe Manager, Settings → Your other computers → I have a code, and type:"),
       h("div", { class: "pair-code" }, p.code),
-      h("div", { class: "small muted" }, `It works until ${new Date(p.until * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}, once.`),
-      h("div", { class: "actions" }, h("button", { class: "small ghost", onclick: () => guarded(() => api("POST", "/api/sync/cancel")) }, "Cancel")))
-    : live ? h("div", { class: "small row" }, h("span", { class: "spinner" }), (SYNC_STEPS[p.step] || "…") + (p.step === "starting" ? torWords : ""),
-      h("button", { class: "small ghost", onclick: () => guarded(() => api("POST", "/api/sync/cancel")) }, "Cancel"))
-    : p.step === "done" ? h("div", { class: "small ok" }, `Paired with ${p.with}. Your apps sync whenever both computers are on.`)
-    : p.error ? h("div", { class: "warnbox small" }, p.error) : null;
-  const peers = (sy.peers || []).map((x) => h("div", { class: "row small" },
+      p.step === "adding" ? h("div", { class: "small row" }, h("span", { class: "spinner" }), `Adding ${p.with}…`)
+        : ["starting", "publishing"].includes(p.step) ? h("div", { class: "small row" }, h("span", { class: "spinner" }), `Getting the code ready on the Tor network…${torWords}`)
+        : h("div", { class: "small muted" }, `Waiting since ${fmtWhen(p.since)}. The code has no time limit: it works once, whenever the other computer is ready, from anywhere, until you cancel it. Keep this computer on, with DA Vibe Manager running, until then.`),
+      errorEl, h("div", { class: "actions" }, cancel));
+  } else if (p && live) {
+    pairingEl = h("div", { class: "update" },
+      h("div", { class: "small row" }, h("span", { class: "spinner" }), p.step === "starting" ? `Starting Tor…${torWords}` : "Looking for the computer showing the code, on the Tor network…"),
+      h("div", { class: "small muted" }, "It keeps looking until that computer is on and showing the code, however long that takes (it can be off just now). You can close this: it goes on, even after a restart."),
+      errorEl, h("div", { class: "actions" }, cancel));
+  } else if (p?.step === "done") {
+    pairingEl = h("div", { class: "update" },
+      h("div", { class: "small ok" }, p.role === "show" ? `${p.with} was added to your computers.` : `This computer was added to your computers, with ${p.with}.`,
+        " Your apps sync between them whenever they're on."), digits, h("div", { class: "actions" }, ok));
+  } else if (p?.step === "failed") {
+    pairingEl = h("div", { class: "warnbox small" }, p.error || "It didn't work.", h("div", { class: "actions" }, ok));
+  }
+  const removedEl = sy.removed ? h("div", { class: "warnbox small" },
+    `${sy.removed.by} removed this computer from your computers (${fmtWhen(sy.removed.at)}). Its apps stay here, but don't sync any more. To sync again, add it with a code shown on one of the others.`,
+    h("div", { class: "actions" }, ok)) : null;
+  const rows = members.map((x) => h("div", { class: "row small" },
     h("b", {}, x.name),
     h("span", { class: "muted" }, x.syncing ? "syncing…"
-      : x.error && !x.synced && Date.now() / 1000 - x.paired < 900 ? "getting ready: the first sync can take a few minutes on Tor"
+      : x.error && !x.synced && x.new ? "getting ready: a computer just added can take a few minutes to be found on Tor"
       : x.error ? `can't be reached just now: ${x.error}` : x.synced ? `synced ${fmtWhen(x.synced)}` : "not synced yet"),
     h("button", { class: "small ghost", onclick: () => guarded(async () => {
-      if (!(await confirmModal(`Unpair ${x.name}?`, `Your apps stop syncing with ${x.name}. What each computer has stays on it. ${x.name} is told too, if it's on.`, "Unpair"))) return;
-      await api("POST", `/api/sync/peers/${x.id}/unpair`); }) }, "Unpair")));
+      if (!(await confirmModal(`Remove ${x.name}?`, `It stops syncing with all your computers: each one hears of it. What it has stays on it, and it's told it was removed when it's next on. To add it again later, show a new code.`, "Remove", "danger"))) return;
+      await api("POST", `/api/sync/members/${x.id}/remove`); }) }, "Remove")));
+  const leave = () => guarded(async () => {
+    if (!(await confirmModal("Leave your computers?", "This computer stops syncing with the others, and they're told. Its apps stay here. To sync again, add it with a new code shown on one of them.", "Leave", "danger"))) return;
+    const r = await api("POST", "/api/sync/leave");
+    toast(r.told ? "Left. The others hear of it from each other." : "Left, but none of your other computers could be told just now: remove this one on them.", r.told ? "ok" : "warn", 6000);
+  });
   return h("div", { class: "section" }, h("h3", {}, "Your other computers"),
-    h("div", { class: "small muted" }, "Keep your apps and their changes the same on each of your computers. They sync directly with each other whenever both are on, through Tor: no server, no account, and only computers you pair can find this one. What's installed stays each computer's own choice."),
+    h("div", { class: "small muted" }, "Keep your apps and their changes the same on all your computers. They sync with each other directly, through Tor, whenever they're on: no server, no account, and only computers you add can find each other. What's installed stays each computer's own choice."),
     sy.available === false ? h("div", { class: "warnbox small" }, "This copy of DA Vibe Manager has no Tor, so it can't sync. The AppImage has it built in.") : null,
-    ...peers,
+    removedEl,
+    ...rows,
     pairingEl,
     sy.available === false || live ? null : h("div", { class: "actions" },
-      h("button", { class: "small primary", onclick: () => guarded(() => api("POST", "/api/sync/pair")) }, sy.peers?.length ? "Pair another computer" : "Pair with another computer"),
+      h("button", { class: "small primary", onclick: () => guarded(() => api("POST", "/api/sync/pair")) }, members.length ? "Add another computer" : "Add a computer"),
       h("button", { class: "small", onclick: joinWithCode }, "I have a code"),
-      sy.peers?.length ? h("button", { class: "small ghost", onclick: () => guarded(() => api("POST", "/api/sync/now")) }, "Sync now") : null),
+      members.length ? h("button", { class: "small ghost", onclick: () => guarded(() => api("POST", "/api/sync/now")) }, "Sync now") : null,
+      members.length ? h("button", { class: "small ghost danger", onclick: leave }, "Leave") : null),
     sy.available === false ? null : h("div", { class: "field" }, h("span", {}, "This computer's name"),
       h("div", { class: "row" }, name, h("button", { class: "small", onclick: () => guarded(() => api("POST", "/api/sync/name", { name: name.value })) }, "Save")),
       h("span", { class: "small muted" }, "What your other computers call this one.")));
 }
 
 function joinWithCode() {
-  const input = h("input", { type: "text", inputmode: "numeric", autocomplete: "off", placeholder: "1234 5678 9012", class: "pair-input" });
+  const input = h("input", { type: "text", inputmode: "numeric", autocomplete: "off", placeholder: "1234 5678 9012 3456", class: "pair-input" });
   // a code that's wrong keeps the box open, to put right
   const go = async () => {
     try { await api("POST", "/api/sync/join", { code: input.value }); return false; } catch (e) { toast(e.message, "error"); return true; }
   };
-  const m = modal({ title: "Pair with another computer",
-    body: h("div", {}, h("p", {}, "On the other computer: Settings → Your other computers → Pair with another computer. Type the code it shows:"), input),
-    buttons: [{ label: "Cancel" }, { label: "Pair", kind: "primary", onClick: go }] });
+  const m = modal({ title: "Add this computer to your others",
+    body: h("div", {}, h("p", {}, "On one of your other computers: Settings → Your other computers → Add a computer. Type the code it shows:"), input,
+      h("p", { class: "small muted" }, "The other computer can be off just now: this one keeps looking for it until it's on.")),
+    buttons: [{ label: "Cancel" }, { label: "Add", kind: "primary", onClick: go }] });
   input.addEventListener("keydown", async (e) => { if (e.key === "Enter" && !(await go())) m.close(); });
   setTimeout(() => input.focus(), 50);
 }

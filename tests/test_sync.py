@@ -1,5 +1,6 @@
-"""Sync between the user's computers, its parts one by one: the onion keys, pairing, the wire,
-tor's control protocol, what's kept, and how an app changed on two computers comes together."""
+"""Sync between the user's computers, its parts one by one: the onion keys, adding a computer, the
+wire, tor's control protocol, what's kept (the group's members among it), and how an app changed on
+two computers, or three, comes together."""
 
 import asyncio
 import base64
@@ -58,19 +59,20 @@ def test_a_client_key_is_listed_by_its_public_half_and_given_to_tor_whole():
 
 # ---------------------------------------------------------------- pairing
 
-def test_a_code_is_twelve_digits_whose_last_catches_a_typo_or_a_swap():
+def test_a_code_is_sixteen_digits_whose_last_catches_a_typo_or_a_swap():
     code = pairing.new_code()
-    assert len(code) == 12 and pairing.read_code(pairing.shown(code)) == code
-    assert pairing.read_code(f" {code[:4]}-{code[4:8]} {code[8:]} ") == code
-    for i in range(12):
+    assert len(code) == 16 and pairing.read_code(pairing.shown(code)) == code
+    assert pairing.shown(code).count(" ") == 3
+    assert pairing.read_code(f" {code[:4]}-{code[4:8]} {code[8:12]}.{code[12:]} ") == code
+    for i in range(16):
         wrong = code[:i] + str((int(code[i]) + 1) % 10) + code[i + 1:]
         with pytest.raises(pairing.PairingError, match="mistyped"):
             pairing.read_code(wrong)
-    for i in range(11):
+    for i in range(15):
         if code[i] != code[i + 1]:
             with pytest.raises(pairing.PairingError):
                 pairing.read_code(code[:i] + code[i + 1] + code[i] + code[i + 2:])
-    with pytest.raises(pairing.PairingError, match="12 digits"):
+    with pytest.raises(pairing.PairingError, match="16 digits"):
         pairing.read_code("1234")
 
 
@@ -78,16 +80,28 @@ def info(name):
     return {"id": os.urandom(16).hex(), "name": name, "onion": onion.OnionKey.new().address, "client": onion.ClientKey.new().public}
 
 
-def test_both_computers_work_out_the_same_onion_digits_and_secret():
+def test_both_computers_work_out_the_same_onion_and_digits():
     code = pairing.new_code()
     a, b = pairing.Waiting(code, info("Desktop")), pairing.Joining(code, info("Laptop"))
     assert pairing.pairing_onion(a.secret).address == pairing.pairing_onion(b.secret).address
     a.revealed(b.answered(a.opened(b.opening())))
     assert a.them["name"] == "Laptop" and b.them["name"] == "Desktop"
     assert a.digits == b.digits and len(a.digits.replace(" ", "")) == 6
-    assert a.secret_for_them == b.secret_for_them
     other = pairing.Waiting(pairing.new_code(), info("Elsewhere"))
     assert pairing.pairing_onion(other.secret).address != pairing.pairing_onion(a.secret).address
+    # the code's secret, worked out once, serves each try (each with a random part of its own)
+    again = pairing.Joining(code, b.me, a.secret)
+    assert again.secret == b.secret and again.nonce != b.nonce
+
+
+def test_reaching_the_codes_onion_without_the_code_adds_nothing():
+    """The onion's address is all a directory could ever learn of it: the computer that reached it must
+    still show it has the code itself."""
+    code = pairing.new_code()
+    a = pairing.Waiting(code, info("Desktop"))
+    b = pairing.Joining(pairing.new_code(), info("Somebody"), os.urandom(32))
+    with pytest.raises(pairing.PairingError, match="has the code"):
+        a.revealed(b.answered(a.opened(b.opening())))
 
 
 def test_a_reveal_that_isnt_what_was_committed_to_pairs_nothing():
@@ -150,20 +164,33 @@ async def test_messages_and_bytes_go_in_frames_with_limits():
     server.close()
 
 
-async def test_paired_computers_prove_which_they_are_and_others_are_refused():
-    secret, me, them = os.urandom(32), os.urandom(16).hex(), os.urandom(16).hex()
-    for client_secret, server_knows, said in ((secret, them, None), (os.urandom(32), them, "couldn't prove"),
-                                              (secret, "", "isn't paired")):
+async def test_members_prove_which_they_are_and_others_are_refused_saying_why():
+    key, me, them, group = os.urandom(32), os.urandom(16).hex(), os.urandom(16).hex(), os.urandom(16).hex()
+    removed = {"by": "Desktop", "at": time.time()}
+
+    def lookup(who, gid):
+        if gid != group:
+            return ("group", None)
+        return store.pair_key(key, me, who) if who == them else ("removed", removed) if who == "gone" else ("member", None)
+    for client, client_key, gid, said in ((them, key, group, None), (them, os.urandom(32), group, "couldn't prove"),
+                                          ("someone", key, group, "member"), ("gone", key, group, "removed"),
+                                          (them, key, "f" * 32, "group")):
         (cr, cw), (sr, sw), server = await pipe()
-        serving = asyncio.ensure_future(wire.hello_as_server(sr, sw, me, lambda who: secret if who == server_knows else None))
+        serving = asyncio.ensure_future(wire.hello_as_server(sr, sw, me, lookup))
         if said is None:
-            await wire.hello_as_client(cr, cw, them, me, client_secret)
-            assert await serving == them
-        else:
+            await wire.hello_as_client(cr, cw, them, me, gid, store.pair_key(client_key, them, me))
+            assert await serving == (them, group)
+        elif said == "couldn't prove":
             with pytest.raises(wire.WireError, match=said):
-                await wire.hello_as_client(cr, cw, them, me, client_secret)
+                await wire.hello_as_client(cr, cw, client, me, gid, store.pair_key(client_key, client, me))
             cw.close()                          # as the app does with a connection it gave up on
             with pytest.raises(wire.WireError):
+                await serving
+        else:
+            with pytest.raises(wire.Refused) as refused:
+                await wire.hello_as_client(cr, cw, client, me, gid, store.pair_key(client_key, client, me))
+            assert refused.value.code == said and (refused.value.removed == removed) == (said == "removed")
+            with pytest.raises(wire.Refused):
                 await serving
         cw.close()
         server.close()
@@ -187,7 +214,7 @@ async def test_tor_saying_an_onion_cant_be_reached_is_put_in_words(tmp_path):
     w.close()
     with pytest.raises(wire.Unreachable, match="isn't online"):
         await wire.socks_connect(path, "b.onion", 7301)
-    with pytest.raises(wire.Unreachable, match="isn't paired with this one any more") as e:
+    with pytest.raises(wire.Unreachable, match="hasn't heard yet that this one was added") as e:
         await wire.socks_connect(path, "c.onion", 7301)
     assert e.value.code == 0xF4
     server.close()
@@ -239,19 +266,66 @@ def test_tor_runs_for_onions_only_owned_by_the_app(tmp_path):
 
 # ---------------------------------------------------------------- what's kept
 
-def test_this_computers_identity_is_made_once_and_kept_private():
+def member(name, **more):
+    return {**info(name), "updated": time.time(), "added": time.time(), "removed": 0, "by": "", **more}
+
+
+def test_this_computers_identity_and_group_are_made_once_and_kept_private():
+    assert store.identity(make=False) is None
     me = store.identity()
-    assert store.identity().onion_key.address == me.onion_key.address
+    assert store.identity().onion_key.address == me.onion_key.address and store.identity(make=False).id == me.id
     assert oct(os.stat(store.folder() / "identity.json").st_mode & 0o777) == "0o600"
     assert oct(os.stat(store.folder()).st_mode & 0o777) == "0o700"
-    peer = store.Peer(os.urandom(16).hex(), "Laptop", onion.OnionKey.new().address, onion.ClientKey.new().public,
-                      base64.b64encode(os.urandom(32)).decode())
-    store.save_peers([peer, store.Peer("bad", "x", "y", "z", "w")])
-    assert [p.id for p in store.peers()] == [peer.id] and "secret" not in store.peers()[0].view()
-    store.save_base(peer.id, {"s": {"digest": "d"}})
-    assert store.base_of(peer.id) == {"s": {"digest": "d"}}
-    store.forget(peer.id)
-    assert store.peers() == [] and store.base_of(peer.id) == {}
+    g = store.new_group()
+    store.save_group(store.Group(g.id, g.key, [{"id": f"{i:032x}", "key": os.urandom(32)} for i in range(6)]))
+    kept = store.group()
+    assert kept.key == g.key and [o["id"] for o in kept.old] == [f"{i:032x}" for i in range(2, 6)]   # the last four
+    assert kept.key_of(g.id) == g.key and kept.key_of(f"{5:032x}") and kept.key_of("f" * 32) is None
+    assert oct(os.stat(store.folder() / "group.json").st_mode & 0o777) == "0o600"
+    laptop = member("Laptop")
+    store.save_members({laptop["id"]: laptop, "bad": {**laptop, "id": "bad"}, "later": {**laptop, "updated": time.time() + 2 * 86400}})
+    assert list(store.members()) == [laptop["id"]]
+    store.save_base(laptop["id"], {"s": {"digest": "d"}})
+    assert store.base_of(laptop["id"]) == {"s": {"digest": "d"}}
+    store.leave_all()
+    assert store.group() is None and store.members() == {} and store.base_of(laptop["id"]) == {}
+    assert store.identity().id == me.id                    # this computer stays itself
+
+
+def test_two_computers_lists_of_members_come_together_and_a_removal_stands():
+    me, laptop, server = member("Desktop"), member("Laptop"), member("Server")
+    mine = {me["id"]: me, laptop["id"]: laptop}
+    # one this computer hadn't heard of, and one renamed since: taken
+    renamed = {**laptop, "name": "Work laptop", "updated": laptop["updated"] + 5}
+    roster, changed = store.merge_members(mine, [server, renamed, {"id": "nonsense"}], me["id"])
+    assert sorted(changed) == sorted([server["id"], laptop["id"]]) and roster[laptop["id"]]["name"] == "Work laptop"
+    assert store.merge_members(roster, list(roster.values()), me["id"])[1] == []          # nothing new
+    # removed: that stands against the laptop renaming itself after, but not against adding it again
+    gone = {**renamed, "removed": renamed["updated"] + 5, "updated": renamed["updated"] + 5, "by": me["id"]}
+    roster, _ = store.merge_members(roster, [gone], me["id"])
+    later_rename = {**renamed, "name": "Old laptop", "updated": gone["updated"] + 5}
+    assert store.merge_members(roster, [later_rename], me["id"])[1] == []
+    back = {**later_rename, "added": gone["removed"] + 10, "updated": gone["removed"] + 10, "by": server["id"]}
+    roster, changed = store.merge_members(roster, [back], me["id"])
+    assert changed == [laptop["id"]] and not roster[laptop["id"]]["removed"]
+    assert store.merge_members(roster, [gone], me["id"])[1] == []                       # an old removal, heard late
+    # of this computer's own entry only a removal is taken, and only one after it was last added
+    assert store.merge_members(roster, [{**me, "name": "Not me", "updated": me["updated"] + 9}], me["id"])[1] == []
+    stale = {**me, "removed": me["added"] - 5, "updated": me["added"] - 5, "by": server["id"]}
+    assert store.merge_members(roster, [stale], me["id"])[1] == []
+    out = {**me, "removed": me["added"] + 5, "updated": me["added"] + 5, "by": server["id"]}
+    roster, changed = store.merge_members(roster, [out], me["id"])
+    assert changed == [me["id"]] and roster[me["id"]]["removed"] and roster[me["id"]]["name"] == "Desktop"
+
+
+def test_a_group_has_a_limit_and_a_pair_of_members_their_own_secret():
+    me = member("Desktop")
+    many = [member(f"PC {i}") for i in range(store.MAX_MEMBERS + 5)]
+    roster, _ = store.merge_members({me["id"]: me}, many, me["id"])
+    assert len(store.live(roster)) == store.MAX_MEMBERS
+    key = os.urandom(32)
+    a, b, c = (os.urandom(16).hex() for _ in range(3))
+    assert store.pair_key(key, a, b) == store.pair_key(key, b, a) != store.pair_key(key, a, c)
 
 
 # ---------------------------------------------------------------- the apps, on two computers
@@ -344,11 +418,11 @@ def test_one_change_edited_on_both_computers_is_kept_here_and_theirs_put_aside(t
         assert library.plan(here, theirs, base) == "merge"
         b, out = library.combine(b, got, base, "f" * 32, "Desktop")
         assert out["conflicts"] == ["zoom"] and "laptop's way" in apps.read_file(b["id"], "changes/zoom.patch")
-        assert "desktop's way" in apps.read_file(b["id"], "sync/zoom.patch")
-        assert [c["id"] for c in b["synced"]["conflicts"]] == ["zoom"]
+        assert "desktop's way" in apps.read_file(b["id"], "sync/zoom/ffffffff.patch")
+        assert [(c["id"], c["peer"]) for c in b["synced"]["conflicts"]] == [("zoom", "f" * 32)]
         # the user keeps this one: a revision after both, which the desktop then takes as the newer
         b = library.resolve(b["id"], "zoom", "mine")
-        assert b["synced"]["conflicts"] == [] and not (apps.dir_of(b["id"]) / "sync/zoom.patch").exists()
+        assert b["synced"]["conflicts"] == [] and not (apps.dir_of(b["id"]) / "sync").exists()
         _, here = mine()
     with computer(tmp_path / "A"):
         a, there = mine()
@@ -370,9 +444,58 @@ def test_taking_theirs_in_a_conflict_makes_both_computers_the_same_again(tmp_pat
     theirs, got = pull(tmp_path / "A")
     with computer(tmp_path / "B"):
         b, _ = library.combine(mine()[0], got, base, "f" * 32, "Desktop")
-        b = library.resolve(b["id"], "zoom", "theirs")
+        with pytest.raises(share.ShareError, match="no such choice"):
+            library.resolve(b["id"], "zoom", "e" * 32)          # not a computer whose version is here
+        b = library.resolve(b["id"], "zoom", "f" * 32)
         assert "+desktop" in apps.read_file(b["id"], "changes/zoom.patch") and b["synced"]["built"] is False
-        assert mine()[1]["digest"] == theirs["digest"]
+    # the choice is a revision after both (a third computer that had the laptop's takes it too): the
+    # desktop takes it as the newer, and the two are the same again
+    _, back = pull(tmp_path / "B")
+    with computer(tmp_path / "A"):
+        a, out = library.combine(mine()[0], back, base, "e" * 32, "Laptop")
+        assert out["took"] == ["zoom"] and "+desktop" in apps.read_file(a["id"], "changes/zoom.patch")
+        here = mine()[1]["digest"]
+    with computer(tmp_path / "B"):
+        assert mine()[1]["digest"] == here
+
+
+def test_a_change_edited_on_three_computers_keeps_each_others_version_to_choose_from(tmp_path):
+    desktop, laptop, server = tmp_path / "A", tmp_path / "B", tmp_path / "C"
+    with computer(desktop):
+        make_app()
+    _, got = pull(desktop)
+    for there in (laptop, server):
+        with computer(there):
+            library.create(got, "a" * 32, "Desktop")
+    with computer(desktop):
+        _, base = mine()
+        edit(mine()[0], "zoom", "+zoom, the desktop's way")
+    for there, way in ((laptop, "laptop's"), (server, "server's")):
+        with computer(there):
+            edit(mine()[0], "zoom", f"+zoom, the {way} way")
+    _, from_laptop = pull(laptop)
+    _, from_server = pull(server)
+    with computer(desktop):
+        a, out = library.combine(mine()[0], from_laptop, base, "b" * 32, "Laptop")
+        a, out = library.combine(a, from_server, base, "c" * 32, "Server")
+        assert [c["from"] for c in a["synced"]["conflicts"]] == ["Laptop", "Server"]
+        x = library.versions(a["id"], "zoom")
+        assert "desktop's way" in x["mine"]["text"] and x["mine"]["notes"].startswith("# A zoom box")
+        assert [(t["from"], "laptop's way" in t["text"], "server's way" in t["text"]) for t in x["theirs"]] == [
+            ("Laptop", True, False), ("Server", False, True)]
+        # the laptop's version pulled again, the same: still one choice for each computer
+        a, _ = library.combine(a, from_laptop, base, "b" * 32, "Laptop")
+        assert len(a["synced"]["conflicts"]) == 2
+        a = library.resolve(a["id"], "zoom", "c" * 32)
+        assert a["synced"]["conflicts"] == [] and "server's way" in apps.read_file(a["id"], "changes/zoom.patch")
+        assert not (apps.dir_of(a["id"]) / "sync").exists()
+    # the choice is after every version: each computer takes it, whichever it had
+    _, chosen = pull(desktop)
+    for there in (laptop, server):
+        with computer(there):
+            b, out = library.combine(mine()[0], chosen, base, "a" * 32, "Desktop")
+            assert out["took"] == ["zoom"] and not b["synced"].get("conflicts")
+            assert "server's way" in apps.read_file(b["id"], "changes/zoom.patch")
 
 
 def test_a_change_removed_on_one_computer_goes_unless_the_other_edited_it(tmp_path):
@@ -463,12 +586,14 @@ async def test_the_apps_own_tor_is_started_logged_into_and_stopped_with_it(tmp_p
     sid = await t.add_onion(key, 7301, run / "tor" / "sync.sock", [client.public])
     assert sid == key.address and await t.wait_published(sid, 5)
     await t.allow_client(key.address, client)
+    await t.forget_lookups()
     proc = t._proc
     await t.stop()
     assert proc.returncode is not None and not t.running          # gone when the app let go of it
     sent = (tmp_path / "commands").read_text().splitlines()
     assert [line.split()[0] for line in sent[:5]] == ["PROTOCOLINFO", "AUTHCHALLENGE", "AUTHENTICATE", "TAKEOWNERSHIP", "SETEVENTS"]
     assert f"ClientAuthV3={client.public}" in next(line for line in sent if line.startswith("ADD_ONION"))
+    assert "SIGNAL NEWNYM" in sent
     assert oct(os.stat(t.paths.torrc).st_mode & 0o777) == "0o600"
 
 

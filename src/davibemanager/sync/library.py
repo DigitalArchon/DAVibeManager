@@ -113,10 +113,18 @@ def decide(mine: dict | None, theirs: dict | None, base: str | None) -> str:
     return "drop"
 
 
-def merged_rev(mine: dict, theirs: dict) -> dict:
-    """A revision after both (the user's choice in a conflict): its history holds each side's."""
-    history = list(dict.fromkeys([*mine.get("history", []), mine["id"], *theirs.get("history", []), theirs["id"]]))
-    return {"id": secrets.token_hex(6), "history": history[-HISTORY:]}
+def merged_rev(mine: dict, *others: dict) -> dict:
+    """A revision after all of them (the user's choice in a conflict): its history holds every one's,
+    so each computer takes it as the newer."""
+    history = [*mine.get("history", []), mine["id"]]
+    for o in others:
+        history += [*o.get("history", []), o["id"]]
+    return {"id": secrets.token_hex(6), "history": list(dict.fromkeys(history))[-HISTORY:]}
+
+
+def _alt_name(item: str, peer: str, kind: str) -> str:
+    """Where another computer's version of a change (kind "patch" or "md") or of the build script is kept."""
+    return f"sync/build/{peer[:8]}.sh" if item == "build" else f"sync/{item}/{peer[:8]}.{kind}"
 
 
 def _clash(name: str, share_id: str) -> bool:
@@ -129,7 +137,15 @@ def _series(app_id: str, changes: list[dict]) -> None:
 
 
 def _remove_file(app_id: str, name: str) -> None:
-    (apps.dir_of(app_id) / name).unlink(missing_ok=True)
+    path = apps.dir_of(app_id) / name
+    path.unlink(missing_ok=True)
+    if name.startswith("sync/"):
+        for d in (path.parent, path.parent.parent):         # sync/<change>/ and sync/, once empty
+            if d.name != "changes" and d != apps.dir_of(app_id):
+                try:
+                    d.rmdir()
+                except OSError:
+                    break
 
 
 def create(got: dict, peer_id: str, peer_name: str) -> dict:
@@ -164,9 +180,25 @@ def combine(a: dict, got: dict, base: dict | None, peer_id: str, peer_name: str)
     theirs_c = {c["id"]: c for c in theirs["changes"]}
     order = [c["id"] for c in a["changes"]] + [c["id"] for c in theirs["changes"] if c["id"] not in mine_c]
     synced = dict(a.get("synced") or {})
-    conflicts = {c["id"]: c for c in synced.get("conflicts", [])}
+    before = [dict(c) for c in synced.get("conflicts", []) if isinstance(c, dict)]
+    conflicts = [dict(c) for c in before]
     now = time.time()
     out = {"took": [], "dropped": [], "conflicts": [], "build": "", "release": ""}
+
+    def drop_alternatives(item: str, peer: str | None) -> None:
+        """Another computer's version put aside, no longer a choice (`peer` None: anyone's)."""
+        for c in [c for c in conflicts if c["id"] == item and (peer is None or c["peer"] == peer)]:
+            conflicts.remove(c)
+            for kind in ("patch", "md"):
+                _remove_file(a["id"], _alt_name(item, c["peer"], kind))
+
+    def put_aside(item: str, title: str, rev: dict, text: str, notes: str = "") -> None:
+        drop_alternatives(item, peer_id)
+        apps.write_file(a["id"], _alt_name(item, peer_id, "patch"), text)
+        if notes.strip():
+            apps.write_file(a["id"], _alt_name(item, peer_id, "md"), notes)
+        conflicts.append({"id": item, "peer": peer_id, "from": peer_name, "title": title, "rev": rev, "at": now})
+
     changes = []
     for cid in order:
         m, t = mine_c.get(cid), theirs_c.get(cid)
@@ -179,24 +211,20 @@ def combine(a: dict, got: dict, base: dict | None, peer_id: str, peer_name: str)
                 _remove_file(a["id"], f"changes/{cid}.md")
             changes.append({**(m or {"added": now}), "id": cid, "title": t["title"], "rev": t["rev"], "patch_ids": []})
             out["took"].append(cid)
+            drop_alternatives(cid, peer_id)
         elif how == "drop":
             if m:
                 _remove_file(a["id"], f"changes/{cid}.patch")
                 _remove_file(a["id"], f"changes/{cid}.md")
                 out["dropped"].append(cid)
+            drop_alternatives(cid, None)            # no change left to choose a version of
         elif how == "conflict":
             changes.append(m)
-            apps.write_file(a["id"], f"sync/{cid}.patch", files[f"changes/{cid}.patch"])
-            if files.get(f"changes/{cid}.md", "").strip():
-                apps.write_file(a["id"], f"sync/{cid}.md", files[f"changes/{cid}.md"])
-            conflicts[cid] = {"id": cid, "title": t["title"], "rev": t["rev"], "from": peer_name, "peer": peer_id, "at": now}
+            put_aside(cid, t["title"], t["rev"], files[f"changes/{cid}.patch"], files.get(f"changes/{cid}.md", ""))
             out["conflicts"].append(cid)
         else:
             changes.append(m)
-        if how != "conflict" and cid in conflicts:
-            conflicts.pop(cid)              # no longer two versions (the other computer took this one's, or one after)
-            _remove_file(a["id"], f"sync/{cid}.patch")
-            _remove_file(a["id"], f"sync/{cid}.md")
+            drop_alternatives(cid, peer_id)         # that computer has this one's now, or one after it
     if len(changes) > apps.MAX_CHANGES:
         raise share.ShareError(f"Together they'd have more than {apps.MAX_CHANGES} changes.")
     sh = dict(a["share"])
@@ -204,16 +232,12 @@ def combine(a: dict, got: dict, base: dict | None, peer_id: str, peer_name: str)
     if how == "theirs":
         apps.write_file(a["id"], "build.sh", files["build.sh"])
         sh["build"], out["build"] = theirs["share"]["build"], "theirs"
-        conflicts.pop("build", None)
-        _remove_file(a["id"], "sync/build.sh")
+        drop_alternatives("build", peer_id)
     elif how == "conflict":
-        apps.write_file(a["id"], "sync/build.sh", files["build.sh"])
-        conflicts["build"] = {"id": "build", "title": "The build script", "rev": theirs["share"]["build"],
-                              "from": peer_name, "peer": peer_id, "at": now}
+        put_aside("build", "The build script", theirs["share"]["build"], files["build.sh"])
         out["build"] = "conflict"
-    elif "build" in conflicts and sh["build"]["id"] == theirs["share"]["build"]["id"]:
-        conflicts.pop("build")
-        _remove_file(a["id"], "sync/build.sh")
+    else:
+        drop_alternatives("build", peer_id)
     name, release = a["name"], a.get("base_ref", "")
     if base and name == base.get("name") and theirs["name"] != name and not _clash(theirs["name"], sh["id"]):
         name = theirs["name"]
@@ -225,10 +249,10 @@ def combine(a: dict, got: dict, base: dict | None, peer_id: str, peer_name: str)
     sh["works_on"] = [*sh.get("works_on", []), *(w for w in theirs["share"]["works_on"]
                                                   if (w["system"], w["sig"]) not in known_works)][-50:]
     rebuilt = bool(out["took"] or out["dropped"] or out["build"] == "theirs" or out["release"])
-    if rebuilt or out["conflicts"] or out["build"] == "conflict" or conflicts != {c["id"]: c for c in synced.get("conflicts", [])}:
+    if rebuilt or conflicts != before:
         synced = {**synced, "from": peer_name, "peer": peer_id, "at": now,
                   "changes": sorted(set(synced.get("changes", [])) | set(out["took"])),
-                  "built": False if rebuilt else synced.get("built", True), "conflicts": list(conflicts.values())}
+                  "built": False if rebuilt else synced.get("built", True), "conflicts": conflicts}
     packages = sorted(set(a.get("packages") or []) | set(theirs["packages"]))
     a = apps.save({**a, "name": name, "base_ref": release, "changes": changes, "share": sh, "packages": packages,
                    **({"synced": synced} if synced else {})})
@@ -236,41 +260,62 @@ def combine(a: dict, got: dict, base: dict | None, peer_id: str, peer_name: str)
     return a, out
 
 
-def resolve(app_id: str, item: str, keep: str) -> dict:
-    """The user's choice in a conflict: `item` a change's id or "build"; `keep` "mine" or "theirs"."""
-    a = share.lineage(apps.load(app_id) or {})
-    synced = dict(a.get("synced") or {})
-    conflicts = {c["id"]: c for c in synced.get("conflicts", [])}
-    c = conflicts.pop(item, None)
-    if c is None or keep not in ("mine", "theirs"):
+def versions(app_id: str, item: str) -> dict:
+    """The versions of a change (or the build script) put aside: this computer's and each other one's."""
+    a = apps.load(apps.check_id(app_id)) or {}
+    alts = [c for c in (a.get("synced") or {}).get("conflicts", []) if c.get("id") == item]
+    if not alts:
         raise share.ShareError("There's no such choice to make any more.")
-    rebuild = False
+    if item == "build":
+        mine = {"text": apps.read_file(app_id, "build.sh"), "notes": ""}
+    else:
+        mine = {"text": share.for_review(apps.read_file(app_id, f"changes/{item}.patch"))[0],
+                "notes": apps.read_file(app_id, f"changes/{item}.md")}
+    theirs = []
+    for c in alts:
+        text = apps.read_file(app_id, _alt_name(item, c["peer"], "patch"))
+        notes = "" if item == "build" else apps.read_file(app_id, _alt_name(item, c["peer"], "md"))
+        theirs.append({"peer": c["peer"], "from": c["from"], "notes": notes,
+                       "text": text if item == "build" else share.for_review(text)[0]})
+    return {"title": alts[0]["title"], "mine": mine, "theirs": theirs}
+
+
+def resolve(app_id: str, item: str, keep: str) -> dict:
+    """The user's choice in a conflict: `item` a change's id or "build"; `keep` "mine", or the id of the
+    computer whose version to take. The version kept gets a revision after every one put aside."""
+    a = share.lineage(apps.load(apps.check_id(app_id)) or {})
+    synced = dict(a.get("synced") or {})
+    conflicts = [c for c in synced.get("conflicts", []) if isinstance(c, dict)]
+    alts = [c for c in conflicts if c.get("id") == item]
+    chosen = None if keep == "mine" else next((c for c in alts if c["peer"] == keep), None)
+    if not alts or (keep != "mine" and chosen is None):
+        raise share.ShareError("There's no such choice to make any more.")
+    others = [c["rev"] for c in alts]
     if item == "build":
         sh = dict(a["share"])
-        if keep == "theirs":
-            apps.write_file(app_id, "build.sh", apps.read_file(app_id, "sync/build.sh"))
-            sh["build"], rebuild = c["rev"], True
-        else:
-            sh["build"] = merged_rev(sh["build"], c["rev"])
-        _remove_file(app_id, "sync/build.sh")
+        if chosen:
+            apps.write_file(app_id, "build.sh", apps.read_file(app_id, _alt_name(item, chosen["peer"], "patch")))
+        sh["build"] = merged_rev(sh["build"], *others)
         a = {**a, "share": sh}
     else:
         changes = []
         for ch in a["changes"]:
             if ch["id"] == item:
-                if keep == "theirs":
-                    apps.write_file(app_id, f"changes/{item}.patch", apps.read_file(app_id, f"sync/{item}.patch"))
-                    notes = apps.read_file(app_id, f"sync/{item}.md")
+                if chosen:
+                    apps.write_file(app_id, f"changes/{item}.patch", apps.read_file(app_id, _alt_name(item, chosen["peer"], "patch")))
+                    notes = apps.read_file(app_id, _alt_name(item, chosen["peer"], "md"))
                     if notes.strip():
                         apps.write_file(app_id, f"changes/{item}.md", notes)
-                    ch, rebuild = {**ch, "title": c["title"], "rev": c["rev"], "patch_ids": []}, True
-                else:
-                    ch = {**ch, "rev": merged_rev(ch["rev"], c["rev"])}
+                    else:
+                        _remove_file(app_id, f"changes/{item}.md")      # theirs has none
+                    ch = {**ch, "title": chosen["title"], "patch_ids": []}
+                ch = {**ch, "rev": merged_rev(ch["rev"], *others)}
             changes.append(ch)
-        _remove_file(app_id, f"sync/{item}.patch")
-        _remove_file(app_id, f"sync/{item}.md")
         a = {**a, "changes": changes}
         _series(app_id, changes)
-    synced = {**synced, "conflicts": list(conflicts.values()),
-              **({"built": False, "changes": sorted(set(synced.get("changes", [])) | {item})} if rebuild else {})}
+    for c in alts:
+        for kind in ("patch", "md"):
+            _remove_file(app_id, _alt_name(item, c["peer"], kind))
+    synced = {**synced, "conflicts": [c for c in conflicts if c.get("id") != item],
+              **({"built": False, "changes": sorted(set(synced.get("changes", [])) | ({item} - {"build"}))} if chosen else {})}
     return apps.save({**a, "synced": synced})

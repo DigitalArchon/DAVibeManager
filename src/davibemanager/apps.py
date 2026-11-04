@@ -141,8 +141,8 @@ def find(apps: list[dict], *, upstream: str = "", kind: str = "", name: str = ""
 
 def write_file(app_id: str, name: str, text: str) -> Path:
     # sync/: a change (or the build script) as another of the user's computers had it, when both changed it
-    if not re.fullmatch(r"(series\.patch|build\.sh|(changes|sync)/[a-z0-9-]{1,48}\.(md|patch)|sync/build\.sh|"
-                        r"changelog-[\w.+-]{1,80}\.json)", name):
+    if not re.fullmatch(r"(series\.patch|build\.sh|changes/[a-z0-9-]{1,48}\.(md|patch)|sync/[a-z0-9-]{1,48}/[0-9a-f]{8}\."
+                        r"(md|patch)|sync/build/[0-9a-f]{8}\.sh|changelog-[\w.+-]{1,80}\.json)", name):
         raise ValueError(f"not an app file: {name}")
     p = dir_of(app_id) / name
     p.parent.mkdir(parents=True, exist_ok=True, mode=0o700)

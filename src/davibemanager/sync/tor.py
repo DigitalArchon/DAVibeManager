@@ -479,6 +479,12 @@ class Tor:
     async def forget_client(self, address: str) -> None:
         await self.command(f"ONION_CLIENT_AUTH_REMOVE {address}", check=False)
 
+    async def forget_lookups(self) -> None:
+        """Forget what tor found out of the onions it looked for: one it couldn't find (it wasn't up yet)
+        is looked for again at once, rather than a quarter of an hour later, when tor asks the same
+        directories again. Tor forgets the client keys it was given with it (allow_client them again)."""
+        await self.command("SIGNAL NEWNYM")
+
     @property
     def socks(self) -> Path:
         return self.paths.socks

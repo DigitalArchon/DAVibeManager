@@ -1,19 +1,24 @@
-"""Pairing two computers: a code shown on one and typed on the other, then the same six digits on both.
+"""Adding a computer to the user's group of them: a code shown on one, typed on the other, whenever.
 
-The code is 12 digits: 11 random ones and a check digit (Damm's: any one digit mistyped, or two
-next to each other swapped, is told at once). From it both computers work out, with scrypt, a
-secret only they know, and from that an onion service's key. The first publishes that onion
-while it waits (ten minutes at most); the second, knowing the code, knows its address. Nobody
-else can find it: the address is the key, and the key is the code's. A directory that stores
-its descriptor could try codes against it, but each try costs a scrypt, so that nothing like the
-codes' 100 billion could be tried before the code has stopped working.
+The code is 16 digits: 15 random ones and a check digit (Damm's: any one digit mistyped, or two
+next to each other swapped, is told at once). It works until it's used once, or the user cancels
+it, however long that takes: the computer showing it can be left on at home, and the other one
+added an hour or a week later, from anywhere. From the code both computers work out, with scrypt,
+a secret only they know, and from that an onion service's key. The first publishes that onion
+while it waits; the second, knowing the code, knows its address. Nobody else can find it: the
+address is the key, and the key is the code's. A directory that stores its descriptor could try
+codes against it, but each try costs a scrypt (a tenth of a second and 32 MB), and there are a
+million billion codes: years of a big cluster's time, for one code.
 
-Over that connection (Tor's, end to end) each sends what the other needs to reach it from then on:
-its id, its name, its own onion address and its client key. Then both show six digits worked out
-from what both sent, and from a random part of each. The second computer committed to its part
-before it saw the first's, so someone in the middle (who would have needed the code, say read off
-the screen) couldn't choose theirs to make the two screens' digits match. The user checks they
-do, on both computers; only then does either keep the other.
+Over that connection (Tor's, end to end) the second shows it has the code (a proof only the code
+gives), and each sends what the other needs: the second its id, name, onion address and client
+key; the first the group's key and its members, of which the second is one from then on. Nobody
+has to be at the first computer: the code is the user's say-so, so keep it like a key, and a
+computer the user doesn't recognise in the list can be removed.
+
+Both also show six digits, worked out from what both sent and a random part of each. The second
+committed to its part before it saw the first's, so someone in the middle (who would have needed
+the code) couldn't make the two screens' digits match: a user who can see both can check them.
 
 Pure: the messages, checked, and what's worked out from them. service.py sends them.
 """
@@ -31,9 +36,8 @@ from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 
 from . import onion
 
-PROTO = 1
-DIGITS = 12
-WAIT = 600                          # seconds a code works for
+PROTO = 2
+DIGITS = 16
 SALT = b"DA Vibe Manager sync pairing 1"
 SCRYPT = {"n": 2 ** 15, "r": 8, "p": 1, "maxmem": 64 << 20}      # 32 MB and a tenth of a second, per try
 VIRTUAL_PORT = 7300                 # the pairing onion's port (only the app's own peers ever ask it)
@@ -125,10 +129,10 @@ def digits(secret: bytes, first: dict, second: dict, first_nonce: bytes, second_
     return f"{n // 1000:03d} {n % 1000:03d}"
 
 
-def pair_secret(secret: bytes, first: dict, second: dict, first_nonce: bytes, second_nonce: bytes) -> bytes:
-    """The secret the two keep for each other, with which each proves which it is, later."""
-    return hmac.new(_derive(secret, b"pair secret"), canonical([first["id"], second["id"]]) + first_nonce + second_nonce,
-                    hashlib.sha256).digest()
+def proof(secret: bytes, first: dict, second: dict, first_nonce: bytes, second_nonce: bytes) -> str:
+    """The second computer's proof that it has the code (not only the onion's address)."""
+    return hmac.new(_derive(secret, b"joining"), canonical([first, second]) + first_nonce + second_nonce,
+                    hashlib.sha256).hexdigest()
 
 
 def nonce_of(text) -> bytes:
@@ -139,10 +143,11 @@ def nonce_of(text) -> bytes:
 
 
 class Joining:
-    """The second computer's side: it has typed the code."""
+    """The second computer's side: it has typed the code. One for each try (its random part is new
+    each time); `secret` the code's, worked out once."""
 
-    def __init__(self, code: str, me: dict):
-        self.secret = code_secret(code)
+    def __init__(self, code: str, me: dict, secret: bytes | None = None):
+        self.secret = secret or code_secret(code)
         self.me, self.nonce = me, secrets.token_bytes(32)
         self.them: dict | None = None
         self.their_nonce = b""
@@ -157,22 +162,20 @@ class Joining:
         self.them, self.their_nonce = checked_info(msg.get("info")), nonce_of(msg.get("nonce"))
         if self.them["id"] == self.me["id"]:
             raise PairingError("That's this computer's own code.")
-        return {"t": "reveal", "nonce": self.nonce.hex()}
+        return {"t": "reveal", "nonce": self.nonce.hex(),
+                "proof": proof(self.secret, self.them, self.me, self.their_nonce, self.nonce)}
 
     @property
     def digits(self) -> str:
         return digits(self.secret, self.them, self.me, self.their_nonce, self.nonce)
 
-    @property
-    def secret_for_them(self) -> bytes:
-        return pair_secret(self.secret, self.them, self.me, self.their_nonce, self.nonce)
-
 
 class Waiting:
-    """The first computer's side: it showed the code, and waits on the code's onion."""
+    """The first computer's side: it showed the code, and waits on the code's onion. One for each
+    computer that tries it; `secret` the code's, worked out once."""
 
-    def __init__(self, code: str, me: dict):
-        self.code, self.secret = code, code_secret(code)
+    def __init__(self, code: str, me: dict, secret: bytes | None = None):
+        self.code, self.secret = code, secret or code_secret(code)
         self.me, self.nonce = me, secrets.token_bytes(32)
         self.them: dict | None = None
         self.their_commit = ""
@@ -194,12 +197,10 @@ class Waiting:
         nonce = nonce_of(msg.get("nonce"))
         if not hmac.compare_digest(commitment(nonce, self.them), self.their_commit):
             raise PairingError("The other computer's answer didn't match what it first sent: nothing was paired.")
+        if not hmac.compare_digest(str(msg.get("proof") or ""), proof(self.secret, self.me, self.them, self.nonce, nonce)):
+            raise PairingError("The other computer couldn't show it has the code: nothing was paired.")
         self.their_nonce = nonce
 
     @property
     def digits(self) -> str:
         return digits(self.secret, self.me, self.them, self.nonce, self.their_nonce)
-
-    @property
-    def secret_for_them(self) -> bytes:
-        return pair_secret(self.secret, self.me, self.them, self.nonce, self.their_nonce)

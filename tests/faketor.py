@@ -68,7 +68,7 @@ async def main():
             elif word == "TAKEOWNERSHIP":
                 owned = True
                 say("250 OK")
-            elif word in ("SETEVENTS", "DEL_ONION", "ONION_CLIENT_AUTH_ADD", "ONION_CLIENT_AUTH_REMOVE"):
+            elif word in ("SETEVENTS", "DEL_ONION", "ONION_CLIENT_AUTH_ADD", "ONION_CLIENT_AUTH_REMOVE", "SIGNAL"):
                 say("250 OK")
             elif cmd == "GETINFO status/bootstrap-phase":
                 say('250-status/bootstrap-phase=NOTICE BOOTSTRAP PROGRESS=50 TAG=loading_descriptors SUMMARY="Loading relay descriptors"')
