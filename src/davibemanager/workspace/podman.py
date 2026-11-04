@@ -237,11 +237,15 @@ async def build_image(on_line: Callable[[str], None] | None = None, *, source: s
     with tempfile.TemporaryDirectory(prefix="dvm-image-") as ctx:
         for f in ("Containerfile", "dvm-entry"):
             shutil.copy2(IMAGE_DIR / f, Path(ctx) / f)
+        # a copy of the host's CA bundle, mounted: with SELinux, a mount is relabelled for the build (:Z),
+        # which rootless Podman may do to a file of this user's, never to the system's own (lsetxattr:
+        # operation not permitted, so no step could run, on Fedora)
+        shutil.copyfile(_ca_bundle(), Path(ctx) / "hostca.crt")
         try:
             Path(ctx, "claude").hardlink_to(cli)
         except OSError:
             await asyncio.to_thread(shutil.copy2, cli, Path(ctx) / "claude")
-        argv = [podman(), "build", "-t", tag, "-v", f"{_ca_bundle()}:/hostca.crt:ro,Z",
+        argv = [podman(), "build", "-t", tag, "-v", f"{Path(ctx) / 'hostca.crt'}:/hostca.crt:ro,Z",
                 "-v", f"{cache}:/var/cache/apt/archives:Z", "--label", f"{LABEL}=image", "--label", f"{SOURCE_LABEL}={source}",
                 "--build-arg", f"APT_URI={source}"]
         for key in ("BASE_IMAGE", "APPIMAGETOOL_URL", "APPIMAGETOOL_SHA256", "RUNTIME_URL",
@@ -469,12 +473,13 @@ class BuildWatch:
 
 def _details(out: str, lines: int = 25) -> str:
     """The end of a build's output, without the RUN command podman repeats when a step fails (it's
-    long, and says nothing of why)."""
+    long, and says nothing of why): what it says of why is kept."""
     keep = []
     for line in out.splitlines():
         if line.startswith("Error: building at STEP"):
-            m = re.search(r"(while running runtime: .*)$", line)
-            line = "Error: the build step failed" + (f" ({m.group(1)})" if m else "")
+            # `building at STEP "<the step>": <why>`: what it says after its last quote is why
+            why = line.rsplit('": ', 1)[1].strip() if '": ' in line else ""
+            line = "Error: the build step failed" + (f" ({why[-300:]})" if why else "")
         if line.strip():
             keep.append(line)
     return "\n".join(keep[-lines:])[-3000:]

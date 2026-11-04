@@ -322,6 +322,48 @@ def test_other_failures_say_what_they_are(line, kind, said):
     assert e.kind == kind and said in e.summary
 
 
+def test_why_a_build_step_couldnt_run_is_kept_without_the_step():
+    """Podman says why after the step it repeats: a mount it couldn't relabel, say, was cut to "the
+    build step failed", which said nothing (Fedora's SELinux, the sandbox never built there)."""
+    e = podman.build_failure('STEP 9/21: RUN rm -f /etc/apt/sources.list && printf "%s"\nError: building at STEP '
+                             '"RUN rm -f /etc/apt/sources.list && printf \'%s\'": resolving mountpoints for container '
+                             '"ac085ae9": lsetxattr(label=system_u:object_r:container_file_t:s0:c244,c369) '
+                             '/etc/ssl/certs/ca-certificates.crt: operation not permitted\n')
+    assert "operation not permitted" in e.details and "lsetxattr" in e.details
+    assert "Error: building at STEP" not in e.details
+
+
+async def test_the_hosts_ca_bundle_is_mounted_from_a_copy_of_the_builds_own(monkeypatch, tmp_path):
+    """With SELinux, Podman relabels what's mounted for a build (:Z), which it can do to a file of this
+    user's but never to the system's own bundle: every step failed (lsetxattr: operation not permitted)."""
+    async def missing(tag):
+        return False
+    monkeypatch.setattr(podman, "image_exists", missing)
+    cli = tmp_path / "claude"
+    cli.write_bytes(b"cli")
+    monkeypatch.setattr(podman, "bundled_cli", lambda: cli)
+    monkeypatch.setattr(pins, "CLAUDE_SHA256", __import__("hashlib").sha256(b"cli").hexdigest())
+    system = tmp_path / "etc" / "tls-ca-bundle.pem"
+    system.parent.mkdir()
+    system.write_text("-----BEGIN CERTIFICATE-----\nthe host's\n")
+    link = tmp_path / "etc" / "ca-certificates.crt"
+    link.symlink_to(system)
+    monkeypatch.setattr(podman, "_ca_bundle", lambda: str(link))
+    monkeypatch.setenv("TMPDIR", str(tmp_path))
+    mounted = {}
+
+    async def run(argv, **kw):
+        if argv[1:2] == ["build"]:
+            spec = next(a for a in argv if a.endswith(":/hostca.crt:ro,Z"))
+            path = Path(spec.rsplit(":/hostca.crt", 1)[0])
+            mounted.update(path=path, text=path.read_text(), link=path.is_symlink())
+        return 0, ""
+    monkeypatch.setattr(podman, "run", run)
+    await podman.build_image()
+    assert mounted["text"] == system.read_text() and not mounted["link"]
+    assert not str(mounted["path"]).startswith(str(system.parent)) and mounted["path"].name == "hostca.crt"
+
+
 def test_the_build_is_followed_as_it_goes_downloads_and_trouble_alike():
     w = podman.BuildWatch()
     for line in ("STEP 3/16: RUN ...", "0 upgraded, 210 newly installed, 0 to remove and 0 not upgraded.",
