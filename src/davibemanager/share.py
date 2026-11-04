@@ -220,14 +220,15 @@ def exportable(a: dict) -> str:
     return ""
 
 
-def pack(a: dict) -> bytes:
-    """The .vibe file of an app: its changes in order, as the app keeps them."""
+def pack(a: dict, exported: int | None = None) -> bytes:
+    """The .vibe file of an app: its changes in order, as the app keeps them. `exported`: the time
+    it says it was made (now); given one, the same app is always the same bytes (sync's digest)."""
     why = exportable(a)
     if why:
         raise ShareError(why)
     a = lineage(a)
     changes = [{"id": c["id"], "title": c["title"], "rev": c["rev"]} for c in a["changes"]]
-    manifest = {"format": FORMAT, "kind": "dvm-app", "exported": int(time.time()),
+    manifest = {"format": FORMAT, "kind": "dvm-app", "exported": int(time.time()) if exported is None else exported,
                 "app": {"name": a["name"], "upstream": a["upstream"], "base_ref": a["base_ref"],
                         "packages": a.get("packages") or [], "changes": changes,
                         "share": {"id": a["share"]["id"], "build": a["share"]["build"], "sig": signature(a),
@@ -274,13 +275,13 @@ def _text(z: zipfile.ZipFile, info: zipfile.ZipInfo) -> str:
         raise ShareError(f"{info.filename} in it isn't text.") from None
 
 
-def read(path: Path) -> dict:
-    """A .vibe file, read strictly: {"app": {name, upstream, base_ref, packages, changes}, "files": {name: text},
-    "exported"}. Raises ShareError saying what's wrong with it."""
-    if path.stat().st_size > MAX_FILE:
+def read(path: Path | bytes) -> dict:
+    """A .vibe file (or its bytes), read strictly: {"app": {name, upstream, base_ref, packages, changes},
+    "files": {name: text}, "exported"}. Raises ShareError saying what's wrong with it."""
+    if (len(path) if isinstance(path, bytes) else path.stat().st_size) > MAX_FILE:
         raise ShareError("That file is too big to be a shared app.")
     try:
-        z = zipfile.ZipFile(path)
+        z = zipfile.ZipFile(io.BytesIO(path) if isinstance(path, bytes) else path)
     except (zipfile.BadZipFile, OSError, ValueError):     # ValueError: a name that isn't one (bad UTF-8)
         raise ShareError("That isn't a shared app (a .vibe file).") from None
     with z:

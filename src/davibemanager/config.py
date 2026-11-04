@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import tomllib
+from contextvars import ContextVar
 from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 from urllib.parse import urlparse
@@ -30,12 +31,21 @@ THEMES = ("dark", "light", "system")
 WINDOW_BACKGROUND = {"dark": "#111418", "light": "#f4f6f9", "system": "#111418"}
 
 
+# Tests only: a computer of its own, its config and data folders, for the task that sets it and every
+# task it starts (sync's tests run two computers in one process). Never set otherwise.
+ROOTS: ContextVar[tuple[Path, Path] | None] = ContextVar("dvm_roots", default=None)
+
+
 def config_dir() -> Path:
+    if (roots := ROOTS.get()) is not None:
+        return roots[0]
     base = os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config")
     return Path(base) / APP_ID
 
 
 def data_dir() -> Path:
+    if (roots := ROOTS.get()) is not None:
+        return roots[1]
     base = os.environ.get("XDG_DATA_HOME") or os.path.expanduser("~/.local/share")
     return Path(base) / APP_ID
 
