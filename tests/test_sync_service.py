@@ -224,3 +224,50 @@ async def test_the_window_pairs_through_the_api_and_hears_why_when_it_cant(tmp_p
             assert (await c.get("/api/state")).json()["sync"]["pairing"]["step"] == "cancelled"
             r = await c.post("/api/sync/now")
             assert r.status_code == 400 and "isn't paired" in r.json()["error"]
+
+
+async def test_a_computer_not_found_at_first_is_tried_again_soon_not_minutes_later(tmp_path, monkeypatch):
+    """Right after pairing, each computer's onion takes a few minutes to be found on Tor: a pull that
+    missed it is tried again in seconds, then less often, rather than in five minutes."""
+    monkeypatch.setattr(service, "RETRY_FIRST", 0.05)
+    net = FakeNet()
+    desktop, laptop = Computer(tmp_path / "A", net, "Desktop"), Computer(tmp_path / "B", net, "Laptop")
+    await pair(desktop, laptop)
+    gone = {}
+    d_onion = desktop.run(store.identity).onion_key.address
+    gone[d_onion] = net.services.pop(d_onion)            # the desktop's onion can't be found, for a while
+    desktop.run(make_app)
+    laptop.run(laptop.sync.sync_now)
+    await laptop.until(lambda v: v["peers"][0]["error"], "a pull that missed it")
+    net.services.update(gone)                            # now it is
+    await laptop.until(lambda v: laptop.run(apps.list_all), "the app, pulled soon after", limit=3)
+    await desktop.wait(desktop.sync.stop())
+    await laptop.wait(laptop.sync.stop())
+
+
+def test_the_two_versions_of_a_change_both_edited_can_be_compared(tmp_path):
+    from test_sync import edit, mine, pull
+    desktop, laptop = tmp_path / "A", tmp_path / "B"
+    with config_roots(desktop):
+        make_app()
+    _, got = pull(desktop)
+    with config_roots(laptop):
+        library.create(got, "f" * 32, "Desktop")
+        _, base = mine()
+        edit(mine()[0], "zoom", "+zoom, the laptop's way")
+    with config_roots(desktop):
+        edit(mine()[0], "zoom", "+zoom, the desktop's way")
+    _, got = pull(desktop)
+    with config_roots(laptop):
+        b, _ = library.combine(mine()[0], got, base, "f" * 32, "Desktop")
+        sync = service.SyncService(SimpleNamespace(app_manager=SimpleNamespace(changed=lambda: None)), make_tor=lambda c: None)
+        x = sync.compare(b["id"], "zoom")
+        assert x["from"] == "Desktop" and "laptop's way" in x["mine"] and "desktop's way" in x["theirs"]
+        assert x["mine_notes"].startswith("# A zoom box")
+        with pytest.raises(service.SyncError, match="no such choice"):
+            sync.compare(b["id"], "nothing")
+
+
+def config_roots(root):
+    from test_sync import computer
+    return computer(root)

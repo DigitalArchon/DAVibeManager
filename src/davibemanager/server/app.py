@@ -545,6 +545,10 @@ def create_app(token: str, make_engine: Callable[[Callable[[dict], None]], Engin
         e.sync.keep_here(app_id)
         return {"ok": True}
 
+    @app.get("/api/sync/apps/{app_id}/compare")
+    async def sync_compare(app_id: str, item: str, e: Engine = Depends(auth)):
+        return e.sync.compare(app_id, item)
+
     @app.post("/api/sync/apps/{app_id}/resolve")
     async def sync_resolve(app_id: str, body: dict, e: Engine = Depends(auth)):
         """A change both computers edited: the user keeps this one's ("mine") or the other's ("theirs")."""

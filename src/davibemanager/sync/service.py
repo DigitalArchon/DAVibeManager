@@ -34,6 +34,9 @@ if TYPE_CHECKING:
 SYNC_PORT = 7301                    # the virtual port of each computer's onion service
 PULL_EVERY = 300                    # seconds between pulls from each computer
 RETRY = 60                          # after tor itself failed
+# after a computer couldn't be reached, tried again this soon, then twice as long each time up to
+# PULL_EVERY: right after pairing, each computer's onion takes a few minutes to be found on Tor
+RETRY_FIRST = 20
 ANNOUNCE_AFTER = 5                  # a local change is told to the others this long after the last one
 FIND_FOR = 180                      # seconds a joining computer looks for the pairing onion (it may be publishing)
 FIND_AGAIN = 5                      # and how long it waits between tries
@@ -83,6 +86,7 @@ class SyncService:
         self._status: dict[str, dict] = {}         # peer id -> {"syncing": bool, "online": bool}
         self._me: store.Identity | None = None
         self._published: set[str] = set()          # the computers this computer's onion lists now
+        self._retry = RETRY_FIRST
 
     # ---------------------------------------------------------------- for the window
 
@@ -192,10 +196,15 @@ class SyncService:
                 await asyncio.sleep(RETRY)
                 continue
             self._wake.clear()
+            missed = False
             for p in store.peers():
-                await self.pull(p.id)
+                missed = bool((await self.pull(p.id))["error"]) or missed
+            if missed:
+                wait, self._retry = self._retry, min(self._retry * 2, PULL_EVERY)
+            else:
+                wait, self._retry = PULL_EVERY, RETRY_FIRST
             try:
-                await asyncio.wait_for(self._wake.wait(), PULL_EVERY)
+                await asyncio.wait_for(self._wake.wait(), wait)
             except asyncio.TimeoutError:
                 pass
         await self._stop_tor_if_idle()
@@ -597,6 +606,22 @@ class SyncService:
     def resolve(self, app_id: str, item: str, keep: str) -> None:
         library.resolve(apps.check_id(app_id), str(item), str(keep))
         self.e.app_manager.changed()
+
+    def compare(self, app_id: str, item: str) -> dict:
+        """The two versions of a change (or the build script) both computers edited, for the user to choose."""
+        a = apps.load(apps.check_id(app_id)) or {}
+        c = next((c for c in (a.get("synced") or {}).get("conflicts", []) if c["id"] == item), None)
+        if c is None:
+            raise SyncError("There's no such choice to make any more.")
+        if item == "build":
+            mine, theirs = apps.read_file(app_id, "build.sh"), apps.read_file(app_id, "sync/build.sh")
+            notes = ("", "")
+        else:
+            mine = share.for_review(apps.read_file(app_id, f"changes/{item}.patch"))[0]
+            theirs = share.for_review(apps.read_file(app_id, f"sync/{item}.patch"))[0]
+            notes = (apps.read_file(app_id, f"changes/{item}.md"), apps.read_file(app_id, f"sync/{item}.md"))
+        return {"title": c["title"], "from": c["from"], "mine": mine, "theirs": theirs,
+                "mine_notes": notes[0], "theirs_notes": notes[1]}
 
     # ---------------------------------------------------------------- telling the others
 

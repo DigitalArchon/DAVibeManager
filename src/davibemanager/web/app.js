@@ -1125,6 +1125,7 @@ function syncedEl(a) {
     parts.push(h("div", { class: "update" },
       h("div", {}, h("b", {}, `${c.title}: changed on both computers.`), ` ${c.from} made its own version of it too. Which one should this app keep? The other is replaced on every computer.`),
       h("div", { class: "actions" },
+        h("button", { class: "small ghost", onclick: () => guarded(() => compareVersions(a, c)) }, "Compare them"),
         h("button", { class: "small", onclick: () => guarded(() => api("POST", `/api/sync/apps/${a.id}/resolve`, { item: c.id, keep: "mine" })) }, `Keep ${mineTitle}`),
         h("button", { class: "small", onclick: () => guarded(() => api("POST", `/api/sync/apps/${a.id}/resolve`, { item: c.id, keep: "theirs" })) }, `Take ${c.from}'s`))));
   }
@@ -1141,6 +1142,17 @@ function syncedEl(a) {
         h("button", { class: `small ${failed ? "ghost" : "primary"}`, onclick: () => guarded(() => appAct(a, "build")) }, failed ? "Try again" : "Build it"))));
   }
   return parts.length ? h("div", {}, parts) : null;
+}
+
+// a change both computers edited: each one's version, side by side
+async function compareVersions(a, c) {
+  const x = await api("GET", `/api/sync/apps/${a.id}/compare?item=${encodeURIComponent(c.id)}`);
+  const side = (label, notes, text) => h("div", { class: "compare-side" }, h("h3", {}, label),
+    notes ? h("div", { class: "md small", html: md(notes) }) : null,
+    h("pre", { class: "outview small" }, text || "(empty)"));
+  modal({ title: x.title, buttons: [{ label: "Close" }], body: h("div", {},
+    h("p", { class: "small muted" }, `This computer and ${x.from} each made their own version. Whichever you keep replaces the other on every computer.`),
+    h("div", { class: "compare" }, side("This computer's", x.mine_notes, x.mine), side(`${x.from}'s`, x.theirs_notes, x.theirs))) });
 }
 
 // what stopped the app's own build of it (AppManager.rebuild), in words
@@ -1969,7 +1981,9 @@ function syncSettings() {
     : p.error ? h("div", { class: "warnbox small" }, p.error) : null;
   const peers = (sy.peers || []).map((x) => h("div", { class: "row small" },
     h("b", {}, x.name),
-    h("span", { class: "muted" }, x.syncing ? "syncing…" : x.error ? `can't be reached just now: ${x.error}` : x.synced ? `synced ${fmtWhen(x.synced)}` : "not synced yet"),
+    h("span", { class: "muted" }, x.syncing ? "syncing…"
+      : x.error && !x.synced && Date.now() / 1000 - x.paired < 900 ? "getting ready: the first sync can take a few minutes on Tor"
+      : x.error ? `can't be reached just now: ${x.error}` : x.synced ? `synced ${fmtWhen(x.synced)}` : "not synced yet"),
     h("button", { class: "small ghost", onclick: () => guarded(async () => {
       if (!(await confirmModal(`Unpair ${x.name}?`, `Your apps stop syncing with ${x.name}. What each computer has stays on it. ${x.name} is told too, if it's on.`, "Unpair"))) return;
       await api("POST", `/api/sync/peers/${x.id}/unpair`); }) }, "Unpair")));
