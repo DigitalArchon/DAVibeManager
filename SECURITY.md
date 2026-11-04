@@ -28,8 +28,11 @@ Anything that breaks one of DA Vibe Manager's promises, for example:
   changes, or what **What changed?** shows differing from what was built;
 - an add-on installed somewhere that runs things by itself or holds secrets;
 - a crafted `.vibe` file or backup doing more than it should when opened;
+- sync: a computer that isn't one of your group reaching one of yours or reading what they send
+  each other, joining without a code you showed, staying in after it was removed, or an app
+  arriving by sync doing more than the same app shared as a file could;
 - bypassing the local server's token, or a model reply that makes the window load remote
   resources or run script.
 
-Weaknesses in upstream projects (Podman, Claude Code, NanoGPT, WebKitGTK and so on) should go to
+Weaknesses in upstream projects (Podman, Claude Code, NanoGPT, WebKitGTK, Tor and so on) should go to
 those projects, though a heads-up is welcome if DA Vibe Manager can mitigate them.
