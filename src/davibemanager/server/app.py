@@ -513,7 +513,19 @@ def create_app(token: str, make_engine: Callable[[Callable[[dict], None]], Engin
 
     @app.post("/api/sync/join")
     async def sync_join(body: dict, e: Engine = Depends(auth)):
-        return e.sync.pair_join(str(body.get("code") or ""))
+        return e.sync.pair_join(str(body.get("code") or ""), check=body.get("check") is True)
+
+    @app.post("/api/sync/check")
+    async def sync_check(body: dict, e: Engine = Depends(auth)):
+        """The code shown: whether the numbers are checked on both screens before a computer is added."""
+        e.sync.pair_check(body.get("on") is True)
+        return {"ok": True}
+
+    @app.post("/api/sync/decide")
+    async def sync_decide(body: dict, e: Engine = Depends(auth)):
+        """The user's answer: do both computers show these numbers?"""
+        e.sync.pair_decide(body.get("same") is True)
+        return {"ok": True}
 
     @app.post("/api/sync/cancel")
     async def sync_cancel(e: Engine = Depends(auth)):

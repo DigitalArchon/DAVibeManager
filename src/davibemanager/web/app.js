@@ -1983,24 +1983,46 @@ function syncSettings() {
   const digits = p?.digits ? h("div", { class: "small muted" }, "Both computers show ", h("b", {}, p.digits),
     ": if you can see the other one, check it shows the same (if it doesn't, remove it).") : null;
   const errorEl = p?.error ? h("div", { class: "small warn" }, p.error) : null;
+  const decide = (same) => guarded(() => api("POST", "/api/sync/decide", { same }));
   let pairingEl = null;
-  if (p && live && p.role === "show") {
+  if (p?.step === "check") {
+    pairingEl = h("div", { class: "update" },
+      h("div", {}, h("b", {}, "Do both computers show these numbers?")),
+      h("div", { class: "pair-digits" }, p.digits),
+      h("div", { class: "small muted" }, `This computer and ${p.with} each worked them out from what both sent: if they're the same on both screens, nobody came between them.`,
+        p.other === "same" ? h("b", {}, ` ${p.with} says they match.`) : null),
+      h("div", { class: "actions" },
+        h("button", { class: "small primary", onclick: () => decide(true) }, "They match"),
+        h("button", { class: "small", onclick: () => decide(false) }, "They don't"), cancel));
+  } else if (p?.step === "deciding") {
+    pairingEl = h("div", { class: "update" },
+      h("div", { class: "small row" }, h("span", { class: "spinner" }), `Waiting for ${p.with} to say whether they match…`),
+      h("div", { class: "actions" }, cancel));
+  } else if (p && live && p.role === "show") {
+    // nobody needs to be here for the code to work; with both screens in view, the numbers can be checked first
+    const checkEl = ["starting", "publishing", "waiting"].includes(p.step) ? h("label", { class: "radio" },
+      h("input", { type: "checkbox", checked: !!p.check, onchange: (e) => guarded(() => api("POST", "/api/sync/check", { on: e.target.checked })) }),
+      h("div", {}, h("div", { class: "small" }, "I can see both screens: check the numbers on both before it's added"))) : null;
     pairingEl = h("div", { class: "update" },
       h("div", {}, h("b", {}, "On the computer to add,"), " open DA Vibe Manager, Settings → Your other computers → I have a code, and type:"),
       h("div", { class: "pair-code" }, p.code),
+      checkEl,
       p.step === "adding" ? h("div", { class: "small row" }, h("span", { class: "spinner" }), `Adding ${p.with}…`)
         : ["starting", "publishing"].includes(p.step) ? h("div", { class: "small row" }, h("span", { class: "spinner" }), `Getting the code ready on the Tor network…${torWords}`)
         : h("div", { class: "small muted" }, `Waiting since ${fmtWhen(p.since)}. The code has no time limit: it works once, whenever the other computer is ready, from anywhere, until you cancel it. Keep this computer on, with DA Vibe Manager running, until then.`),
       errorEl, h("div", { class: "actions" }, cancel));
   } else if (p && live) {
     pairingEl = h("div", { class: "update" },
-      h("div", { class: "small row" }, h("span", { class: "spinner" }), p.step === "starting" ? `Starting Tor…${torWords}` : "Looking for the computer showing the code, on the Tor network…"),
+      h("div", { class: "small row" }, h("span", { class: "spinner" }), p.step === "starting" ? `Starting Tor…${torWords}`
+        : p.step === "adding" ? `Adding this computer, with ${p.with}…` : "Looking for the computer showing the code, on the Tor network…"),
       h("div", { class: "small muted" }, "It keeps looking until that computer is on and showing the code, however long that takes (it can be off just now). You can close this: it goes on, even after a restart."),
       errorEl, h("div", { class: "actions" }, cancel));
   } else if (p?.step === "done") {
     pairingEl = h("div", { class: "update" },
       h("div", { class: "small ok" }, p.role === "show" ? `${p.with} was added to your computers.` : `This computer was added to your computers, with ${p.with}.`,
-        " Your apps sync between them whenever they're on."), digits, h("div", { class: "actions" }, ok));
+        " Your apps sync between them whenever they're on."),
+      p.checked ? h("div", { class: "small muted" }, `The numbers were checked on both screens (${p.digits}).`) : digits,
+      h("div", { class: "actions" }, ok));
   } else if (p?.step === "failed") {
     pairingEl = h("div", { class: "warnbox small" }, p.error || "It didn't work.", h("div", { class: "actions" }, ok));
   }
@@ -2038,13 +2060,16 @@ function syncSettings() {
 
 function joinWithCode() {
   const input = h("input", { type: "text", inputmode: "numeric", autocomplete: "off", placeholder: "1234 5678 9012 3456", class: "pair-input" });
+  const check = h("input", { type: "checkbox" });
   // a code that's wrong keeps the box open, to put right
   const go = async () => {
-    try { await api("POST", "/api/sync/join", { code: input.value }); return false; } catch (e) { toast(e.message, "error"); return true; }
+    try { await api("POST", "/api/sync/join", { code: input.value, check: check.checked }); return false; } catch (e) { toast(e.message, "error"); return true; }
   };
   const m = modal({ title: "Add this computer to your others",
     body: h("div", {}, h("p", {}, "On one of your other computers: Settings → Your other computers → Add a computer. Type the code it shows:"), input,
-      h("p", { class: "small muted" }, "The other computer can be off just now: this one keeps looking for it until it's on.")),
+      h("p", { class: "small muted" }, "The other computer can be off just now: this one keeps looking for it until it's on."),
+      h("label", { class: "radio" }, check, h("div", {}, h("div", { class: "small" }, "I can see the other computer's screen too: check the numbers on both"),
+        h("div", { class: "small muted" }, "Then both say whether they show the same numbers before this one is added.")))),
     buttons: [{ label: "Cancel" }, { label: "Add", kind: "primary", onClick: go }] });
   input.addEventListener("keydown", async (e) => { if (e.key === "Enter" && !(await go())) m.close(); });
   setTimeout(() => input.focus(), 50);

@@ -18,7 +18,9 @@ computer the user doesn't recognise in the list can be removed.
 
 Both also show six digits, worked out from what both sent and a random part of each. The second
 committed to its part before it saw the first's, so someone in the middle (who would have needed
-the code) couldn't make the two screens' digits match: a user who can see both can check them.
+the code) couldn't make the two screens' digits match. A user who can see both screens can ask for
+them to be checked (on either computer): then the first adds the second only once the user has
+said on both that they match, and a "no" on either ends the code (service.py, _agree).
 
 Pure: the messages, checked, and what's worked out from them. service.py sends them.
 """

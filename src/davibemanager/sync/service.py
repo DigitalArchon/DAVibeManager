@@ -54,6 +54,7 @@ NEW_FOR = 900                       # and counts as just added this long
 ANNOUNCE_AFTER = 5                  # a local change is told to the others this long after the last one
 EMIT_AFTER = 0.3                    # the window hears of a burst of changes this long after the first
 FIND_AGAIN, FIND_MOST = 5, 60       # a code's onion looked for again after this, doubling up to this
+DECIDE_WAIT = 600                   # how long both users have to say whether the numbers match (when they check them)
 CHECK_EVERY = 60                    # how often a code shown checks that its onion is still up
 FRESH_EVERY = 120                   # tor's memory of onions it couldn't find, forgotten at most this often
 AT_ONCE = 4                         # members pulled from, and told something, at the same time
@@ -72,6 +73,10 @@ class SyncError(UserError):
 
 class Gone(Exception):
     """This computer isn't in the group any more (it was removed, or left) since the sync began."""
+
+
+class Mismatch(pairing.PairingError):
+    """The numbers weren't the same on both screens (someone else may have the code)."""
 
 
 def _checked_list(apps_said) -> dict:
@@ -112,6 +117,7 @@ class SyncService:
         self._pair_task: asyncio.Task | None = None
         self._pair_busy = False
         self._spent: asyncio.Future | None = None   # the code shown is used up
+        self._decision: asyncio.Future | None = None  # the user's answer: do both screens show these numbers?
         self._joiner = ""                           # the computer it added, until that one's in for sure
         self._servers: dict[str, asyncio.AbstractServer] = {}
         self._onions: dict[str, str] = {}
@@ -446,14 +452,32 @@ class SyncService:
             raise SyncError("This computer is looking for another with a code: cancel that first.")
         if len(self._others()) + 1 >= store.MAX_MEMBERS:
             raise SyncError(f"A group can have up to {store.MAX_MEMBERS} computers: remove one first.")
-        pending = {"role": "show", "code": pairing.new_code(), "since": time.time()}
+        pending = {"role": "show", "code": pairing.new_code(), "since": time.time(), "check": False}
         store.save_pending_pairing(pending)
         self._begin(pending)
         return dict(self.pairing)
 
-    def pair_join(self, text: str) -> dict:
+    def pair_check(self, on: bool) -> None:
+        """Whether the computer that uses the code shown is added only once both screens' numbers are said
+        to match: for when the user can see both (nobody needs to be here otherwise)."""
+        if not (self._pairing_under_way() and self.pairing["role"] == "show"):
+            raise SyncError("There's no code being shown just now.")
+        pending = store.pending_pairing()
+        if pending:
+            store.save_pending_pairing({**pending, "check": bool(on)})
+        self._pair_step(self.pairing["step"], check=bool(on))
+
+    def pair_decide(self, same: bool) -> None:
+        """The user's answer to "do both computers show these numbers?"."""
+        if not (self.pairing and self.pairing.get("step") == "check" and self._decision and not self._decision.done()):
+            raise SyncError("There's nothing to check just now.")
+        self._decision.set_result(bool(same))
+        self._pair_step("deciding")
+
+    def pair_join(self, text: str, check: bool = False) -> dict:
         """The code another computer shows, typed here: that computer is looked for until it's found (it
-        may be off just now), or the user cancels."""
+        may be off just now), or the user cancels. `check`: the user can see both screens, and this one
+        is added only once the numbers are said to match on both."""
         self._need_tor()
         if self._pairing_under_way():
             raise SyncError("A pairing is under way already: cancel it first.")
@@ -461,7 +485,7 @@ class SyncService:
             code = pairing.read_code(text)
         except pairing.PairingError as e:
             raise SyncError(str(e)) from None
-        pending = {"role": "join", "code": code, "since": time.time()}
+        pending = {"role": "join", "code": code, "since": time.time(), "check": bool(check)}
         store.save_pending_pairing(pending)
         self._begin(pending)
         return dict(self.pairing)
@@ -471,11 +495,20 @@ class SyncService:
         self._joiner = str(pending.get("joiner") or "") if role == "show" else ""
         self.pairing = {"role": role, "code": pairing.shown(code) if role == "show" else "", "step": "starting",
                         "digits": "", "with": self._name_of(self._joiner) if self._joiner else "", "error": "",
-                        "since": pending.get("since") or time.time()}
+                        "since": pending.get("since") or time.time(), "check": bool(pending.get("check")),
+                        "other": "", "checked": False}
         self._changed()
         self._pair_task = asyncio.ensure_future(self._show(code) if role == "show" else self._join(code))
 
     async def pair_cancel(self) -> None:
+        if self._pairing_under_way():
+            self._pair_step("cancelled")        # first: what its tasks do as they stop isn't shown
+        if self._decision and not self._decision.done():
+            self._decision.set_result(None)     # a check under way: nothing is added, and the other is told why
+            for _ in range(50):                 # (a moment for that to reach it, before its connection goes)
+                if self._decision is None:
+                    break
+                await asyncio.sleep(0.05)
         task = self._pair_task
         if task and not task.done():
             task.cancel()
@@ -485,8 +518,6 @@ class SyncService:
                 pass
         store.save_pending_pairing(None)
         self._joiner = ""
-        if self._pairing_under_way():
-            self._pair_step("cancelled")
         await self._stop_tor_if_idle()
 
     def dismiss(self) -> None:
@@ -560,13 +591,18 @@ class SyncService:
         me = self.me()
         waiting = pairing.Waiting(code, me.info(), secret)
         try:
-            answer = waiting.opened(await wire.recv(reader))
+            opening = await wire.recv(reader)
+            answer = waiting.opened(opening)
             them = waiting.them
             if self._joiner and them["id"] != self._joiner:
                 await wire.send(writer, {"t": "used"})
                 raise pairing.PairingError("another computer tried the code after it was used")
-            await wire.send(writer, answer)
+            # the numbers checked on both screens first, when the user here (or there) can see both
+            check = bool((self.pairing or {}).get("check")) or opening.get("check") is True
+            await wire.send(writer, {**answer, "check": check})
             waiting.revealed(await wire.recv(reader))
+            if check:
+                await self._agree(reader, writer, waiting.digits, them["name"])
             g = store.group() or store.new_group()
             roster = self._roster()
             roster[me.id] = store.entry_of(me, roster.get(me.id))
@@ -605,14 +641,63 @@ class SyncService:
                     self._spend(them["id"])
             except wire.WireError:
                 pass                            # else when it first connects as a member
+        except Mismatch as e:
+            # someone else may have the code: it stops working
+            self._log("adding_refused", error=str(e))
+            if self._spent is spent and self._pairing_under_way():
+                store.save_pending_pairing(None)
+                self._joiner = ""
+                self._pair_step("failed", error=f"{e} The code doesn't work any more, in case someone else has it: show a new one.")
+                if not spent.done():
+                    spent.set_result(False)
         except (pairing.PairingError, wire.WireError, tor_mod.TorError, OSError) as e:
             # only a computer with the code gets this far: it may try again (the code still works)
             self._log("adding_failed", error=str(e))
             if self._spent is spent and self._pairing_under_way() and self.pairing.get("step") != "adding":
-                self._pair_step(self.pairing["step"], error=f"A computer tried the code but didn't finish ({e}): it can try again.")
+                back = "waiting" if self.pairing.get("step") in ("check", "deciding") else self.pairing["step"]
+                self._pair_step(back, digits="", error=f"A computer tried the code but didn't finish ({e}): it can try again.")
         finally:
             self._pair_busy = False
             writer.close()
+
+    async def _agree(self, reader, writer, digits: str, them: str) -> None:
+        """Both users say whether both screens show these numbers, and each computer tells the other: it goes
+        on only when both said they match. Raises Mismatch when either said they don't (or the other
+        computer went on without asking), PairingError when nobody said in time."""
+        self._decision = decision = asyncio.get_running_loop().create_future()
+        self._pair_step("check", digits=digits, error="", other="", **{"with": them})
+        theirs = asyncio.ensure_future(wire.recv(reader, DECIDE_WAIT))
+
+        def matched(msg: dict) -> None:
+            if msg.get("t") == "decided" and msg.get("cancelled") is True:
+                raise pairing.PairingError(f"{them} cancelled, so nothing was added.")
+            if msg.get("t") != "decided" or msg.get("same") is not True:
+                raise Mismatch(f"{them} said the numbers didn't match, so nothing was added.")
+
+        async def say(same: bool | None) -> None:       # None: the user cancelled
+            await wire.send(writer, {"t": "decided", "same": same is True, **({"cancelled": True} if same is None else {})})
+            if same is None:
+                raise pairing.PairingError("Cancelled, so nothing was added.")
+            if not same:
+                raise Mismatch("The numbers didn't match, so nothing was added.")
+        try:
+            done, _ = await asyncio.wait({decision, theirs}, timeout=DECIDE_WAIT, return_when=asyncio.FIRST_COMPLETED)
+            if not done:
+                raise asyncio.TimeoutError
+            if decision.done():
+                await say(decision.result())
+                matched(await theirs)
+            else:
+                matched(theirs.result())
+                self._pair_step(self.pairing["step"], other="same")
+                await say(await asyncio.wait_for(asyncio.shield(decision), DECIDE_WAIT))
+        except asyncio.TimeoutError:
+            raise pairing.PairingError("Nobody said whether the numbers match in time, so nothing was added.") from None
+        finally:
+            theirs.cancel()
+            if self._decision is decision:
+                self._decision = None
+        self._pair_step("adding", checked=True)
 
     def _spend(self, member_id: str) -> None:
         """The computer the code shown added is in for sure (it said so, or connected as a member): the
@@ -660,18 +745,22 @@ class SyncService:
                     writer.close()
                 await asyncio.sleep(FIND_AGAIN)
         except pairing.PairingError as e:
-            store.save_pending_pairing(None)
-            self._pair_step("failed", error=str(e))
+            if self._pairing_under_way():       # (not when it was cancelled)
+                store.save_pending_pairing(None)
+                self._pair_step("failed", error=str(e))
         finally:
             await self._stop_tor_if_idle()
 
     async def _joined(self, joining: pairing.Joining, reader, writer) -> bool:
         """The code's computer found: this one is added to its group, with any this one was in a group with."""
-        await wire.send(writer, joining.opening())
+        want = bool((self.pairing or {}).get("check"))
+        await wire.send(writer, {**joining.opening(), "check": want})
         msg = await wire.recv(reader)
         if msg.get("t") == "used":
             raise pairing.PairingError("That code added another computer already: show a new one on the other computer.")
         await wire.send(writer, joining.answered(msg))
+        if want or msg.get("check") is True:    # (asked for here, it's checked whatever the other says)
+            await self._agree(reader, writer, joining.digits, joining.them["name"])
         welcome = await wire.recv(reader)
         got = _group_of(welcome.get("group")) if welcome.get("t") == "welcome" else None
         if got is None:

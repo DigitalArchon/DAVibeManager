@@ -249,6 +249,68 @@ async def test_the_computer_a_code_is_typed_on_keeps_looking_until_the_other_is_
     await stop_all(desktop, laptop)
 
 
+async def check_both(desktop, laptop, *, shower_asks=True):
+    """A code shown on the desktop, typed on the laptop, with the numbers to be checked on both screens
+    (asked for on the desktop, or on the laptop): both at the check."""
+    shown = desktop.run(desktop.sync.pair_show)
+    if shower_asks:
+        desktop.run(desktop.sync.pair_check, True)
+    laptop.run(lambda: laptop.sync.pair_join(shown["code"], check=not shower_asks))
+    va = await desktop.until(lambda v: step(v) == "check", "the numbers on the desktop")
+    vb = await laptop.until(lambda v: step(v) == "check", "the numbers on the laptop")
+    assert va["pairing"]["digits"] == vb["pairing"]["digits"] and va["pairing"]["with"] == "Laptop"
+    return shown
+
+
+@pytest.mark.parametrize("shower_asks", [True, False])
+async def test_with_both_screens_in_view_the_numbers_are_checked_on_both_before_its_added(tmp_path, shower_asks):
+    net = FakeNet()
+    desktop, laptop = Computer(tmp_path / "A", net, "Desktop"), Computer(tmp_path / "B", net, "Laptop")
+    await check_both(desktop, laptop, shower_asks=shower_asks)
+    desktop.run(desktop.sync.pair_decide, True)
+    await desktop.until(lambda v: step(v) == "deciding", "the desktop waiting for the laptop")
+    await laptop.until(lambda v: v["pairing"]["other"] == "same", "the laptop hearing the desktop says they match")
+    await asyncio.sleep(0.2)
+    assert desktop.run(store.group) is None and names(desktop.view()) == []     # nothing until both said so
+    laptop.run(laptop.sync.pair_decide, True)
+    va = await desktop.until(lambda v: step(v) == "done", "the code used")
+    vb = await laptop.until(lambda v: step(v) == "done", "added")
+    assert va["pairing"]["checked"] and vb["pairing"]["checked"]
+    await all_know([desktop, laptop])
+    await stop_all(desktop, laptop)
+
+
+async def test_numbers_one_computer_says_dont_match_add_nothing_and_the_code_stops_working(tmp_path):
+    net = FakeNet()
+    desktop, laptop = Computer(tmp_path / "A", net, "Desktop"), Computer(tmp_path / "B", net, "Laptop")
+    await check_both(desktop, laptop)
+    desktop.run(desktop.sync.pair_decide, True)
+    laptop.run(laptop.sync.pair_decide, False)
+    va = await desktop.until(lambda v: step(v) == "failed", "the desktop refusing it")
+    vb = await laptop.until(lambda v: step(v) == "failed", "the laptop refusing it")
+    assert "Laptop said the numbers didn't match" in va["pairing"]["error"] and "doesn't work any more" in va["pairing"]["error"]
+    assert "didn't match" in vb["pairing"]["error"]
+    assert desktop.run(store.pending_pairing) is None and laptop.run(store.pending_pairing) is None
+    assert desktop.run(store.group) is None and laptop.run(store.group) is None
+    await desktop.until(lambda v: v["tor"]["step"] == "stopped", "the desktop's tor stopped")
+    with pytest.raises(service.SyncError, match="nothing to check"):
+        desktop.run(desktop.sync.pair_decide, True)
+    await stop_all(desktop, laptop)
+
+
+async def test_cancelling_while_the_numbers_are_checked_says_so_on_the_other(tmp_path):
+    net = FakeNet()
+    desktop, laptop = Computer(tmp_path / "A", net, "Desktop"), Computer(tmp_path / "B", net, "Laptop")
+    await check_both(desktop, laptop)
+    await laptop.wait(laptop.sync.pair_cancel())             # the laptop's user changes their mind
+    assert step(laptop.view()) == "cancelled"
+    va = await desktop.until(lambda v: step(v) == "waiting" and v["pairing"]["error"], "the desktop waiting again")
+    assert "Laptop cancelled" in va["pairing"]["error"] and desktop.run(store.pending_pairing)   # the code still works
+    await desktop.wait(desktop.sync.pair_cancel())
+    assert step(desktop.view()) == "cancelled" and desktop.run(store.pending_pairing) is None
+    await stop_all(desktop, laptop)
+
+
 async def test_a_code_can_be_cancelled_and_a_wrong_one_is_said_so(tmp_path):
     net = FakeNet()
     laptop = Computer(tmp_path / "B", net, "Laptop")
@@ -461,8 +523,9 @@ async def test_the_window_adds_computers_through_the_api_and_hears_why_when_it_c
             assert (await c.post("/api/sync/dismiss")).status_code == 200
             assert (await c.get("/api/state")).json()["sync"]["pairing"] is None
             for path, said in (("/api/sync/now", "isn't in a group"), ("/api/sync/leave", "isn't in a group"),
-                               (f"/api/sync/members/{'e' * 32}/remove", "isn't one of this group's")):
-                r = await c.post(path)
+                               (f"/api/sync/members/{'e' * 32}/remove", "isn't one of this group's"),
+                               ("/api/sync/decide", "nothing to check"), ("/api/sync/check", "no code being shown")):
+                r = await c.post(path, json={})
                 assert r.status_code == 400 and said in r.json()["error"], path
 
 
