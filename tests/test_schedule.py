@@ -28,6 +28,9 @@ async def test_each_app_is_looked_at_as_often_as_it_chose(gthumb):
     engine, sb, _, _ = gthumb
     engine.cfg.settings.changelog_summary = "manual"
     m = engine.app_manager
+    # its builds wait to be asked for: a tick in the quiet hours would start one (when the looks fall there
+    # depends on the time the test runs), and an app being built isn't looked at meanwhile
+    m.set_schedule("gthumb", build_when="ask")
     await m.tick(now=at(12))
     assert len(looked(sb)) == 1                          # never looked at yet: now
     checked = apps.load("gthumb")["update"]["checked"]
