@@ -33,6 +33,7 @@ from pathlib import Path
 from typing import Callable
 
 from . import onion as onion_mod
+from . import wire
 
 SERVER_TO_CONTROLLER = b"Tor safe cookie authentication server-to-controller hash"
 CONTROLLER_TO_SERVER = b"Tor safe cookie authentication controller-to-server hash"
@@ -298,6 +299,8 @@ class Tor:
         self._lock = asyncio.Lock()
         self._started: asyncio.Future | None = None
         self._stopping = False              # stopped on purpose: its exit is no failure
+        self._uploaded: set[str] = set()    # the onions whose descriptor reached a directory
+        self._upload = asyncio.Event()
 
     def _set(self, step: str, words: str, progress: int | None = None) -> None:
         self.state = {"step": step, "progress": self.state["progress"] if progress is None else progress, "words": words}
@@ -379,6 +382,10 @@ class Tor:
             self._set("connecting", f"Connecting to the Tor network… {phase.progress}%", phase.progress)
 
     def _on_status(self, event: Reply) -> None:
+        words = event.text().split()
+        if words[:2] == ["HS_DESC", "UPLOADED"] and len(words) >= 3:
+            self._uploaded.add(words[2])
+            self._upload.set()
         phase = bootstrap_of(event.text())
         if phase:
             self._bootstrapped(phase)
@@ -446,22 +453,22 @@ class Tor:
         return service
 
     async def remove_onion(self, service_id: str) -> None:
+        self._uploaded.discard(service_id)
         await self.command(f"DEL_ONION {service_id}", check=False)
 
     async def wait_published(self, service_id: str, wait: float = 120) -> bool:
         """Whether its descriptor reached a directory in time: until then, nobody can find it."""
-        done = asyncio.get_running_loop().create_future()
-
-        def listener(event: Reply) -> None:
-            if descriptor_uploaded(event, service_id) and not done.done():
-                done.set_result(True)
-        self._events.append(listener)
-        try:
-            return await asyncio.wait_for(done, wait)
-        except asyncio.TimeoutError:
-            return False
-        finally:
-            self._events.remove(listener)
+        end = asyncio.get_running_loop().time() + wait
+        while service_id not in self._uploaded:
+            left = end - asyncio.get_running_loop().time()
+            if left <= 0:
+                return False
+            self._upload.clear()
+            try:
+                await asyncio.wait_for(self._upload.wait(), left)
+            except asyncio.TimeoutError:
+                return False
+        return True
 
     async def allow_client(self, address: str, key: onion_mod.ClientKey) -> None:
         """Give tor the key this computer reads `address`'s descriptor with."""
@@ -475,6 +482,10 @@ class Tor:
     @property
     def socks(self) -> Path:
         return self.paths.socks
+
+    async def open(self, address: str, port: int, wait: float = 120):
+        """A stream to an onion service through this tor: (reader, writer). Raises wire.Unreachable."""
+        return await wire.socks_connect(self.paths.socks, f"{address}.onion", port, wait)
 
     async def stop(self) -> None:
         async with self._lock:

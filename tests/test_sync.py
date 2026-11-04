@@ -441,3 +441,42 @@ def test_apps_sync_leaves_out_say_why():
     a = make_app()
     assert library.syncable(a) == ""
     assert "one by one" in library.syncable({**a, "split": False})
+
+
+async def test_the_apps_own_tor_is_started_logged_into_and_stopped_with_it(tmp_path, monkeypatch):
+    """Against a stand-in for tor (faketor.py), run as tor is: the cookie login, in which tor proves
+    it read the cookie; ownership, so it goes with the app; bootstrap; an onion with clients."""
+    import tempfile
+    from pathlib import Path
+    key = onion.OnionKey.new()
+    monkeypatch.setenv("FAKE_TOR_ADDRESS", key.address)
+    monkeypatch.setenv("FAKE_TOR_LOG", str(tmp_path / "commands"))
+    clean = tor.tor_environment
+    monkeypatch.setattr(tor, "tor_environment", lambda t, environ=None: {
+        **clean(t), **{k: v for k, v in os.environ.items() if k.startswith("FAKE_TOR_")}})
+    run = Path(tempfile.mkdtemp(prefix="dvm-", dir="/tmp"))
+    states = []
+    t = tor.Tor(tor.paths_for(tmp_path / "state", run), binary=Path(__file__).with_name("faketor.py"), on_change=states.append)
+    await t.start()
+    assert t.running and any(s["progress"] == 50 for s in states) and states[-1]["step"] == "ready"
+    client = onion.ClientKey.new()
+    sid = await t.add_onion(key, 7301, run / "tor" / "sync.sock", [client.public])
+    assert sid == key.address and await t.wait_published(sid, 5)
+    await t.allow_client(key.address, client)
+    proc = t._proc
+    await t.stop()
+    assert proc.returncode is not None and not t.running          # gone when the app let go of it
+    sent = (tmp_path / "commands").read_text().splitlines()
+    assert [line.split()[0] for line in sent[:5]] == ["PROTOCOLINFO", "AUTHCHALLENGE", "AUTHENTICATE", "TAKEOWNERSHIP", "SETEVENTS"]
+    assert f"ClientAuthV3={client.public}" in next(line for line in sent if line.startswith("ADD_ONION"))
+    assert oct(os.stat(t.paths.torrc).st_mode & 0o777) == "0o600"
+
+
+async def test_tor_that_isnt_there_or_wont_start_says_so(tmp_path):
+    import tempfile
+    from pathlib import Path
+    run = Path(tempfile.mkdtemp(prefix="dvm-", dir="/tmp"))
+    t = tor.Tor(tor.paths_for(tmp_path / "state", run), binary=Path("/bin/false"))
+    with pytest.raises(tor.TorError, match="Tor didn't start"):
+        await t.start()
+    assert t.state["step"] == "failed"
