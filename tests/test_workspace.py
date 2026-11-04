@@ -736,6 +736,46 @@ async def test_removing_takes_the_builds_leftovers_and_nothing_of_the_users_buil
         "build layer l3", "build layer l2", "build layer l1"]
 
 
+async def test_removing_keeps_the_base_image_while_an_image_of_the_users_is_built_on_it(monkeypatch):
+    """Not forced, `image rm` keeps an image a container uses, but takes the name of one others are built
+    on (seen on CachyOS): the user's next build would download it again. One with a name is the user's
+    pull too (the app's, by its digest, has none)."""
+    fake = FakePodman({"base": ("docker.io/library/ubuntu:<none>", ""), "mine": ("localhost/my-builder:1", "u1"),
+                       "u1": ("<none>:<none>", "base")}, {})
+    asked, named = [], {"tags": 0}
+
+    async def run(argv, **kw):
+        if argv[1:3] == ["image", "rm"] and argv[3] == pins.BASE_IMAGE:
+            asked.append(argv[3])
+            return 0, ""
+        if argv[1:3] == ["image", "inspect"] and argv[-1] == pins.BASE_IMAGE and "RepoTags" in argv[4]:
+            return 0, f"{named['tags']}\n"
+        return await fake.run(argv, **kw)
+
+    async def nothing(*a, **kw):
+        return []
+
+    async def missing(name):
+        return "missing"
+
+    async def no_cache():
+        return False
+    monkeypatch.setattr(podman, "run", run)
+    monkeypatch.setattr(podman, "list_containers", nothing)
+    monkeypatch.setattr(podman, "state", missing)
+    monkeypatch.setattr(podman, "_remove_build_leftovers", nothing)
+    monkeypatch.setattr(podman, "clear_apt_cache", no_cache)
+    removed = await podman.remove_all()
+    assert not asked and "docker.io/library/ubuntu:24.04" not in removed
+    del fake.images["mine"], fake.images["u1"]
+    named["tags"] = 1                               # pulled as ubuntu:24.04 by the user: theirs too
+    removed = await podman.remove_all()
+    assert not asked
+    named["tags"] = 0                               # the app's own pull, by its digest
+    removed = await podman.remove_all()
+    assert asked == [pins.BASE_IMAGE] and "docker.io/library/ubuntu:24.04" in removed
+
+
 async def test_what_the_app_runs_in_the_sandbox_is_stopped_there_when_it_runs_out_of_time(no_real_podman):
     """Stopping `podman exec` doesn't stop what it runs in the container (a clone, apt-get holding its lock):
     each command has a time limit of its own there, a little inside the app's, ending its whole group."""

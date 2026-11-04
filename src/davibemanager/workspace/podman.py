@@ -805,11 +805,45 @@ async def remove_all(sandbox: str = APP_SANDBOX) -> list[str]:
         if (await run([podman(), "image", "rm", "-f", tag], timeout=120))[0] == 0:
             removed.append(tag)
     removed += await _remove_build_leftovers()
-    if (await run([podman(), "image", "rm", pins.BASE_IMAGE], timeout=120))[0] == 0:     # not forced: if in use, kept
+    # not forced: if a container uses it, it's kept. Nor when an image of the user's is built on it (once
+    # the app's are gone, any is theirs): Podman takes its name all the same, and their next build that
+    # starts from it would download it again. Nor when it has a name: the app pulls it by its digest,
+    # which gives it none (ubuntu:<none>), so someone else pulled it as ubuntu:24.04
+    if not await _built_on_base() and not await _named(pins.BASE_IMAGE) and \
+            (await run([podman(), "image", "rm", pins.BASE_IMAGE], timeout=120))[0] == 0:
         removed.append(pins.BASE_IMAGE.split("@")[0])
     if await clear_apt_cache():
         removed.append(str(apt_cache_dir()))
     return removed
+
+
+async def _named(image: str) -> bool:
+    """Whether an image has a name (a tag), not only its digest."""
+    rc, out = await run([podman(), "image", "inspect", "--format", "{{len .RepoTags}}", image])
+    return rc == 0 and out.strip() not in ("", "0")
+
+
+async def _built_on_base() -> list[str]:
+    """The images built on the pinned base image (some steps above it)."""
+    base = await _base_id()
+    rc, out = await run([podman(), "images", "-a", "--no-trunc", "--format", "{{.ID}}|{{.Repository}}:{{.Tag}}"])
+    ids = [line.partition("|")[0].removeprefix("sha256:") for line in out.splitlines()] if rc == 0 and base else []
+    ids = [i for i in ids if i and i != base]
+    if not ids:
+        return []
+    rc, out = await run([podman(), "image", "inspect", "--format", "{{.Id}}|{{.Parent}}", *ids])
+    parents = {}
+    for line in out.splitlines() if rc == 0 else []:
+        iid, _, parent = line.partition("|")
+        parents[iid] = parent.removeprefix("sha256:")
+    on = []
+    for iid in parents:
+        step, n = parents[iid], 0
+        while step and step != base and n < 200:
+            step, n = parents.get(step, ""), n + 1
+        if step == base:
+            on.append(iid)
+    return on
 
 
 # The build arguments the app's image declares: each of its steps' images has them in its history, from
