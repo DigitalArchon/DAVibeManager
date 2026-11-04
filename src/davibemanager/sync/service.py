@@ -18,9 +18,10 @@ told by the first computer it talks to that knows both ("move"), and changes ove
 
 A sync is one computer pulling from another: it asks for the other's apps (their summaries), and
 takes what library.plan() says to, bundle by bundle, each checked against its digest and read as
-strictly as a shared file (share.read). It pulls from each member when it starts, every few
-minutes, when the other says it changed something (a poke), and soon after it couldn't reach it; a
-few at a time. Nothing arrives while the app it would change is being built, its chat is working on
+strictly as a shared file (share.read). Then the other pulls from it in turn, on the same
+connection: one that can reach the other syncs both ways (Tor may find one computer's onion well
+before the other's). Each pulls from each member when it starts, every few minutes, and soon after
+it couldn't reach it, a few at a time; and a change is taken to the others as it's made. Nothing arrives while the app it would change is being built, its chat is working on
 it, or a backup is being restored: it's taken next time.
 """
 
@@ -956,18 +957,11 @@ class SyncService:
                         self._after_roster(before)
                         if not store.group():
                             return
-                elif t == "list":
-                    here = library.local()
-                    await wire.send(writer, {"t": "apps", "apps": {sid: s for sid, (a, s, d) in here.items()}})
-                elif t == "bundle":
-                    entry = (here if here is not None else library.local()).get(str(msg.get("share") or ""))
-                    if entry is None:
-                        await wire.send(writer, {"t": "missing"})
-                    else:
-                        await wire.send(writer, {"t": "bundle", "share": entry[1]["share"], "digest": entry[1]["digest"]})
-                        await wire.send_bytes(writer, entry[2])
-                elif t == "poke":
-                    self._soon(who)             # it changed something: pull from it
+                elif t in ("list", "bundle"):
+                    here = await self._give(writer, msg, here)
+                elif t == "turn":               # its apps, offered in turn: pulled from it on this connection
+                    await self._take_turn(who, reader, writer)
+                    return
                 else:
                     return
         except wire.WireError:
@@ -979,6 +973,55 @@ class SyncService:
             writer.close()
             if not self._serving and self._held_since:
                 self._wake.set()                # a new list of members was waiting for this to end
+
+    async def _give(self, writer, msg: dict, here: dict | None) -> dict:
+        """A member's request for this computer's apps: their list, or one's bundle (as listed). Returns the
+        apps as listed, for the bundles asked for next."""
+        if msg.get("t") == "list" or here is None:
+            here = library.local()
+        if msg.get("t") == "list":
+            await wire.send(writer, {"t": "apps", "apps": {sid: s for sid, (a, s, d) in here.items()}})
+            return here
+        entry = here.get(str(msg.get("share") or ""))
+        if entry is None:
+            await wire.send(writer, {"t": "missing"})
+        else:
+            await wire.send(writer, {"t": "bundle", "share": entry[1]["share"], "digest": entry[1]["digest"]})
+            await wire.send_bytes(writer, entry[2])
+        return here
+
+    async def _answer(self, reader, writer) -> None:
+        """The member this one is connected to pulls from it, on the same connection, until it's done."""
+        here = None
+        while (msg := await wire.recv(reader)).get("t") in ("list", "bundle"):
+            here = await self._give(writer, msg, here)
+
+    async def _take_turn(self, who: str, reader, writer) -> None:
+        """A member that pulled from this computer (or changed something) offers its own apps in turn: pulled
+        from on its connection, unless this one is pulling from it just now. It may not be reachable on its
+        own onion yet (just added; or Tor, which looks for an onion it couldn't find only every quarter of
+        an hour, hasn't looked again since it came back on)."""
+        e = self._roster().get(who)
+        if e is None or e["removed"] or who in self._pulling:
+            await wire.send(writer, {"t": "bye"})
+            return
+        self._pulling[who] = asyncio.current_task()
+        try:
+            came = await self._pull_from(e, reader, writer)
+            await wire.send(writer, {"t": "bye"})
+            self._next[who], self._delay[who] = time.time() + PULL_EVERY, RETRY_FIRST
+            self._pulled(who, came)
+        finally:
+            if self._pulling.get(who) is asyncio.current_task():
+                self._pulling.pop(who, None)
+            self._wake.set()
+
+    def _pulled(self, member_id: str, came: list[str]) -> None:
+        self._seen(member_id, synced=True)
+        self._spend(member_id)
+        if came:
+            self._log("pulled", member=member_id, apps=came)
+            self.e.app_manager.changed()
 
     def _seen(self, member_id: str, error: str = "", synced: bool = False) -> None:
         if not store.group():
@@ -1018,8 +1061,9 @@ class SyncService:
             reader, writer = await self._connect(e)
             try:
                 came = await self._pull_from(e, reader, writer)
-                try:
-                    await wire.send(writer, {"t": "bye"})
+                try:                            # and it pulls from this one in turn, the same way round
+                    await wire.send(writer, {"t": "turn"})
+                    await self._answer(reader, writer)
                 except wire.WireError:
                     pass
             finally:
@@ -1037,11 +1081,7 @@ class SyncService:
         finally:
             self._live[member_id] = {**self._live.get(member_id, {}), "syncing": False}
             self._changed()
-        self._seen(member_id, synced=True)
-        self._spend(member_id)
-        if came:
-            self._log("pulled", member=member_id, apps=came)
-            self.e.app_manager.changed()
+        self._pulled(member_id, came)
         return {"apps": came, "error": ""}
 
     async def _pull_from(self, member: dict, reader, writer) -> list[str]:
@@ -1163,7 +1203,8 @@ class SyncService:
 
     async def _tell_all(self, poke: bool = False, but: set[str] = frozenset()) -> int:
         """Each other member (but `but`) told this computer's list of members, and with `poke` that its
-        apps changed (it pulls from this one). Returns how many heard."""
+        apps changed: it pulls from this one there and then, on the same connection. Returns how many
+        heard."""
         async def one(e) -> bool:
             async with self._tell_slots:
                 try:
@@ -1177,8 +1218,10 @@ class SyncService:
                     return False                # off: it hears when it's next on
                 try:
                     if poke:
-                        await wire.send(writer, {"t": "poke"})
-                    await wire.send(writer, {"t": "bye"})
+                        await wire.send(writer, {"t": "turn"})
+                        await self._answer(reader, writer)
+                    else:
+                        await wire.send(writer, {"t": "bye"})
                 except wire.WireError:
                     pass
                 finally:

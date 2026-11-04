@@ -404,6 +404,27 @@ async def test_a_computer_not_found_at_first_is_tried_again_soon_not_minutes_lat
     await stop_all(desktop, laptop)
 
 
+async def test_a_computer_the_others_cant_reach_still_syncs_both_ways_on_its_own_connections(tmp_path, monkeypatch):
+    """Tor may find one computer's onion long before the other's (one just added, or back on): each
+    session syncs both ways, so one that can reach the other is enough."""
+    monkeypatch.setattr(service, "PULL_EVERY", 60)
+    net = FakeNet()
+    desktop, laptop = Computer(tmp_path / "A", net, "Desktop"), Computer(tmp_path / "B", net, "Laptop")
+    await add(desktop, laptop)
+    await laptop.until(lambda v: v["members"][0]["synced"], "a first sync")
+    d_onion = desktop.me().onion_key.address
+    hidden = net.services.pop(d_onion)                   # nobody can reach the desktop just now
+    desktop.make_app()                                   # its change reaches the laptop on the desktop's connection
+    await laptop.until(lambda v: laptop.apps(), "the desktop's app", limit=5)
+    laptop.make_app("Laptop tool")                       # the laptop can't take it to the desktop...
+    await asyncio.sleep(0.3)
+    assert len(desktop.apps()) == 1
+    desktop.run(desktop.sync.sync_now)                   # ...but the desktop gets it when it next pulls
+    await desktop.until(lambda v: len(desktop.apps()) == 2, "the laptop's app", limit=5)
+    net.services[d_onion] = hidden
+    await stop_all(desktop, laptop)
+
+
 async def test_the_window_adds_computers_through_the_api_and_hears_why_when_it_cant(tmp_path):
     import httpx
 
