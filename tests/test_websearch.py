@@ -7,7 +7,7 @@ import httpx
 import pytest
 
 from davibemanager.hostrun import HostRequest
-from davibemanager.llm import websearch
+from davibemanager.llm import prompts, websearch
 from davibemanager.safety.outside import OutsideData
 
 HOST_OUTPUT = """\
@@ -237,3 +237,11 @@ async def test_an_account_that_requires_zero_retention_searches_with_linkup_and_
     logged = [e["event"] for e in events if e.get("type") == "network" and e["event"]["kind"] == "search"]
     assert logged[-1]["provider"] == "linkup" and logged[-1]["keeps_nothing"] is True and "note" in logged[-1]
     assert engine.cfg.settings.search_zero_retention is False   # the setting is the user's: not changed by it
+
+
+def test_the_assistant_is_told_its_searches_arent_sealed_even_in_a_private_chat():
+    """The check in code refuses what came from the computer, but not what the user told it: so it's told to
+    keep that out of a query, which NanoGPT and the search provider read even when the chat is sealed."""
+    for mode in ("computer", "app"):
+        assert "No search is end-to-end encrypted, even when this chat is" in prompts.builder_prompt(mode)
+    assert "isn't end-to-end encrypted, even when the chat is" in prompts.BUILDER_TOOL_DOCS["web_search"]
