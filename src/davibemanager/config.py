@@ -148,6 +148,10 @@ class Settings:
     web_search: bool = True
     search_provider: str = "perplexity"
     search_links_provider: str = "kagi"
+    # search with Linkup only, the one provider NanoGPT allows under Zero Data Retention (it keeps
+    # nothing), and never with another, whatever the providers above. It finds less. No search is
+    # end-to-end encrypted either way: NanoGPT and the provider read every query
+    search_zero_retention: bool = False
     # what the assistant is told about this computer at the start of every chat, so it needn't ask:
     # "system" (distribution, version, desktop) and/or "hardware" (processor, memory, graphics)
     share_about: list = field(default_factory=list)

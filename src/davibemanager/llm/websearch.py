@@ -24,6 +24,7 @@ from ..netpolicy import InsecureURL, check_url
 # returns titles only. Firecrawl (whole pages, $0.0105) wasn't in that test.
 PROVIDERS = ("perplexity", "valyu", "tavily", "kagi", "linkup", "brave", "sofya", "firecrawl", "exa")
 FALLBACK = "valyu"         # when the chosen provider fails on NanoGPT's side (5xx)
+ZDR_FALLBACK = "linkup"    # the only provider NanoGPT allows under Zero Data Retention (it keeps nothing)
 # What a search is for. "answer": a question answered with sources and substantial extracts
 # (Perplexity: ~2,000 clean characters per result, mostly vendor docs, on 2026-10-02). "links":
 # the best pages, fast, a line of text each, to find an official site or repository (Kagi).

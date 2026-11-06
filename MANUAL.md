@@ -392,6 +392,15 @@ itself.**
   computer is refused: a version, a file, network or computer name, an address, your login, or
   a line copied from a command's output. This keeps its own searching clean; it can't stop a
   program in the sandbox from sending on what you gave it.
+- **Its searches aren't end-to-end encrypted, even with a private assistant.** NanoGPT and the
+  search provider read every query. In Settings → Web searches you choose what that costs you:
+  **Best results** (Perplexity and Kagi, or others you pick) finds the most, but they aren't zero
+  data retention: what they keep is up to their own policies. **Keep nothing** searches with
+  Linkup only, the one provider NanoGPT allows under Zero Data Retention: it keeps nothing, and
+  no search goes anywhere else, even when Linkup fails, but it finds less. With a private
+  assistant and Best results, Settings says so. When a provider fails on NanoGPT's side the
+  search is made with Valyu, and when your NanoGPT account requires zero data retention, with
+  Linkup; the assistant is told which ran.
 - **Your apps stay on the official code.** An app is always the project's own release with your
   changes on top, nothing else: never someone's fork, nor another app's code in the sandbox as a
   base (code it borrows from them becomes part of your change, and its notes say where it came

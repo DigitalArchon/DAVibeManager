@@ -1696,10 +1696,12 @@ function searchesEl(evs) {
   if (!done.length) return null;
   const refused = done.filter((e) => e.refused).length;
   const cost = done.reduce((n, e) => n + (e.cost || 0), 0);
+  const kept = done.filter((e) => !e.refused && !e.error && !e.keeps_nothing).length;
   return h("div", { class: "section" }, h("h3", {}, "Web searches"),
     h("div", { class: "small" }, `${done.length - refused} search${done.length - refused === 1 ? "" : "es"}${cost ? ` (about $${cost.toFixed(3)})` : ""}.`,
-      refused ? ` ${refused} refused because ${refused === 1 ? "it" : "they"} held something from your computer.` : ""),
-    h("p", { class: "small muted" }, "Searches go through NanoGPT to the search provider. Only what's in the sandbox may be in them: the app refuses any search with something from your computer in it."));
+      refused ? ` ${refused} refused because ${refused === 1 ? "it" : "they"} held something from your computer.` : "",
+      kept ? ` ${kept} went to a provider that isn't zero data retention.` : ""),
+    h("p", { class: "small muted" }, "Searches go through NanoGPT to the search provider, in the clear. Only what's in the sandbox may be in them: the app refuses any search with something from your computer in it. Linkup keeps nothing (zero data retention); what the others keep is up to their own policies."));
 }
 
 function pickModel(title, provider, onPick) {
@@ -2165,8 +2167,17 @@ function settingsPanel() {
       h("label", { class: "radio" }, h("input", { type: "checkbox", checked: s.web_search !== false, onchange: (e) => save({ web_search: e.target.checked }) }),
         h("div", {}, h("div", {}, "Let the assistant search the web"), h("div", { class: "small muted" },
           "To learn how to do things and find what's already been built, for example a version of an app that already has the feature you want. It searches with what's in its sandbox only: the app refuses any search with something from your computer in it. NanoGPT charges a little per search."))),
-      h("div", { class: "row small" }, "To learn things:", searchSelect("search_provider", s.search_provider)),
-      h("div", { class: "row small" }, "To find official sites:", searchSelect("search_links_provider", s.search_links_provider))),
+      radio("search", "best", s.search_zero_retention ? "zero" : "best", "Best results",
+        "Perplexity to learn things, Kagi to find official sites (or others you choose below). Not zero data retention: NanoGPT and the provider read each search, and what the provider keeps is up to its own policy.",
+        () => save({ search_zero_retention: false }, "Searches use the providers below.")),
+      radio("search", "zero", s.search_zero_retention ? "zero" : "best", "Keep nothing: Linkup only",
+        "Linkup keeps nothing it's sent (zero data retention), and no search goes anywhere else, even when Linkup fails. It finds less than Perplexity and Kagi. NanoGPT and Linkup still read each search: no search is end-to-end encrypted.",
+        () => save({ search_zero_retention: true }, "Searches now use Linkup only, which keeps nothing.")),
+      s.search_zero_retention ? null : h("div", { class: "row small" }, "To learn things:", searchSelect("search_provider", s.search_provider)),
+      s.search_zero_retention ? null : h("div", { class: "row small" }, "To find official sites:", searchSelect("search_links_provider", s.search_links_provider)),
+      isPrivate(s.builder_model) && s.web_search !== false && !s.search_zero_retention ? h("div", { class: "warnbox small" },
+        h("b", {}, "Your assistant is private; its searches aren't. "),
+        "Each search goes to NanoGPT and the search provider in the clear (only what's in the sandbox, never anything from your computer), and Perplexity and Kagi aren't zero data retention. Choose Keep nothing to search with Linkup, which keeps nothing.") : null),
     appsSettings(s, save),
     backupSettings(s, save),
     syncSettings(),

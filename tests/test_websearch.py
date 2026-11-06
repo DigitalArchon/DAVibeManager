@@ -198,3 +198,42 @@ async def test_webfetch_is_stopped_in_the_app_before_claude_code_reads_the_page(
     out = await hooks[0].hooks[0]({"tool_input": {"url": "https://x.org/?v=3.12.6"}}, "t1", None)
     assert out["hookSpecificOutput"]["permissionDecision"] == "deny" and "3.12.6" in out["hookSpecificOutput"]["permissionDecisionReason"]
     assert await hooks[0].hooks[0]({"tool_input": {"url": "https://x.org/releases"}}, "t2", None) == {}
+
+
+class RefusingSearch(FakeSearch):
+    """A NanoGPT account that requires zero data retention: every provider but Linkup is refused."""
+
+    def handler(self, request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        if body["provider"] != websearch.ZDR_FALLBACK:
+            self.requests.append((str(request.url), request.headers.get("authorization"), body))
+            return httpx.Response(403, json={"error": {"message": "Zero Data Retention is required for this account",
+                                                       "code": "zero_data_retention"}})
+        return super().handler(request)
+
+
+async def test_keep_nothing_searches_with_linkup_only_and_never_elsewhere(searching):
+    engine, fake, events = searching
+    engine.save_settings({"search_zero_retention": True})
+    assert engine.cfg.settings.search_zero_retention is True
+    await engine.builder_search({"query": "gthumb drag to zoom fork"})
+    await engine.builder_search({"query": "gthumb official website", "purpose": "links"})
+    assert [b["provider"] for _, _, b in fake.requests] == ["linkup", "linkup"]
+    logged = [e["event"] for e in events if e.get("type") == "network" and e["event"]["kind"] == "search"]
+    assert logged[-1]["keeps_nothing"] is True
+    fake.fail_first = 1                                     # Linkup down: the search fails, it goes nowhere else
+    with pytest.raises(Exception, match="The search failed"):
+        await engine.builder_search({"query": "mpv burst screenshots"})
+    assert [b["provider"] for _, _, b in fake.requests][2:] == ["linkup"]
+
+
+async def test_an_account_that_requires_zero_retention_searches_with_linkup_and_says_so(searching):
+    engine, _, events = searching
+    fake = RefusingSearch()
+    engine.search_http = httpx.AsyncClient(transport=httpx.MockTransport(fake.handler))
+    text = await engine.builder_search({"query": "gthumb drag to zoom fork"})
+    assert [b["provider"] for _, _, b in fake.requests] == ["perplexity", "linkup"]
+    assert "perplexity isn't allowed while the NanoGPT account requires zero data retention; searched with linkup" in text
+    logged = [e["event"] for e in events if e.get("type") == "network" and e["event"]["kind"] == "search"]
+    assert logged[-1]["provider"] == "linkup" and logged[-1]["keeps_nothing"] is True and "note" in logged[-1]
+    assert engine.cfg.settings.search_zero_retention is False   # the setting is the user's: not changed by it

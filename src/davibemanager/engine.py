@@ -570,6 +570,8 @@ class Engine:
             s.builder_reasoning = data["builder_reasoning"]
         if "web_search" in data:
             s.web_search = bool(data["web_search"])
+        if "search_zero_retention" in data:
+            s.search_zero_retention = bool(data["search_zero_retention"])
         for key in ("search_provider", "search_links_provider"):
             if key in data:
                 if data[key] not in websearch.PROVIDERS:
@@ -2431,27 +2433,40 @@ class Engine:
         if not websearch.is_nanogpt(prov.base_url or prov.builder_url):
             raise UserError("Web search works through NanoGPT, and the assistant isn't on NanoGPT.")
         base = prov.base_url or prov.builder_url
-        provider = s.search_links_provider if purpose == "links" else s.search_provider
+        # "keep nothing": Linkup only (zero data retention), and never another provider (as DA Toolkit's
+        # Confidential cases). Otherwise the chosen one; when it fails on NanoGPT's side, Valyu; when the
+        # NanoGPT account allows only zero data retention, Linkup (as DA Toolkit does)
+        zero = s.search_zero_retention
+        provider = websearch.ZDR_FALLBACK if zero else s.search_links_provider if purpose == "links" else s.search_provider
         after = websearch.clean_date(args.get("after"))
+        note = ""
         started = time.monotonic()
         try:
             try:
                 out = await websearch.web_search(base, self.models.key(prov) or "", query, provider, http=self.search_http,
                                                  sites=sites, after=after)
             except websearch.SearchError as e:
-                if e.status < 500 or provider == websearch.FALLBACK:
+                zdr = e.code == "zero_data_retention"
+                other = websearch.ZDR_FALLBACK if zdr else websearch.FALLBACK
+                if zero or provider == other or not (zdr or e.status >= 500):
                     raise
-                out = await websearch.web_search(base, self.models.key(prov) or "", query, websearch.FALLBACK,
+                out = await websearch.web_search(base, self.models.key(prov) or "", query, other,
                                                  http=self.search_http, sites=sites, after=after)
+                note = (f"{provider} isn't allowed while the NanoGPT account requires zero data retention; searched "
+                        f"with {other}" if zdr else f"{provider} failed on NanoGPT's side (HTTP {e.status}); searched with {other}")
         except websearch.SearchError as e:
             self._network_event({"kind": "search", "provider": provider, "query": query, "status": e.status or 0,
                                  "error": str(e)})
             raise UserError(f"The search failed: {e}") from None
         self._network_event({"kind": "search", "provider": out["provider"], "query": query, "status": 200,
                              "results": len(out["results"]), "cost": out["cost"],
-                             "seconds": round(time.monotonic() - started, 1)})
-        self.log("searched", query=query, provider=out["provider"], results=len(out["results"]), cost=out["cost"])
+                             "seconds": round(time.monotonic() - started, 1),
+                             "keeps_nothing": out["provider"] == websearch.ZDR_FALLBACK, **({"note": note} if note else {})})
+        self.log("searched", query=query, provider=out["provider"], results=len(out["results"]), cost=out["cost"],
+                 **({"note": note} if note else {}))
         text = websearch.format_for_model(query, out["provider"], out["results"])
+        if note:
+            text += f"\n({note}.)"
         if out["dates_dropped"]:
             text += "\n(The date limit was left out: this search provider doesn't take one.)"
         return text
