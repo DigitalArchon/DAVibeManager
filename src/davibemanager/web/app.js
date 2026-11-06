@@ -2150,6 +2150,11 @@ function settingsPanel() {
         "End-to-end encrypted: only an attested enclave can read what it sees, its quick tasks and second opinions too. Screenshots are described to it by private DeepSeek V4.1 Flash, sealed the same way. Paid per use.",
         () => save({ builder_model: "private/glm-5-3", builder_small_model: "", builder_vision_model: "private/deepseek-v4-1-flash",
           ...(nano ? { review_model: `${nano.name}|private/glm-5-3` } : {}) }, "The assistant now uses private GLM 5.3, sealed end to end.")),
+      // chosen before the preset had a private model that sees (0.1.0b8): picking it again does nothing, it's already picked
+      preset === "private" && !s.builder_vision_model ? h("div", { class: "warnbox small" },
+        "Nothing describes its screenshots to it, so it can't see them: you chose it before there was a private model that sees. ",
+        h("button", { class: "small", onclick: () => save({ builder_vision_model: "private/deepseek-v4-1-flash" }, "Private DeepSeek V4.1 Flash describes its screenshots now, sealed the same way.") },
+          "Have private DeepSeek V4.1 Flash describe them")) : null,
       radio("am", "claude", preset, "Claude Opus 5.5", "The strongest, especially for building apps. Paid per use; NanoGPT passes what it sees to Anthropic.",
         () => save({ builder_model: "anthropic/claude-opus-5.5", builder_small_model: "" }, "The assistant now uses Claude Opus 5.5.")),
       radio("am", "custom", preset, "Something else", null, () => { customBox.classList.remove("hidden"); }),

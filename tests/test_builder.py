@@ -1038,6 +1038,19 @@ async def test_the_private_presets_pictures_are_described_by_a_private_model(bui
     assert up.vision_model == "private/deepseek-v4-1-flash" and up.describe is not None
 
 
+async def test_a_private_preset_chosen_before_gets_its_picture_model_on_its_own(builder_env):
+    """Private GLM 5.3 as 0.1.0b8 and before left it, with no picture model: picking the preset again can't be
+    done (it's picked), so Settings' button saves the picture model alone, beside the private assistant."""
+    engine, _, _, _ = builder_env
+    s = engine.cfg.settings
+    s.builder_model, s.builder_small_model, s.builder_vision_model = "private/glm-5-3", "", ""
+    s.review_model = "Fake|private/glm-5-3"
+    assert engine._builder_upstream().describe is None
+    engine.save_settings({"builder_vision_model": "private/deepseek-v4-1-flash"})
+    up = engine._builder_upstream()
+    assert up.vision_model == "private/deepseek-v4-1-flash" and up.describe is not None
+
+
 async def test_a_private_chat_stays_private(builder_env):
     """Its quick-task and picture models are private too (or the same one), never a plain one beside it;
     once it has run sealed, it isn't carried on with a model in the clear (its session would go along);

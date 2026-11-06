@@ -142,7 +142,8 @@ the chat goes that way (its quick tasks and pictures too, and second opinions: t
 too, or there's none), or not at all: a chat that ran on a private model can't be carried on with one in the clear,
 since all of it would go along. Start a new chat for that. NanoGPT still sees how much is sent, and when.
 Private GLM 5.3 can't see images, so private DeepSeek V4.1 Flash describes its screenshots for it,
-sealed the same way (about a tenth of a cent a picture).
+sealed the same way (about a tenth of a cent a picture). If you chose Private GLM 5.3 before
+0.1.0b9, nothing describes them yet: Settings says so, with a button to set it up.
 
 ## Which host runs the model
 
