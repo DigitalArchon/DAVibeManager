@@ -352,3 +352,94 @@ async def test_a_reply_that_isnt_streamed_counts_as_the_provider_billed_it(tmp_p
         assert "usage" not in log[-1]
     finally:
         await g.stop()
+
+
+async def test_anthropics_server_tools_are_left_out():
+    """Its web search runs on Anthropic's servers: a chat model given it as a function would call it,
+    and nothing would run it."""
+    body = {"messages": [{"role": "user", "content": "search"}], "tools": [
+        {"type": "web_search_20250305", "name": "web_search", "max_uses": 8},
+        {"name": "Read", "description": "Read a file", "input_schema": {"type": "object"}},
+        {"type": "custom", "name": "Mine", "input_schema": {"type": "object"}}]}
+    _, tools, _ = await bridge.to_openai(body, bridge.ImageDescriber(None))
+    assert [t["function"]["name"] for t in tools] == ["Read", "Mine"]
+
+
+async def test_the_billing_block_is_left_out_of_the_system_prompt():
+    """Claude Code's first system block is for Anthropic's billing, with a fingerprint that differs
+    between conversations (Claude Code 2.1.296: cc_version=2.1.296.cf4, then .9ec)."""
+    body = {"system": [{"type": "text", "text": "x-anthropic-billing-header: cc_version=2.1.296.cf4; cc_entrypoint=sdk-py;"},
+                       {"type": "text", "text": "You are a Claude agent.", "cache_control": {"type": "ephemeral"}},
+                       {"type": "text", "text": "Build in /work."}],
+            "messages": [{"role": "user", "content": "hi"}]}
+    messages, _, _ = await bridge.to_openai(body, bridge.ImageDescriber(None))
+    assert messages[0] == {"role": "system", "content": "You are a Claude agent.\nBuild in /work."}
+
+
+async def test_system_messages_within_the_conversation_go_in_the_users_turn():
+    """As Claude Code 2.1.296 sends them to a model it doesn't know: its environment, after the user's
+    message. A chat template may refuse a system message anywhere but first."""
+    body = {"system": "You are Claude Code.", "messages": [
+        {"role": "user", "content": [{"type": "text", "text": "Add drag-to-zoom"}]},
+        {"role": "system", "content": "# Environment\n - Primary working directory: /work"},
+        {"role": "assistant", "content": [{"type": "tool_use", "id": "t1", "name": "Bash", "input": {}}]},
+        {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t1", "content": "ok"}]},
+        {"role": "system", "content": [{"type": "text", "text": "The date changed."}]},
+    ]}
+    messages, _, _ = await bridge.to_openai(body, bridge.ImageDescriber(None))
+    assert [m["role"] for m in messages] == ["system", "user", "assistant", "tool", "user"]
+    assert messages[1]["content"] == ("Add drag-to-zoom\n\n<system-reminder>\n# Environment\n - Primary working "
+                                      "directory: /work\n</system-reminder>")
+    assert messages[4]["content"] == "<system-reminder>\nThe date changed.\n</system-reminder>"
+
+
+async def test_the_usage_says_what_came_from_the_prompt_cache():
+    """As Anthropic's does: input_tokens without the cached part, which is cache_read_input_tokens."""
+    usage = {"prompt_tokens": 100_000, "completion_tokens": 50, "prompt_tokens_details": {"cached_tokens": 90_000}}
+
+    async def cached():
+        yield "text", "ok"
+        yield "done", TurnResult(content="ok", finish_reason="stop", usage=usage)
+    delta = next(d for n, d in parse(b"".join([c async for c in bridge.sse(cached(), "private/glm-5-3", 5)]))
+                 if n == "message_delta")
+    assert delta["usage"] == {"input_tokens": 10_000, "cache_creation_input_tokens": 0,
+                              "cache_read_input_tokens": 90_000, "output_tokens": 50}
+    msg = await bridge.message(cached(), "private/glm-5-3", 5)
+    assert msg["usage"]["cache_read_input_tokens"] == 90_000 and msg["usage"]["input_tokens"] == 10_000
+    assert bridge.anthropic_usage(None, 42) == {"input_tokens": 42, "output_tokens": 0}       # no usage: the estimate
+
+
+async def test_a_quiet_model_is_kept_alive_with_pings_and_its_progress_reported():
+    """The CLI gives up on a stream after 300 seconds without an event; attestation and a model
+    that reasons without streaming it are quiet."""
+    import asyncio
+
+    async def slow():
+        await asyncio.sleep(1.2)
+        yield "text", "late"
+        yield "done", TurnResult(content="late", finish_reason="stop")
+    seen = []
+    evs = parse(b"".join([c async for c in bridge.sse(slow(), "private/glm-5-3", 1, ping_every=0.5, progress=seen.append)]))
+    names = [n for n, _ in evs]
+    assert names.count("ping") >= 2 and names.index("ping") < names.index("content_block_start")
+    assert len(seen) >= 2 and "late" in json.dumps(evs)
+
+
+async def test_a_reply_abandoned_midway_closes_the_models_stream():
+    """The CLI gone mid-reply (the user stopped it): the request is dropped at once."""
+    import asyncio
+    closed = asyncio.Event()
+
+    async def endless():
+        try:
+            while True:
+                yield "text", "more "
+                await asyncio.sleep(0.01)
+        finally:
+            closed.set()
+    stream = bridge.sse(endless(), "private/glm-5-3", 1)
+    async for chunk in stream:
+        if b"more" in chunk:
+            break
+    await stream.aclose()
+    await asyncio.wait_for(closed.wait(), 1)
