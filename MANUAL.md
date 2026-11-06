@@ -141,6 +141,8 @@ attestation has been checked, so NanoGPT passes it on without being able to read
 the chat goes that way (its quick tasks and pictures too, and second opinions: the reviewer is private
 too, or there's none), or not at all: a chat that ran on a private model can't be carried on with one in the clear,
 since all of it would go along. Start a new chat for that. NanoGPT still sees how much is sent, and when.
+Private GLM 5.3 can't see images, so private DeepSeek V4.1 Flash describes its screenshots for it,
+sealed the same way (about a tenth of a cent a picture).
 
 ## Which host runs the model
 

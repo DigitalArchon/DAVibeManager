@@ -786,7 +786,7 @@ async function runRequest(r) {
 
 // ---- an offer to build: the app's own words on what it costs, and how big a change it might be
 
-const MODEL_NAME = { "z-ai/glm-5.3": "GLM 5.3", "z-ai/glm-5.3-flash": "GLM 5.3 Flash", "private/glm-5-3": "private GLM 5.3", "anthropic/claude-opus-5.5": "Claude Opus 5.5" };
+const MODEL_NAME = { "z-ai/glm-5.3": "GLM 5.3", "z-ai/glm-5.3-flash": "GLM 5.3 Flash", "private/glm-5-3": "private GLM 5.3", "private/deepseek-v4-1-flash": "private DeepSeek V4.1 Flash", "anthropic/claude-opus-5.5": "Claude Opus 5.5" };
 const SIZE_TEXT = {
   simple: ["A simple fix", "a few lines in one or two places."],
   significant: ["A significant modification", "several files, or a new part of the app."],
@@ -2147,8 +2147,8 @@ function settingsPanel() {
       radio("am", "glm", preset, "GLM 5.3", "Included with a NanoGPT subscription. Screenshots are described to it by GLM 5.3 Flash.",
         () => save({ builder_model: "z-ai/glm-5.3", builder_small_model: "z-ai/glm-5.3-flash", builder_vision_model: "z-ai/glm-5.3-flash" }, "The assistant now uses GLM 5.3.")),
       radio("am", "private", preset, "Private GLM 5.3",
-        "End-to-end encrypted: only an attested enclave can read what it sees, its quick tasks and second opinions too. Paid per use.",
-        () => save({ builder_model: "private/glm-5-3", builder_small_model: "", builder_vision_model: "",
+        "End-to-end encrypted: only an attested enclave can read what it sees, its quick tasks and second opinions too. Screenshots are described to it by private DeepSeek V4.1 Flash, sealed the same way. Paid per use.",
+        () => save({ builder_model: "private/glm-5-3", builder_small_model: "", builder_vision_model: "private/deepseek-v4-1-flash",
           ...(nano ? { review_model: `${nano.name}|private/glm-5-3` } : {}) }, "The assistant now uses private GLM 5.3, sealed end to end.")),
       radio("am", "claude", preset, "Claude Opus 5.5", "The strongest, especially for building apps. Paid per use; NanoGPT passes what it sees to Anthropic.",
         () => save({ builder_model: "anthropic/claude-opus-5.5", builder_small_model: "" }, "The assistant now uses Claude Opus 5.5.")),

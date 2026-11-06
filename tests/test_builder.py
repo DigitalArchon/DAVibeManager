@@ -1028,6 +1028,16 @@ async def test_stop_after_the_turns_result_ends_it_and_the_assistant_isnt_asked_
     assert engine.conv.chat[-1]["error"] == "stopped" and len(sent) == 1        # no nudge to go on
 
 
+async def test_the_private_presets_pictures_are_described_by_a_private_model(builder_env):
+    """As Settings' Private GLM 5.3 sets it: GLM 5.3 can't see, so private DeepSeek V4.1 Flash describes
+    its screenshots, sealed too, rather than nothing doing so."""
+    engine, _, _, _ = builder_env
+    engine.save_settings({"builder_model": "private/glm-5-3", "builder_small_model": "",
+                          "builder_vision_model": "private/deepseek-v4-1-flash", "review_model": "Fake|private/glm-5-3"})
+    up = engine._builder_upstream()
+    assert up.vision_model == "private/deepseek-v4-1-flash" and up.describe is not None
+
+
 async def test_a_private_chat_stays_private(builder_env):
     """Its quick-task and picture models are private too (or the same one), never a plain one beside it;
     once it has run sealed, it isn't carried on with a model in the clear (its session would go along);
