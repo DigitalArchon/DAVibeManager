@@ -237,6 +237,16 @@ def launch_command() -> str:
     return shlex.join(launch_argv())
 
 
+def server_config(app, port: int) -> uvicorn.Config:
+    """The app's own server, on asyncio's loop, never uvloop (which uvicorn would pick when it's
+    installed): uvloop's fork handler takes the GIL in a forked child, and GTK's image loader on
+    Ubuntu 26.04 (glycin) forks from a thread of its own. A fork that fell while uvloop started a
+    process (podman, as the app starts) left that child waiting for the GIL forever, and GTK waiting
+    for the child: the window never opened (1 start in 6 there, Nov 2026)."""
+    return uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning", ws_max_size=16 * 1024 * 1024,
+                          loop="asyncio")
+
+
 def main(argv: list[str] | None = None) -> None:
     ap = argparse.ArgumentParser(prog="davibemanager", description="Your Linux helper, in the tray")
     mode = ap.add_mutually_exclusive_group()
@@ -301,8 +311,7 @@ def main(argv: list[str] | None = None) -> None:
             except RuntimeError:
                 pass                            # the loop has closed: quitting
     app = create_app(token, make_engine, desktop, on_quit=lambda: quit_all())
-    server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning",
-                                           ws_max_size=16 * 1024 * 1024))
+    server = uvicorn.Server(server_config(app, port))
     thread = threading.Thread(target=server.run, daemon=True)
     thread.start()
     while not server.started:

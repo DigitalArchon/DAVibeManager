@@ -558,6 +558,17 @@ async def test_the_windows_size_is_remembered_and_fitted_to_the_screen(env, tmp_
     assert app_mod.window_size(engine.cfg, screen=(400, 300)) == app_mod.MIN_SIZE
 
 
+def test_the_apps_server_runs_on_asyncio_never_uvloop():
+    """uvloop's fork handler takes the GIL in a forked child: with GTK's image loader forking from a
+    thread of its own (glycin, Ubuntu 26.04), the window sometimes never opened."""
+    from davibemanager import app as app_mod
+    loop = app_mod.server_config(lambda scope, receive, send: None, 8790).get_loop_factory()()
+    try:
+        assert type(loop).__module__.startswith("asyncio.")
+    finally:
+        loop.close()
+
+
 def test_trouble_reads_the_same_on_every_line_it_shows_on():
     """apt says the same trouble twice (Err:, then E: Failed to fetch with the address): the window shouldn't flicker."""
     w = podman.BuildWatch()
