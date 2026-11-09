@@ -92,8 +92,118 @@ const MD_OPTS = {
 };
 DOMPurify.addHook("afterSanitizeAttributes", (node) => {
   if (node.tagName === "A") { node.setAttribute("target", "_blank"); node.setAttribute("rel", "noopener noreferrer"); }
+  node.classList?.remove(INSECURE_CLASS);                     // only the app makes the mark (markInsecure)
 });
-const md = (text) => DOMPurify.sanitize(marked.parse(text || "", { breaks: true }), MD_OPTS);
+const md = (text) => markInsecure(DOMPurify.sanitize(marked.parse(text || "", { breaks: true }), MD_OPTS));
+
+// ---- a link that isn't secure: marked where it is shown, and asked about before it opens
+// (DA Assistant's linkwarning, 214b26c, Nov 2026). Plain http to anywhere but this computer or its network
+// (netpolicy.py's rule, which has no .onion) is a page anyone on the way can read, or change before it
+// arrives. The mark comes after the link, from the address the link really has, so link text that reads
+// https:// over an http:// href is marked all the same; its words are the stylesheet's (::after), so
+// copying and Find leave them out.
+const INSECURE_CLASS = "insecure-link";
+const INSECURE_WORDS = "⚠ not secure";
+const INSECURE_TIP = "Not secure: this address uses plain http, so the page isn't encrypted. Anyone between you and the site can read it, or change it on its way.";
+// what a browser takes off both ends of an address, and out of it anywhere (WHATWG URL parsing)
+const LINK_ENDS = /^[\u0000-\u0020]+|[\u0000-\u0020]+$/g;
+const LINK_BREAKS = /[\t\n\r]/g;
+const LINK_UNSAFE = /[\\\s\u0000-\u001f\u007f]/;
+
+// netpolicy.is_local_host, for a host as a browser reads it: localhost, *.localhost, *.local, loopback,
+// the private ranges, link-local and unique local addresses
+function isLocalHost(host) {
+  host = String(host || "").toLowerCase().replace(/^\[|\]$/g, "").replace(/\.$/, "");
+  if (!host) return false;
+  if (host === "localhost" || host.endsWith(".localhost") || host.endsWith(".local")) return true;
+  const v4 = (text) => {
+    const m = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(text);
+    if (!m) return null;
+    const b = m.slice(1).map(Number);
+    return b.every((x) => x <= 255) ? b : null;
+  };
+  const local4 = (b) => b[0] === 127 || b[0] === 10 || (b[0] === 172 && b[1] >= 16 && b[1] <= 31)
+    || (b[0] === 192 && b[1] === 168) || (b[0] === 169 && b[1] === 254);
+  const four = v4(host);
+  if (four) return local4(four);
+  if (!host.includes(":")) return false;
+  // IPv6, as the browser writes it (compressed): expanded to its eight groups
+  let text = host, tail = [];
+  const embedded = /^(.*:)(\d+\.\d+\.\d+\.\d+)$/.exec(text);
+  if (embedded) {                                       // a dotted IPv4 address in its last 32 bits
+    const b = v4(embedded[2]);
+    if (!b) return false;
+    tail = [(b[0] << 8) | b[1], (b[2] << 8) | b[3]];
+    text = embedded[1].endsWith("::") ? embedded[1] : embedded[1].slice(0, -1);
+  }
+  const halves = text.split("::");
+  if (halves.length > 2) return false;
+  const part = (x) => (x ? x.split(":").map((g) => (/^[0-9a-f]{1,4}$/.test(g) ? parseInt(g, 16) : NaN)) : []);
+  const head = part(halves[0]), rest = halves.length === 2 ? part(halves[1]) : [];
+  const fill = 8 - tail.length - head.length - rest.length;
+  if (halves.length === 2 ? fill < 1 : fill !== 0) return false;
+  const groups = [...head, ...Array(halves.length === 2 ? fill : 0).fill(0), ...rest, ...tail];
+  if (groups.some((g) => !(g >= 0 && g <= 0xffff))) return false;
+  if (groups.slice(0, 5).every((g) => g === 0) && groups[5] === 0xffff)      // IPv4-mapped
+    return local4([groups[6] >> 8, groups[6] & 255, groups[7] >> 8, groups[7] & 255]);
+  if (groups.slice(0, 7).every((g) => g === 0) && groups[7] === 1) return true;   // ::1
+  return (groups[0] & 0xfe00) === 0xfc00 || (groups[0] & 0xffc0) === 0xfe80;      // fc00::/7, fe80::/10
+}
+
+// Whether a link to `href` would be opened over plain http somewhere other than this computer or its
+// network. https, mailto: and every other scheme are not. A host that can't be judged as written (a
+// backslash or a space in the address, one a browser can't read) is taken for one elsewhere.
+function insecureLink(href) {
+  const text = String(href ?? "").replace(LINK_ENDS, "");
+  if (!text.replace(LINK_BREAKS, "").toLowerCase().startsWith("http:")) return false;
+  if (LINK_UNSAFE.test(text)) return true;
+  let host;
+  try { host = new URL(text).hostname; } catch { return true; }
+  return !isLocalHost(host);
+}
+
+// Sanitized HTML with the mark after every link that isn't secure, and that link's title the warning's.
+function markInsecure(html) {
+  const t = document.createElement("template");
+  t.innerHTML = html;
+  for (const a of t.content.querySelectorAll("a[href]")) {
+    if (!insecureLink(a.getAttribute("href"))) continue;
+    a.setAttribute("title", INSECURE_TIP);
+    const mark = document.createElement("span");
+    mark.className = INSECURE_CLASS;
+    mark.setAttribute("title", INSECURE_TIP);
+    mark.setAttribute("role", "note");
+    mark.setAttribute("aria-label", INSECURE_WORDS);
+    a.after(mark);
+  }
+  return t.innerHTML;
+}
+
+// Opening one asks first, naming the whole address; Cancel is the default (and Escape's answer).
+const confirmedLinks = new WeakSet();
+function guardInsecureLinks() {
+  const ask = (e) => {
+    if (e.type === "auxclick" && e.button !== 1) return;
+    const a = e.target.closest?.("a[href]");
+    if (!a || confirmedLinks.has(a) || !insecureLink(a.href)) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const url = a.href;
+    const m = modal({ title: "Open a link that isn't secure?", body: h("div", {},
+      h("p", { class: "small" }, "This page isn't encrypted: anyone between you and the site can read it, or change it on its way."),
+      h("pre", { class: "small mono" }, url)),
+    buttons: [{ label: "Cancel" }, { label: "Open anyway", kind: "danger", onClick: () => {
+      const open = h("a", { href: url, target: "_blank", rel: "noopener noreferrer" });
+      confirmedLinks.add(open);
+      document.body.append(open);
+      open.click();
+      open.remove();
+    } }] });
+    m.box.querySelector(".buttons button")?.focus();          // Cancel: what Enter does unless the user moves
+  };
+  document.addEventListener("click", ask, true);
+  document.addEventListener("auxclick", ask, true);
+}
 
 function fmtBytes(n) {
   if (!n) return "0 B";
@@ -2395,6 +2505,7 @@ function init() {
   $("#input").addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey && !e.isComposing) send(e); });
   $("#stop-btn").addEventListener("click", () => guarded(() => api("POST", "/api/stop")));
   wireFiles();
+  guardInsecureLinks();
   $("#new-btn").addEventListener("click", () => guarded(() => api("POST", "/api/chats/new")));
   $("#menu-btn").addEventListener("click", (e) => { e.stopPropagation(); $("#menu").classList.toggle("hidden"); });
   document.addEventListener("click", (e) => { if (!e.target.closest(".menu")) hideMenu(); });

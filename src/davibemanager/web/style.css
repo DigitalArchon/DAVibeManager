@@ -369,3 +369,13 @@ details.change pre.patch { max-height: 40vh; overflow: auto; }
 .compare-side { min-width: 0; }
 .compare-side pre { max-height: 50vh; overflow: auto; }
 @media (max-width: 700px) { .compare { grid-template-columns: 1fr; } }
+/* a link that isn't secure (app.js markInsecure): the app's own mark, its words drawn here so that copying
+   and Find leave them out, and every property set so that nothing around it can hide it */
+.insecure-link { display: inline-block !important; position: static !important; visibility: visible !important;
+  opacity: 1 !important; margin: 0 0 0 .35em !important; padding: 0 .5em !important; border: 1px solid var(--warn) !important;
+  border-radius: 7px !important; color: var(--warn) !important; background: transparent !important;
+  font: normal normal 600 11px/1.5 system-ui, sans-serif !important; text-decoration: none !important;
+  white-space: nowrap !important; vertical-align: baseline !important; cursor: help;
+  -webkit-user-select: none !important; user-select: none !important; }
+.insecure-link::after { content: "⚠ not secure"; }
+
