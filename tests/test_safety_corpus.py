@@ -182,6 +182,11 @@ def test_changing_forms_still_raise(cmd, level):
     ("STRIPE=sk_" "live_51HabcdefghijklmnopqrstuvwxYZ in .env", "51HabcdefghijklmnopqrstuvwxYZ"),
     ("stripe key: rk_" "live_51HabcdefghijklmnopqrstuvwxYZ", "51HabcdefghijklmnopqrstuvwxYZ"),
     ("key AIza" "SyA-abcdefghijklmnopqrstuvwxyz12345", "AIza" "SyA-abcdefghijklmnopqrstuvwxyz12345"),
+    # a space before = or :, as in ~/.pypirc, ~/.my.cnf, smb credentials, Django's settings
+    ("password = hunter2", "hunter2"), ("Password : hunter2", "hunter2"), ("secret = s3cr3tValue", "s3cr3tValue"),
+    ('PASSWORD = "djangoPw1"', "djangoPw1"), ("[pypi]\nusername = __token__\npassword = pypiPassw0rd", "pypiPassw0rd"),
+    ("[client]\nuser=root\npassword = Hunter2Cnf", "Hunter2Cnf"), ("username=bob\npassword = smbPw1\ndomain=WORK", "smbPw1"),
+    ("SECRET_KEY = 'django-insecure-abc123'", "django-insecure-abc123"), ("client_secret : clientS3cret", "clientS3cret"),
 ])
 def test_secrets_in_these_forms_are_redacted(text, secret):
     out, n = redact(text)
@@ -200,6 +205,12 @@ def test_secrets_in_these_forms_are_redacted(text, secret):
 def test_diagnostic_output_is_not_mangled(text, kept):
     out, n = redact(text)
     assert kept in out and n == 0, out
+
+
+@pytest.mark.parametrize("text", ["password = hunter2", "Password : hunter2", "secret = s3cr3t"])
+def test_the_separator_is_kept_and_the_value_blanked(text):
+    out, _ = redact(text)
+    assert out.endswith(" [REDACTED]") and out[:-len(" [REDACTED]")].rstrip().endswith(("=", ":"))
 
 
 @pytest.mark.parametrize("command", [

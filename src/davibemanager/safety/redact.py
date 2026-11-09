@@ -61,12 +61,14 @@ RULES: list[tuple[re.Pattern, object]] = [
     (re.compile(r"(\bsshpass\s+(?:-\S+\s+)*?-p[ \t]*)(?!\[REDACTED)\S+"), r"\1" + MASK),
     # Cisco / network device secrets
     # (line-anchored or type-digit forms only, so log lines like "Failed password for root" survive;
-    # not kubectl's `get secret NAME`, which names one)
+    # not kubectl's `get secret NAME`, which names one). Never an = or : for the value: `secret = X`
+    # and `Password : X` are key=value forms, below, which blank X and not the separator
     (re.compile(r"\b(enable[ \t]+(?:secret|password)|(?<!get )(?<!describe )(?<!delete )(?<!edit )(?<!create )secret"
-                r"|key-string|pre-shared-key|wpa-psk|isakmp[ \t]+key)([ \t]+\d{1,2})?[ \t]+(?!\[REDACTED)\S+", _I), r"\1\2 " + MASK),
+                r"|key-string|pre-shared-key|wpa-psk|isakmp[ \t]+key)([ \t]+\d{1,2})?[ \t]+(?![=:])(?!\[REDACTED)\S+", _I),
+     r"\1\2 " + MASK),
     (re.compile(r"\b(password)([ \t]+\d{1,2})[ \t]+(?!\[REDACTED)\S+", _I), r"\1\2 " + MASK),
     # not the labels of `net user` output: "Password last set", "Password expires"
-    (re.compile(r"^([ \t]*(?:username[ \t]+\S+.*?[ \t])?password)[ \t]+(?!\[REDACTED)"
+    (re.compile(r"^([ \t]*(?:username[ \t]+\S+.*?[ \t])?password)[ \t]+(?![=:])(?!\[REDACTED)"
                 r"(?!(?:last|expires|changeable|required|age|never|history|length|policy|must|may|for|is|was|has|reset|change)\b)\S+",
                 _I | re.M), r"\1 " + MASK),
     (re.compile(r"\bsnmp-server\s+community\s+\S+", _I), "snmp-server community " + MASK),
