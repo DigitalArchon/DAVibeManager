@@ -17,22 +17,25 @@ _I = re.IGNORECASE
 # `stat .env` (names and metadata only) are not flagged but `cat` of the same path is.
 SECRET_FILES: list[tuple[re.Pattern, str]] = [
     (re.compile(r"/etc/g?shadow-?(?![\w.])"), "reads password hashes"),
-    (re.compile(r"(?:^|[\s/'\"])(?:id_(?:rsa|dsa|ecdsa|ed25519)(?:_sk)?|ssh_host_\w+_key)(?![\w.])"), "reads a private SSH key"),
+    (re.compile(r"(?:^|[\s/\\'\"])(?:id_(?:rsa|dsa|ecdsa|ed25519)(?:_sk)?|ssh_host_\w+_key)(?![\w.])"), "reads a private SSH key"),
     (re.compile(r"(?:/ssl/private/|/letsencrypt/(?:live|archive)/\S*privkey|\bpriv(?:ate)?[\w.-]*\.pem\b|\.key(?![\w.])|\.(?:p12|pfx|jks|keystore|kdbx|ppk)(?![\w.]))", _I),
      "reads a private key or key store"),
-    (re.compile(r"(?:^|[\s/'\"=])\.env(?!\.(?:example|sample|dist|template)\b)(?:\.[\w-]+)?(?![\w/.-])"), "reads an environment file (often holds passwords)"),
+    (re.compile(r"(?:^|[\s/\\'\"=])\.env(?!\.(?:example|sample|dist|template)\b)(?:\.[\w-]+)?(?![\w/\\.-])"),
+     "reads an environment file (often holds passwords)"),
     (re.compile(r"/proc/[\w$]+/environ\b"), "reads a process's environment (often holds secrets)"),
-    (re.compile(r"(?:\.netrc|\.pgpass|\.my\.cnf|\.git-credentials|\.aws/credentials|\.docker/config\.json|\.kube/config|"
+    # Windows paths too (\.aws\credentials); a NetworkManager connection is a file in its directory
+    (re.compile(r"(?:\.netrc|\.pgpass|\.my\.cnf|\.git-credentials|\.aws[\\/]credentials|\.docker[\\/]config\.json|\.kube[\\/]config|"
                 r"\.htpasswd|wp-config\.php|\bsecrets?\.(?:ya?ml|json|env|txt|toml)|\bcredentials?\.(?:json|xml|ya?ml|txt)|"
-                r"/system-connections/|wpa_supplicant[\w.-]*\.conf|\bunattend\.xml|\bsysprep\.inf|\bweb\.config|"
+                r"/system-connections/\S*|wpa_supplicant[\w.-]*\.conf|\bunattend\.xml|\bsysprep\.inf|\bweb\.config|"
                 r"\bdatabase\.yml|\bvault\.(?:ya?ml|json)|\.vault-token)(?![\w-])", _I),
      "reads a file that usually holds credentials"),
     (re.compile(r"(?:\.bash_history|\.zsh_history|\.mysql_history|\.psql_history|ConsoleHost_history\.txt)\b", _I),
      "reads shell history (often holds typed passwords)"),
     (re.compile(r"\bntds\.dit\b|\\config\\(?:SAM|SECURITY)\b", _I), "reads Windows credential stores"),
     # a person's own computer: their keys, browsers, passwords, mail and messages
-    (re.compile(r"\.ssh/"), "reads your SSH settings or keys"),
-    (re.compile(r"\.gnupg/"), "reads your encryption keys"),
+    # (not a public key, which is made to be given out)
+    (re.compile(r"\.ssh[\\/](?!\S*\.pub(?![\w.-]))"), "reads your SSH settings or keys"),
+    (re.compile(r"\.gnupg[\\/]"), "reads your encryption keys"),
     (re.compile(r"\.mozilla/|\.config/(?:google-chrome|chromium|BraveSoftware|vivaldi|opera|microsoft-edge)|"
                 r"snap/(?:firefox|chromium)/|\.var/app/(?:org\.mozilla|com\.google\.Chrome|org\.chromium|com\.brave)", _I),
      "reads your browser data (history, saved passwords, cookies)"),
@@ -111,6 +114,12 @@ _SEGMENTS = re.compile(r"\|\||&&|[;|&\n]")
 _PREFIX = re.compile(r"^\s*(?:(?:sudo|doas)\s+(?:-\S+\s+)*|(?:nice|nohup|time|command|exec|xargs)\s+(?:-\S+\s+)*|[A-Za-z_]\w*=\S*\s+)*")
 
 
+def _reads_through_find(segment: str) -> bool:
+    """`find ... -exec cat {}` prints what it finds: find looks at names, its -exec may not."""
+    m = re.search(r"\bfind\b.*\s-(?:exec|execdir|ok|okdir)\s+(\S+)", segment)
+    return bool(m) and m.group(1).rsplit("/", 1)[-1].lower() not in _METADATA_ONLY
+
+
 def _first_word(segment: str) -> str:
     rest = segment[_PREFIX.match(segment).end():]
     word = rest.split(None, 1)[0] if rest.strip() else ""
@@ -123,7 +132,7 @@ def sensitive(command: str) -> list[str]:
     for seg in _SEGMENTS.split(command):
         if not seg.strip():
             continue
-        if _first_word(seg).lower() in _METADATA_ONLY:
+        if _first_word(seg).lower() in _METADATA_ONLY and not _reads_through_find(seg):
             continue
         for pat, why in SECRET_FILES:
             if why not in out and pat.search(seg):
