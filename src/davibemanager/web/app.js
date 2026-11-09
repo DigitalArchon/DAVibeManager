@@ -13,7 +13,12 @@ const DESKTOP = (() => {
   } catch { return fromUrl; }
 })();
 
-const TOKEN = (() => {
+// The window's token: given in the app window's address (?t=, which no command line shows); in a browser,
+// exchanged once for the one-time code its address carries (#c=: what a browser is opened with is on its
+// command line, for every user of this computer to read; app.py open_in_browser). Kept for this tab, and the
+// address cleared of both.
+const LAUNCH = /(?:^#|&)c=([\w-]+)/.exec(location.hash)?.[1] || null;
+let TOKEN = (() => {
   const fromUrl = new URLSearchParams(location.search).get("t");
   try {
     if (fromUrl) sessionStorage.setItem("dvm-token", fromUrl);
@@ -22,6 +27,15 @@ const TOKEN = (() => {
     return t;
   } catch { return fromUrl; }
 })();
+
+async function launchToken(code) {
+  const res = await fetch("/api/launch", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ code }) });
+  let data = {};
+  try { data = await res.json(); } catch { /* empty */ }
+  if (!res.ok || !data.token) throw new Error(data.error || data.detail || `${res.status} ${res.statusText}`);
+  try { sessionStorage.setItem("dvm-token", data.token); } catch { /* kept for this page only */ }
+  return data.token;
+}
 
 // the colours: remembered from last time so the window opens in them, then taken from Settings
 function applyTheme(theme) {
@@ -2545,7 +2559,10 @@ function init() {
     else if (S.panel) closePanel();
   });
   if (DESKTOP) document.body.classList.add("desktop");
-  connect();
+  if (!LAUNCH) return connect();
+  launchToken(LAUNCH).then((t) => { TOKEN = t; connect(); }, (e) => {
+    document.body.replaceChildren(h("div", { class: "quit-note" }, h("h2", {}, "This link can't open DA Vibe Manager."), h("p", {}, e.message)));
+  });
 }
 
 init();

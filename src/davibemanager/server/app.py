@@ -9,6 +9,8 @@ import os
 import re
 import secrets
 import shutil
+import socket
+import sys
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -35,6 +37,64 @@ MAX_BODY = 16 << 20
 STREAMED = frozenset({"/api/attachments", "/api/restore/upload", "/api/share/upload"})
 
 
+# A browser is opened with a one-time code, never the token (app.py open_in_browser): this long to be used
+LAUNCH_SECONDS = 120
+
+
+def peer_uid(peer: tuple | None, server: tuple | None) -> int | None:
+    """The user whose socket at `peer` is connected to `server` on this computer (a loopback TCP
+    connection), as the kernel's table of TCP sockets has it; None where that can't be said."""
+    if not peer or not server or not all(isinstance(at[1], int) for at in (peer, server)):
+        return None
+
+    def written(host: str, port: int) -> str:
+        try:
+            raw = socket.inet_aton(host)
+        except OSError:
+            return ""
+        return f"{(raw[::-1] if sys.byteorder == 'little' else raw).hex().upper()}:{port:04X}"
+    local, remote = written(peer[0], peer[1]), written(server[0], server[1])
+    try:
+        with open("/proc/net/tcp", encoding="ascii") as f:
+            lines = f.read().splitlines()[1:]
+    except OSError:
+        return None
+    for line in lines:
+        fields = line.split()
+        if len(fields) > 7 and fields[1] == local and fields[2] == remote:
+            return int(fields[7])
+    return None
+
+
+class Launches:
+    """The one-time codes the browser is opened with (http://127.0.0.1:PORT/#c=CODE), each exchanged once
+    for the window's token (POST /api/launch). A browser's command line shows every user of this computer
+    what it was opened with, and the token in it gave another user the app for as long as it ran (Nov 2026:
+    it was ?t=TOKEN). A code is good once, for LAUNCH_SECONDS, and only to a process of this user's: one
+    taken first by anyone else would be refused."""
+
+    def __init__(self) -> None:
+        self._codes: dict[str, float] = {}
+
+    def new(self) -> str:
+        code = secrets.token_urlsafe(24)
+        now = time.monotonic()
+        self._codes = {c: at for c, at in self._codes.items() if now - at < LAUNCH_SECONDS}
+        self._codes[code] = now
+        return code
+
+    def take(self, code: str, peer: tuple | None = None, server: tuple | None = None) -> bool:
+        """Whether `code` is one given out, not used yet, still current, and asked for by this user."""
+        found = next((c for c in self._codes if hmac.compare_digest(c.encode(), str(code).encode("utf-8", "replace"))), None)
+        if found is None:
+            return False
+        uid = peer_uid(peer, server)
+        if uid is not None and uid != os.getuid():
+            return False                    # another user's process: refused, and the code stands for this one's
+        at = self._codes.pop(found)
+        return time.monotonic() - at < LAUNCH_SECONDS
+
+
 class WindowGate:
     """ASGI middleware in front of the window's app (DA Toolkit's CompanionGate, ff33bf1, Nov 2026).
     FastAPI reads and parses a JSON body before it runs dependencies, where the token was checked, and
@@ -57,6 +117,11 @@ class WindowGate:
         await self.app(scope, receive, send)
 
     def _refusal(self, path: str, headers: Headers) -> tuple[int, str] | None:
+        if path == "/api/launch":           # the one request without the token: it exchanges a launch code for it
+            try:
+                return (413, "request too large") if int(headers.get("content-length") or 0) > 1024 else None
+            except ValueError:
+                return 400, "bad Content-Length"
         if not self.check(headers.get("x-token")):
             return 403, "bad token"
         if path in STREAMED:
@@ -79,9 +144,10 @@ def upload_dir() -> Path:
 
 
 def create_app(token: str, make_engine: Callable[[Callable[[dict], None]], Engine],
-               desktop=None, on_quit: Callable[[], None] | None = None) -> FastAPI:
+               desktop=None, on_quit: Callable[[], None] | None = None, launches: Launches | None = None) -> FastAPI:
     """The window's app, for 127.0.0.1 only. `desktop` (app.Desktop, only in the app window)
-    serves the clipboard and hides the window. `on_quit` ends the process (POST /api/quit)."""
+    serves the clipboard and hides the window. `on_quit` ends the process (POST /api/quit).
+    `launches`: the one-time codes a browser is opened with, exchanged for the token (POST /api/launch)."""
     listeners: set[asyncio.Queue] = set()
     loops: list[asyncio.AbstractEventLoop] = []
 
@@ -135,6 +201,20 @@ def create_app(token: str, make_engine: Callable[[Callable[[dict], None]], Engin
     app.add_exception_handler(UserError, user_error)
     app.add_exception_handler(PodmanError, user_error)
     app.add_exception_handler(KeyError, key_error)
+
+    @app.post("/api/launch")
+    async def launch(request: Request):
+        """The token, once, for the one-time code a browser was opened with (Launches)."""
+        try:
+            code = str((await request.json()).get("code") or "")
+        except (ValueError, AttributeError):
+            code = ""
+        client = request.client
+        if launches is None or not launches.take(code, (client.host, client.port) if client else None,
+                                                 request.scope.get("server")):
+            return JSONResponse({"error": "This link has been used already, or is too old. Open DA Vibe Manager "
+                                          "again from its menu entry: it opens a new one."}, status_code=403)
+        return {"token": token}
 
     @app.get("/")
     async def index():

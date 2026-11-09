@@ -1,5 +1,7 @@
 """The local server: everything needs the per-launch token."""
 
+import os
+
 import httpx
 
 from davibemanager.config import Config
@@ -216,3 +218,74 @@ async def test_an_unauthenticated_upload_is_cut_off_over_the_socket(tmp_path):
     finally:
         server.should_exit = True
         await asyncio.wait_for(task, 10)
+
+
+def test_the_browser_is_opened_on_a_one_time_code_never_the_token(monkeypatch):
+    """A browser's command line shows every user of this computer what it was opened with: it was the token
+    (?t=…), which gave them the app for as long as it ran."""
+    import webbrowser
+
+    from davibemanager.app import browser_opener
+    from davibemanager.server.app import Launches
+
+    opened, launches = [], Launches()
+    monkeypatch.setattr(webbrowser, "open", opened.append)
+    browser_opener(8123, launches)()
+    browser_opener(8123, launches)()                     # a second launch: a code of its own
+    assert all(u.startswith("http://127.0.0.1:8123/#c=") and "t=" not in u for u in opened)
+    first, second = (u.split("#c=")[1] for u in opened)
+    assert first != second and launches.take(second) and launches.take(first)
+    assert not launches.take(first)                       # once
+
+
+def test_a_launch_code_is_good_once_briefly_and_only_to_this_user(monkeypatch):
+    from davibemanager.server import app as app_mod
+
+    launches = app_mod.Launches()
+    code = launches.new()
+    assert not launches.take("guessed") and not launches.take(code + "x")
+    monkeypatch.setattr(app_mod, "peer_uid", lambda peer, server: os.getuid() + 1)
+    assert not launches.take(code, ("127.0.0.1", 40000), ("127.0.0.1", 8123))     # another user's process
+    monkeypatch.setattr(app_mod, "peer_uid", lambda peer, server: os.getuid())
+    assert launches.take(code, ("127.0.0.1", 40001), ("127.0.0.1", 8123))         # still this user's to use
+    late = launches.new()
+    monkeypatch.setattr(app_mod.time, "monotonic", lambda real=app_mod.time.monotonic: real() + app_mod.LAUNCH_SECONDS + 1)
+    assert not launches.take(late)
+
+
+def test_the_peer_of_a_loopback_connection_is_known_by_its_user():
+    import socket
+
+    from davibemanager.server.app import peer_uid
+
+    server = socket.socket()
+    server.bind(("127.0.0.1", 0))
+    server.listen(1)
+    client = socket.create_connection(server.getsockname())
+    try:
+        assert peer_uid(client.getsockname(), server.getsockname()) == os.getuid()
+        assert peer_uid(("127.0.0.1", 1), server.getsockname()) is None
+    finally:
+        client.close()
+        server.close()
+
+
+async def test_the_page_exchanges_its_code_for_the_token_and_nothing_else_does(tmp_path):
+    from davibemanager.server.app import Launches
+
+    def make(emit):
+        e = Engine(Config(), emit, tmp_path, save_config=lambda c: None)
+        e.start_workspace = lambda: None
+        return e
+    launches = Launches()
+    app = create_app("secret", make, launches=launches)
+    async with app.router.lifespan_context(app):
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://127.0.0.1") as c:
+            code = launches.new()
+            r = await c.post("/api/launch", json={"code": code})
+            assert r.status_code == 200 and r.json() == {"token": "secret"}
+            r = await c.post("/api/launch", json={"code": code})
+            assert r.status_code == 403 and "used already" in r.json()["error"]
+            assert (await c.post("/api/launch", json={"code": "nope"})).status_code == 403
+            assert (await c.post("/api/launch", content=b"x" * 2000)).status_code == 413     # nothing big read
+            assert (await c.post("/api/launch", content=b"{")).status_code == 403

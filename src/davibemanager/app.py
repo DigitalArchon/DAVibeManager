@@ -19,7 +19,7 @@ import uvicorn
 from . import config, omarchy
 from .engine import Engine
 from .hostenv import HOST_TYPELIB_DIRS, set_for_self
-from .server.app import create_app, runtime_dir
+from .server.app import Launches, create_app, runtime_dir
 
 
 def _free_port() -> int:
@@ -237,6 +237,15 @@ def launch_command() -> str:
     return shlex.join(launch_argv())
 
 
+def browser_opener(port: int, launches: Launches):
+    """What opens the default browser on the app: on a one-time code (server.app.Launches), never the token,
+    since what a browser is opened with is on its command line, which every user of this computer can read."""
+    def open_in_browser() -> None:
+        import webbrowser
+        webbrowser.open(f"http://127.0.0.1:{port}/#c={launches.new()}")
+    return open_in_browser
+
+
 def server_config(app, port: int) -> uvicorn.Config:
     """The app's own server, on asyncio's loop, never uvloop (which uvicorn would pick when it's
     installed): uvloop's fork handler takes the GIL in a forked child, and GTK's image loader on
@@ -269,6 +278,8 @@ def main(argv: list[str] | None = None) -> None:
         if d is not None:
             from gi.repository import GLib
             GLib.idle_add(lambda: (d.show(), False)[1])
+        elif desktop_ref.get("browser") is not None:
+            desktop_ref["browser"]()        # in the browser: a page of its own, for a launch code of its own
         else:
             shown.set()
     if not tray_mod.claim_single_instance(show_from_elsewhere):
@@ -316,7 +327,8 @@ def main(argv: list[str] | None = None) -> None:
                 engine.loop.call_soon_threadsafe(engine.remember_window, size["w"], size["h"])
             except RuntimeError:
                 pass                            # the loop has closed: quitting
-    app = create_app(token, make_engine, desktop, on_quit=lambda: quit_all())
+    launches = Launches()
+    app = create_app(token, make_engine, desktop, on_quit=lambda: quit_all(), launches=launches)
     server = uvicorn.Server(server_config(app, port))
     thread = threading.Thread(target=server.run, daemon=True)
     thread.start()
@@ -326,6 +338,7 @@ def main(argv: list[str] | None = None) -> None:
         time.sleep(0.05)
 
     url = f"http://127.0.0.1:{port}/?t={token}"
+    open_in_browser = browser_opener(port, launches)
 
     def quit_all():
         if size["timer"] is not None:
@@ -341,9 +354,8 @@ def main(argv: list[str] | None = None) -> None:
             print(f"DA Vibe Manager running. Open this URL (keep it private - it grants access to the app):\n{url}",
                   flush=True)
             if not args.no_open:
-                import webbrowser
-
-                webbrowser.open(url)
+                desktop_ref["browser"] = open_in_browser
+                open_in_browser()
             while thread.is_alive():  # until Quit in the page, or Ctrl+C
                 thread.join(0.5)
         else:
