@@ -61,6 +61,7 @@ class Models:
         self._unsupported: dict[tuple[str, str], set[str]] = {}   # generation settings a model's route refused
         self._tee: dict[tuple[str, str, str], tuple[tee_mod.TeeClient, float, dict]] = {}
         self._doubted: set[tuple[str, str, str]] = set()   # TEE models a reply of failed its check: attested again
+        self._told_failed: set[tuple[str, str, str]] = set()  # ...and the user told, until one of its replies holds
         self.tee_factory: Callable | None = None      # tests: (base_url, key, model) -> TeeClient
         self.client_factory: Callable | None = None   # tests: (provider, model) -> client
         self.private_lister: Callable | None = None   # tests: base_url -> private model ids
@@ -483,9 +484,13 @@ class Models:
             self._log("tee_reply_checked", model=model, **found)
             if found["tee"] == "failed":
                 self._doubted.add(key)
-                self._emit("toast", level="error", text=(
-                    f"{model}'s reply didn't match the record its attested enclave signed: it wasn't signed by "
-                    "that enclave's key, or it isn't the text that was signed. Its enclave is attested again "
-                    "before anything more is sent to it."))
+                if key not in self._told_failed:     # once, not at each of a turn's many requests: each is marked
+                    self._told_failed.add(key)
+                    self._emit("toast", level="error", text=(
+                        f"{model}'s reply didn't match the record its attested enclave signed: it wasn't signed by "
+                        "that enclave's key, or it isn't the text that was signed. Its enclave is attested again "
+                        "before anything more is sent to it, and Sandbox activity marks each reply so."))
+            elif found["tee"] in ("verified", "signed"):
+                self._told_failed.discard(key)
             return found
         return check

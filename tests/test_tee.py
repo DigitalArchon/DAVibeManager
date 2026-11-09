@@ -1256,7 +1256,7 @@ async def test_a_tee_reply_whose_record_doesnt_match_is_said_and_its_model_attes
     assert all('"ok"' in text for text in said)                    # nothing held back or changed
     assert [e["tee"] for e in log if e["kind"] == "tee_reply"] == ["failed", "failed"]
     errors = [d["text"] for kind, d in told if kind == "toast" and d.get("level") == "error"]
-    assert errors and "didn't match the record" in errors[0] and "attested again" in errors[0]
+    assert len(errors) == 1 and "didn't match the record" in errors[0] and "attested again" in errors[0]   # said once
     # attested before the first request, and again before the second, though the first was minutes fresh
     assert len([r for r in seen if "/tee/attestation" in str(r.url)]) == 2
 
