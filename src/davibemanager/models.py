@@ -26,6 +26,8 @@ from .netpolicy import InsecureURL, check_url
 
 # A TEE model's attestation is made again, with a fresh nonce, before a send once it is this old.
 TEE_REATTEST_SECONDS = 900
+# a provider's model list that couldn't be read is asked for again after this long, no sooner
+CAPS_RETRY_SECONDS = 30
 # the reviewer chosen automatically: the first private model matching one of these, in order
 REVIEWER_PREFERENCE = (r"glm", r"deepseek", r"kimi", r"qwen", r"gpt-oss", r"llama", r".")
 
@@ -50,6 +52,7 @@ class Models:
         self._models: dict[str, list[str]] = {}
         self._enclaves: dict[str, Enclave] = {}      # provider name -> attested enclave (Private Mode)
         self._caps: dict[str, dict[str, dict]] = {}   # provider -> model id -> capabilities
+        self._caps_failed: dict[str, float] = {}      # provider -> when its list last couldn't be read
         self.caps_http = None                         # httpx client override (tests)
         self._unsupported: dict[tuple[str, str], set[str]] = {}   # generation settings a model's route refused
         self._tee: dict[tuple[str, str, str], tuple[tee_mod.TeeClient, float, dict]] = {}
@@ -192,24 +195,40 @@ class Models:
                         "reasoning": caps.get("reasoning", False)})
         return out
 
-    async def _load_caps(self, prov: Provider) -> None:
+    async def _load_caps(self, prov: Provider) -> bool:
+        """Read the provider's model list; whether there's one now. A provider other than NanoGPT lists
+        nothing of what its models do: known as that. One that can't be read now isn't taken for an
+        empty list: it's asked for again, CAPS_RETRY_SECONDS later at the soonest."""
         if not offers_private_mode(prov.base_url):
             self._caps.setdefault(prov.name, {})
-            return
+            return True
+        if time.monotonic() - self._caps_failed.get(prov.name, float("-inf")) < CAPS_RETRY_SECONDS:
+            return prov.name in self._caps
         try:
-            self._caps[prov.name] = await capabilities.fetch_nanogpt(prov.base_url, self.key(prov), http=self.caps_http)
-        except Exception:  # noqa: BLE001 - models still work; their limits are just unknown
-            self._caps.setdefault(prov.name, {})
+            caps = await capabilities.fetch_nanogpt(prov.base_url, self.key(prov), http=self.caps_http)
+        except Exception:  # noqa: BLE001 - models still work; their limits are just unknown for now
+            caps = {}
+        if not caps:
+            self._caps_failed[prov.name] = time.monotonic()
+            return prov.name in self._caps               # an earlier list is kept
+        self._caps[prov.name] = caps
+        self._caps_failed.pop(prov.name, None)
+        return True
 
-    async def sees(self, prov: Provider, model: str) -> bool:
+    async def sees(self, prov: Provider, model: str) -> bool | None:
         """Whether `model` reads images itself: the provider's vision_overrides, else what the
-        provider reports (its list loaded first if it hasn't been); unknown is no."""
+        provider reports (its list loaded first if it hasn't been); a model it doesn't list, no. None
+        while the list can't be read: never guessed, since a model that sees would be given
+        descriptions in place of the images, and one that doesn't images it can't read."""
         override = (prov.vision_overrides or {}).get(model)
         if override in ("yes", "no"):
             return override == "yes"
         if self.known_caps(prov) is None:
             await self.load_caps(prov)
-        return bool((capabilities.lookup(self._caps.get(prov.name, {}), model) or {}).get("vision"))
+        caps = self.known_caps(prov)
+        if caps is None:
+            return None
+        return bool((capabilities.lookup(caps, model) or {}).get("vision"))
 
     async def efforts(self, prov: Provider, model: str) -> tuple[str, ...] | None:
         """The reasoning efforts `model` takes: for a private model those every private model takes
@@ -227,8 +246,8 @@ class Models:
         return self._caps.get(prov.name)
 
     async def load_caps(self, prov: Provider) -> None:
-        await self._load_caps(prov)
-        self._changed()
+        if await self._load_caps(prov):
+            self._changed()
 
     async def choose_reviewer(self) -> str:
         """Pick a private (end-to-end encrypted) NanoGPT model as the reviewer when none is set.

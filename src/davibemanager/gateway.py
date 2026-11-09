@@ -255,7 +255,8 @@ class Upstream:
     describe: bridge.Describe | None = None
     vision_model: str = ""
     # whether a translated model reads images itself (then it gets them, not descriptions)
-    sees: Callable[[str], Awaitable[bool]] | None = None
+    # (None: not known now, the provider's model list unread: the request is refused, to be asked again)
+    sees: Callable[[str], Awaitable[bool | None]] | None = None
     reasoning: str = "high"          # reasoning effort for translated models (never "none": see config)
     # the efforts a translated model takes (None: not known, sent as asked); the nearest goes (llm/params.py)
     efforts: Callable[[str], Awaitable[tuple[str, ...] | None]] | None = None
@@ -528,7 +529,13 @@ class Gateway:
             self._images = bridge.ImageDescriber(up.describe, up.vision_model)
         wanted = up.reasoning or "high"
         try:
-            native = bool(up.sees and await up.sees(model))
+            native = False
+            if up.sees is not None and bridge.has_images(data):
+                native = await up.sees(model)
+                if native is None:
+                    raise Refused(503, f"{up.provider}'s list of models couldn't be read, so it isn't known whether "
+                                       f"{model} sees images: nothing was sent. It's asked for again.", "api_error",
+                                  retry=True)
             messages, tools, params = await bridge.to_openai(data, self._images, native=native)
             effort = await self._effort(up, model, wanted)
             params = with_effort(params, effort)

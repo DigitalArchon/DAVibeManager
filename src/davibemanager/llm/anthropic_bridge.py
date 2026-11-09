@@ -85,12 +85,14 @@ def _data_url(block: dict) -> str | None:
 
 
 class ImageDescriber:
-    """Describes images through the vision helper, once per image."""
+    """Describes images through the vision helper, once per image: two requests carrying the same new
+    one at once (the assistant's own and a subagent's) wait for the one description, paid for once."""
 
     def __init__(self, describe: Describe | None, model: str = ""):
         self._describe = describe
         self.model = model
         self._cache: dict[str, str] = {}
+        self._pending: dict[str, asyncio.Future] = {}
 
     async def text_for(self, block: dict, context: str) -> str:
         url = _data_url(block)
@@ -100,11 +102,27 @@ class ImageDescriber:
         if digest not in self._cache:
             if self._describe is None:
                 return "[An image was here. You can't see images, and no vision helper is set up.]"
+            task = self._pending.get(digest)
+            if task is None:
+                task = self._pending[digest] = asyncio.ensure_future(self._describe(url, context))
+                task.add_done_callback(lambda _t, d=digest: self._pending.pop(d, None))
             try:
-                self._cache[digest] = await self._describe(url, context)
+                # shielded: a request that goes away (the assistant was stopped) leaves it to the others
+                self._cache[digest] = await asyncio.shield(task)
+            except asyncio.CancelledError:
+                raise
             except Exception as e:  # noqa: BLE001 - the assistant should know, and can carry on without it
                 return f"[An image was here, but the vision helper couldn't describe it: {e}]"
         return f"[Image, described for you by a vision model ({self.model}):]\n{self._cache[digest]}"
+
+
+def has_images(body: dict) -> bool:
+    """Whether a request carries an image anywhere: in a message, or in a tool's result."""
+    def any_image(content) -> bool:
+        return isinstance(content, list) and any(
+            isinstance(b, dict) and (b.get("type") == "image" or (b.get("type") == "tool_result" and any_image(b.get("content"))))
+            for b in content)
+    return any(isinstance(m, dict) and any_image(m.get("content")) for m in body.get("messages") or [])
 
 
 def _image_part(block: dict) -> dict | None:

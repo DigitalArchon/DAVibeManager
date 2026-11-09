@@ -447,6 +447,7 @@ async def test_a_reply_abandoned_midway_closes_the_models_stream():
 
 # ---------------------------------------------------------------- found by DA Private Coder (Nov 8 2026)
 
+import asyncio  # noqa: E402
 from contextlib import asynccontextmanager  # noqa: E402
 
 from davibemanager.llm import params as params_mod  # noqa: E402
@@ -626,3 +627,58 @@ async def test_a_private_model_takes_the_private_efforts_not_its_tee_twins(tmp_p
     assert await m.efforts(prov, "someone/unlisted") is None
     assert m.params(prov, "private/deepseek-v4-1-flash")["reasoning_effort"] == "high"
     assert m.params(prov, "TEE/deepseek-v4.1-flash")["reasoning_effort"] == "medium"
+
+
+async def test_whether_a_model_sees_is_never_guessed_when_nanogpts_list_cant_be_read(tmp_path, monkeypatch):
+    """The list unread was taken for "it can't see", for as long as the app ran: a model that sees had its
+    images described instead. Now a request with an image is refused to be asked again (nothing sent, nothing
+    described), one without goes, and once the list is read it's kept."""
+    from davibemanager import models as models_mod
+    listing = {"data": [{"id": "TEE/kimi-k3", "capabilities": {"vision": True}}]}
+    up = {"now": False}
+
+    def handler(request):
+        return httpx.Response(200, json=listing) if up["now"] else httpx.Response(503, text="down")
+    prov = Provider("NanoGPT", BASE)
+    m = Models(Config(providers=[prov]), save_config=lambda c: None, emit=lambda *a, **k: None, log=lambda *a, **k: None)
+    m.key = lambda p: "sk"
+    m.caps_http = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    monkeypatch.setattr(models_mod, "CAPS_RETRY_SECONDS", 0)            # asked again at once (30 s, live)
+    fake, seen = FakePrivate(), Seen()
+    shot = {"stream": True, "messages": [{"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t1",
+                                                                       "content": [bridge.b64_image(PNG)]}]}]}
+    assert bridge.has_images(shot) and not bridge.has_images(ASK)
+    async with translating(tmp_path, fake, describe=seen.describe, vision_model="private/deepseek-v4-1-flash",
+                           sees=lambda model: m.sees(prov, model)) as (g, log):
+        r = await _post(g, {**shot, "model": "private/kimi-k3"})
+        assert r.status_code == 503 and "x-should-retry" not in r.headers     # Claude Code asks again
+        assert not fake.calls and not seen.calls
+        assert (await _post(g, {**ASK, "model": "private/kimi-k3"})).status_code == 200    # no image: sent
+        up["now"] = True
+        assert (await _post(g, {**shot, "model": "private/kimi-k3"})).status_code == 200
+        assert fake.calls[-1][1][-1]["content"][1]["type"] == "image_url" and not seen.calls   # Kimi K3 sees it
+        up["now"] = False
+        assert await m.sees(prov, "private/kimi-k3")                        # a list read once is kept
+    assert [r["status"] for r in log] == [503, 200, 200]
+
+
+async def test_one_new_image_in_two_requests_at_once_is_described_once():
+    """The assistant's request and a subagent's, carrying the same new screenshot: one description, paid
+    for once; one of them stopped leaves it to the other."""
+    calls, gate = [], asyncio.Event()
+
+    async def describe(url, context):
+        calls.append(url)
+        await gate.wait()
+        return "A dialog with an OK button."
+    images = bridge.ImageDescriber(describe, "private/deepseek-v4-1-flash")
+    block = bridge.b64_image(PNG)
+    first = asyncio.create_task(images.text_for(block, "main"))
+    second = asyncio.create_task(images.text_for(block, "subagent"))
+    await asyncio.sleep(0.01)
+    first.cancel()
+    gate.set()
+    assert "OK button" in await second
+    with pytest.raises(asyncio.CancelledError):
+        await first
+    assert "OK button" in await images.text_for(block, "later") and len(calls) == 1
