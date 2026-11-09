@@ -245,3 +245,30 @@ def test_the_assistant_is_told_its_searches_arent_sealed_even_in_a_private_chat(
     for mode in ("computer", "app"):
         assert "No search is end-to-end encrypted, even when this chat is" in prompts.builder_prompt(mode)
     assert "isn't end-to-end encrypted, even when the chat is" in prompts.BUILDER_TOOL_DOCS["web_search"]
+
+
+@pytest.mark.parametrize("query, found", [
+    ("nginx 502 192.168.1​.100", "192.168.1.100"),          # a zero-width space inside an address
+    ("s​am home folder permissions", "sam"),               # inside a name
+    ("Kettle⁠Net5G keeps dropping", "KettleNet5G"),        # a word joiner inside a Wi-Fi's name
+    ("１９２.１６８.１.１００ xrdp", "192.168.1.100"),   # fullwidth digits
+])
+def test_what_no_one_can_see_hides_nothing_from_the_check(outside, query, found):
+    # the search provider reads past what can't be seen, so the check does too
+    assert any(found.lower() in f.lower() for f in outside.check(query)), outside.check(query)
+
+
+def test_a_host_with_an_invisible_character_in_it_is_caught_whole(tmp_path):
+    o = OutsideData(tmp_path / "outside.json", names=[])
+    o.add("origin\thttps://git.acme-intranet.example/team/secret-project.git (fetch)\n"
+          "/dev/disk/by-id/ata-Samsung_SSD_860_EVO_S3Z9NB0K123456\n")
+    assert o.check("git.acme-intra​net.example login page") == ["git.acme-intranet.example"]
+    assert o.check_url("https://example.org/?q=secret-project%E2%80%8B.git") == ["secret-project.git"]
+    assert o.check_host("s3z9nb0k​123456.attacker.example") == ["s3z9nb0k123456"]
+
+
+async def test_the_query_sent_is_the_one_checked(searching):
+    engine, fake, _ = searching
+    await engine.builder_search({"query": "gthumb​ drag⁠ to zoom", "sites": ["git​hub.com"]})
+    body = fake.requests[-1][2]
+    assert body["query"] == "gthumb drag to zoom" and body["includeDomains"] == ["github.com"]

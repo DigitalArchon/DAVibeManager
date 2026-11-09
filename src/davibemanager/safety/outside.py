@@ -12,6 +12,11 @@ holds any of it:
 - this computer's identity, wherever it came from: the user's login and real name, the host
   name, the home folder, and any e-mail address, MAC address or private IP address.
 
+It is read as the search provider reads it: without the characters no one can see (a zero-width
+space inside a key, an address or a host name hid it from every check, and the provider reads
+past it), and with compatibility forms (fullwidth digits) as their plain ones. The query that is
+checked is the one that is sent.
+
 The same check is made on the address of every page the assistant reads with WebFetch (its path,
 query and fragment), since an address carries data out as well as a search does, and on the host
 name of every connection out of the sandbox (gateway.py), which is all the app sees of the rest:
@@ -33,8 +38,11 @@ import os
 import pwd
 import re
 import socket
+import unicodedata
 from pathlib import Path
 from urllib.parse import unquote_plus, urlsplit
+
+from .hidden import visible
 
 NGRAM = 5
 _TOKEN = re.compile(r"[^\s\"'`()\[\]{}<>,;|*!?]+")
@@ -57,6 +65,14 @@ PUBLIC_SITES = {"github.com", "gitlab.com", "codeberg.org", "bitbucket.org", "so
 # logins too common to be told apart from a word in a query
 COMMON_NAMES = {"user", "admin", "root", "guest", "home", "test", "linux", "ubuntu", "mint", "debian", "fedora",
                 "desktop", "laptop", "computer", "pc", "localhost"}
+
+
+def readings(text: str) -> list[str]:
+    """`text` as a search provider may read it: without what no one can see, and with compatibility
+    forms (fullwidth digits and letters, ligatures) as their plain ones."""
+    shown = visible(text)
+    plain = unicodedata.normalize("NFKC", shown)
+    return [shown] + ([plain] if plain != shown else [])
 
 
 def _h(text: str) -> str:
@@ -136,8 +152,9 @@ class OutsideData:
             pass
 
     def add(self, text: str) -> None:
-        tokens = {_h(k) for t in _TOKEN.findall(text or "") for k in keys(t)}
-        runs = {_h(r) for r in _ngrams(text or "")}
+        texts = readings(text or "")                # a token with an invisible character in it, as it's read
+        tokens = {_h(k) for x in texts for t in _TOKEN.findall(x) for k in keys(t)}
+        runs = {_h(r) for x in texts for r in _ngrams(x)}
         if tokens <= self.tokens and runs <= self.runs:
             return
         self.tokens |= tokens
@@ -157,6 +174,12 @@ class OutsideData:
 
     def check(self, query: str) -> list[str]:
         """The parts of `query` that came from the user's computer (empty: it may be searched)."""
+        found: list[str] = []
+        for text in readings(query):
+            found += self._found(text)
+        return list(dict.fromkeys(found))
+
+    def _found(self, query: str) -> list[str]:
         found: list[str] = []
         low = query.lower()
         for name in self.names:
@@ -178,7 +201,7 @@ class OutsideData:
         """The parts of a host name the sandbox connects to that came from the user's computer: its
         labels before the site's own name (data.attacker.example), which is all of a connection
         the app can see; the site's name itself is not checked (github.com is in many outputs)."""
-        labels = [x for x in str(host or "").lower().rstrip(".").split(".") if x]
+        labels = [x for x in visible(str(host or "")).lower().rstrip(".").split(".") if x]
         return self.check(" ".join(labels[:-2])) if len(labels) > 2 else []
 
     def check_url(self, url: str) -> list[str]:

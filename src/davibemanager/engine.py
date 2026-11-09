@@ -55,6 +55,7 @@ from .netpolicy import InsecureURL, check_url
 from .netpolicy import scrubbed
 from .netpolicy import shown as shown_address
 from .safety import images as images_mod
+from .safety.hidden import visible
 from .safety.inject import suspicious
 from .safety.outside import OutsideData
 from .safety.redact import redact
@@ -2436,13 +2437,16 @@ class Engine:
         s = self.cfg.settings
         if not s.web_search:
             raise UserError("Web search is switched off in Settings. Use what you know, or read a page you know the address of.")
-        query = " ".join(str(args.get("query") or "").split())[:400]
+        # without what no one can see, checked and sent alike: a zero-width space inside a key, an address
+        # or a host name hid it from the check, and the search provider reads past it
+        query = " ".join(visible(str(args.get("query") or "")).split())[:400]
         if len(query) < 2:
             raise ValueError("an empty query")
         purpose = args.get("purpose") if args.get("purpose") in websearch.MODES_OF_USE else "answer"
         # the sites it's limited to go to the search provider as well: they're checked as the query is,
         # whole and label by label (a host name of this computer's network in one)
-        sites = websearch.clean_sites(args.get("sites"))
+        given = args.get("sites")
+        sites = websearch.clean_sites([visible(str(x)) for x in given] if isinstance(given, list) else given)
         leaked = self._outside().check(" ".join([query, *sites, *(site.replace(".", " ") for site in sites)]))
         if leaked:
             self.log("search_refused", query=query, found=leaked)
