@@ -166,6 +166,9 @@ class Settings:
     # nothing), and never with another, whatever the providers above. It finds less. No search is
     # end-to-end encrypted either way: NanoGPT and the provider read every query
     search_zero_retention: bool = False
+    # whether the user has chosen between that and the best results (Settings → Web searches): until
+    # they have, a private assistant (a private/ model) keeps nothing (apply_search_default)
+    search_retention_chosen: bool = False
     # what the assistant is told about this computer at the start of every chat, so it needn't ask:
     # "system" (distribution, version, desktop) and/or "hardware" (processor, memory, graphics)
     share_about: list = field(default_factory=list)
@@ -196,6 +199,13 @@ class Config:
         return _strip_none(asdict(self))
 
 
+def apply_search_default(settings: Settings) -> None:
+    """A private assistant searches with Linkup, which keeps nothing, until the user chooses otherwise:
+    its chats are sealed, and its searches are the one thing of them that isn't."""
+    if not settings.search_retention_chosen and str(settings.builder_model or "").strip().lower().startswith("private/"):
+        settings.search_zero_retention = True
+
+
 def _strip_none(obj):
     # TOML has no null
     if isinstance(obj, dict):
@@ -217,6 +227,7 @@ def from_dict(data: dict) -> Config:
     if settings.get("check_updates") is False and "check_every" not in settings:
         settings["check_every"] = "manual"      # "don't look for new versions", from before each app chose
     cfg.settings = _build(Settings, settings)
+    apply_search_default(cfg.settings)
     return cfg
 
 

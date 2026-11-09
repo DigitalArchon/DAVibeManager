@@ -581,6 +581,8 @@ class Engine:
             s.web_search = bool(data["web_search"])
         if "search_zero_retention" in data:
             s.search_zero_retention = bool(data["search_zero_retention"])
+            s.search_retention_chosen = True
+        config_mod.apply_search_default(s)         # a private assistant keeps nothing until the user chooses
         for key in ("search_provider", "search_links_provider"):
             if key in data:
                 if data[key] not in websearch.PROVIDERS:

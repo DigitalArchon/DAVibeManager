@@ -342,3 +342,24 @@ async def test_plain_results_carry_no_warning(searching):
     engine, _, events = searching
     text = await engine.builder_search({"query": "gthumb drag to zoom fork"})
     assert "looks like instructions" not in text and not [e for e in events if e.get("type") == "toast"]
+
+
+def test_a_private_assistant_keeps_nothing_until_the_user_chooses():
+    from davibemanager.config import from_dict
+    assert from_dict({"settings": {"builder_model": "private/glm-5-3"}}).settings.search_zero_retention is True
+    assert from_dict({"settings": {"builder_model": "z-ai/glm-5.3"}}).settings.search_zero_retention is False
+    chosen = {"builder_model": "private/glm-5-3", "search_zero_retention": False, "search_retention_chosen": True}
+    assert from_dict({"settings": chosen}).settings.search_zero_retention is False
+
+
+async def test_choosing_a_private_assistant_turns_keep_nothing_on_and_the_users_choice_stays(searching):
+    engine, fake, _ = searching
+    private = {"builder_model": "private/glm-5-3", "builder_small_model": "", "builder_vision_model": "",
+               "review_model": "Fake|private/glm-5-3"}
+    engine.save_settings(private)
+    assert engine.cfg.settings.search_zero_retention is True
+    await engine.builder_search({"query": "gthumb drag to zoom fork"})
+    assert fake.requests[-1][2]["provider"] == "linkup"
+    engine.save_settings({"search_zero_retention": False})          # Best results, chosen
+    engine.save_settings(private)
+    assert engine.cfg.settings.search_zero_retention is False
