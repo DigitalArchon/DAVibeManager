@@ -13,7 +13,7 @@ from urllib.parse import urlparse
 from openai import APIError, AsyncOpenAI, DefaultAsyncHttpxClient
 from openai.types.chat import ChatCompletionChunk
 
-from ..netpolicy import check_url, is_local_host
+from ..netpolicy import check_key, check_url, is_local_host
 
 # standard: plaintext to a cloud provider. tee: runs in an enclave, but the prompt passes the
 # provider's gateway in the clear. e2ee: sealed on this machine to an attested enclave's key
@@ -100,6 +100,7 @@ class TurnResult:
 class LLMClient:
     def __init__(self, base_url: str, api_key: str | None, http_client=None):
         check_url(base_url, "The provider's base URL")
+        check_key(api_key, urlparse(base_url).hostname or "the provider")     # one no header can carry: nothing sent
         # Local servers often need no key, but the SDK insists on a value. A redirect is never followed
         # (the SDK's own client would): the request, the user's words in it, would go wherever the
         # provider points, plain http included (as the gateway's forwarder, which refuses them too)

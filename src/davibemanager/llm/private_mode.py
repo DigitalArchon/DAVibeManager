@@ -58,7 +58,7 @@ from urllib.parse import urlparse
 import httpx
 from openai.types.chat import ChatCompletionChunk
 
-from ..netpolicy import check_url, is_local_host
+from ..netpolicy import check_key, check_url, is_local_host
 from . import sdk_guard
 from .capabilities import norm_id
 from .client import StreamAccumulator, is_private_mode
@@ -340,6 +340,7 @@ class PrivateModeClient:
         check_url(base_url, "The provider's base URL")
         if not api_key:
             raise PrivateModeError("An API key is required for Private Mode.")
+        check_key(api_key, urlparse(base_url).hostname or "the provider")
         self.enclave = enclave
         self._api_key = api_key
         self._transport_factory = transport_factory

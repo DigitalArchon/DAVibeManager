@@ -61,7 +61,7 @@ from urllib.parse import quote, urlparse
 
 import httpx
 
-from ..netpolicy import check_url, scrubbed, shown
+from ..netpolicy import check_key, check_url, scrubbed, shown
 from . import dcap, nras
 from .ethsig import keccak256, recover_personal
 from .private_mode import relay_said
@@ -328,6 +328,7 @@ class TeeClient:
         nvidia: Callable[..., int] | None = None,
     ) -> None:
         check_url(base_url, "The provider's base URL")      # https, or a local address: the key goes there
+        check_key(api_key, urlparse(base_url).hostname or "the provider")
         self.base_url = base_url
         self.api_key = api_key
         self.model = model

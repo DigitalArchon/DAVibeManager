@@ -81,6 +81,33 @@ def without_password(url) -> str:
     return parsed._replace(netloc=parsed.netloc.rsplit("@", 1)[1]).geturl()
 
 
+# what no API key has, and some no HTTP header can carry: backslashes, white space and controls
+_KEY_UNSAFE = re.compile(r"[\\\s\x00-\x1f\x7f]")
+
+
+class UnusableKey(ValueError):
+    """An API key no HTTP header can carry (key_problem): nothing is sent with it."""
+
+
+def key_problem(key, name: str = "the provider") -> str | None:
+    """Why `key` can't be sent as an API key, or None, saying nothing of the key. A key is plain ASCII
+    with no spaces in it; one pasted with a line break, or a zero-width space from a web page, was refused
+    by h11 in words that quoted it whole ("Illegal header value b'Bearer sk-…\\n'"), which were shown and
+    logged, or raised from deep in httpx. (DA Assistant's netguard.key_problem, Nov 2026.)"""
+    if key and (not str(key).isascii() or _KEY_UNSAFE.search(str(key))):
+        return (f"The API key for {name} has a space, a line break or another character no API key has in it, "
+                "picked up where it was copied from, perhaps. Enter it again in Settings.")
+    return None
+
+
+def check_key(key, name: str = "the provider"):
+    """`key`, unless no HTTP header can carry it: then UnusableKey, saying why and nothing of the key."""
+    problem = key_problem(key, name)
+    if problem:
+        raise UnusableKey(problem)
+    return key
+
+
 def scrubbed(text) -> str:
     """An error's words with every address in them shown without a user name and password (httpx names
     the address whole in some: "... for url 'https://alice:secret@host/v1/models'")."""

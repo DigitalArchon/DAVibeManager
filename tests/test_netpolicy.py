@@ -267,3 +267,61 @@ def test_a_local_server_may_redirect_on_the_local_network():
             else httpx.Response(200)
     _verifier_client("http://192.168.1.10:7860/v1", handler).get("http://192.168.1.10:7860/v1/a")
     assert seen[-1] == "http://192.168.1.20:7860/v1/x"
+
+
+# --- an API key no HTTP header can carry is refused, never quoted (DA Assistant's key_problem) ------
+
+BAD_KEYS = ("sk-live-ABCDEF\nGHIJKL", "sk-live-ABCDEF\u200bGHIJKL", "sk-live ABCDEF", "sk-live-ABCD\u00c9F")
+
+
+def test_a_key_no_header_can_carry_is_refused_without_quoting_it():
+    for key in BAD_KEYS:
+        found = netpolicy.key_problem(key, "NanoGPT")
+        assert "Enter it again" in found and "NanoGPT" in found and "ABCD" not in found
+    assert netpolicy.key_problem("sk-live-ABCDEF_GHIJKL-0123") is None and netpolicy.key_problem("") is None
+
+
+def test_such_a_key_is_never_stored_and_one_pasted_with_spaces_around_it_is_taken(tmp_path):
+    from davibemanager import creds
+    from davibemanager.config import Config
+    cfg = Config()
+    m = Models(cfg, save_config=lambda c: None, emit=lambda *a, **k: None, log=lambda *a, **k: None)
+    for key in BAD_KEYS:
+        with pytest.raises(UserError, match="Enter it again") as e:
+            m.save_provider({"name": "NanoGPT", "base_url": "https://nano-gpt.com/api/v1"}, key)
+        assert "ABCD" not in str(e.value)
+        assert creds.get_secret("provider", "NanoGPT") is None and not cfg.providers
+    m.save_provider({"name": "NanoGPT", "base_url": "https://nano-gpt.com/api/v1"}, "  sk-live-ABCDEF\n")
+    assert creds.get_secret("provider", "NanoGPT") == "sk-live-ABCDEF"
+
+
+def test_one_stored_before_is_refused_before_any_request():
+    from davibemanager.llm.private_mode import Enclave, PrivateModeClient
+    from davibemanager.llm.tee import TeeClient
+    sent = []
+    http = httpx.Client(transport=httpx.MockTransport(lambda r: sent.append(r) or httpx.Response(200)))
+    for key in BAD_KEYS:
+        for make in (lambda: LLMClient("https://nano-gpt.com/api/v1", key),
+                     lambda: TeeClient("https://nano-gpt.com/api/v1", key, "TEE/glm-5.3", client=http),
+                     lambda: PrivateModeClient("https://nano-gpt.com/api/v1", key, Enclave("https://nano-gpt.com/x"))):
+            with pytest.raises(netpolicy.UnusableKey) as e:
+                make()
+            assert "ABCD" not in str(e.value) and "nano-gpt.com" in str(e.value)
+    assert not sent
+
+
+async def test_the_gateway_sends_nothing_with_it_and_says_why_without_it(tmp_path):
+    from davibemanager.gateway import Gateway, Upstream
+    sent, log = [], []
+    g = Gateway(tmp_path / "gw", lambda: Upstream("https://nano-gpt.com/api/v1", "bearer", lambda: BAD_KEYS[0],
+                                                  ("anthropic/claude-opus-5.5",), provider="NanoGPT"),
+                on_event=log.append, http=httpx.AsyncClient(transport=httpx.MockTransport(lambda r: sent.append(r))))
+    await g.start()
+    try:
+        async with httpx.AsyncClient(transport=httpx.AsyncHTTPTransport(uds=str(g.model_socket)), base_url="http://gw") as c:
+            r = await c.post("/v1/messages", headers={"authorization": f"Bearer {g.token}"},
+                             json={"model": "anthropic/claude-opus-5.5", "messages": []})
+    finally:
+        await g.stop()
+    assert r.status_code == 403 and "Enter it again" in r.text and "ABCD" not in r.text
+    assert not sent and "ABCD" not in str(log)

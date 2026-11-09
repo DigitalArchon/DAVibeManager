@@ -37,7 +37,7 @@ from .llm import routes
 from .llm.client import is_private_mode
 from .llm.params import effort_unsupported, efforts_named, nearest_effort, with_effort
 from . import netpolicy
-from .netpolicy import InsecureURL, check_url, is_global_ip, is_secure, own_networks, scrubbed, shown
+from .netpolicy import InsecureURL, check_url, is_global_ip, is_secure, key_problem, own_networks, scrubbed, shown
 
 PROXY_PORTS = frozenset({443})
 # what of the provider's API the assistant may use with the user's key: what Claude Code needs (its
@@ -433,6 +433,9 @@ class Gateway:
             if not key:
                 # a 403, not a 401: Claude Code would take a 401 for its own login refused
                 return fail(path, 403, f"No API key is stored for {up.provider}; add it in Settings.")
+            if problem := key_problem(key, up.provider):
+                # no header can carry it: h11's refusal would quote it whole, in the log and to Claude Code
+                return fail(path, 403, problem)
             body = await request.body()
             model, sent_model, data = "", "", {}
             sealed = any(is_private_mode(m) for m in up.models[:1])     # the assistant's model is private

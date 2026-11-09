@@ -24,7 +24,7 @@ from .llm import routes as routes_mod
 from .llm import tee as tee_mod
 from .llm.client import LLMClient, detect_tier, is_private_mode
 from .llm.private_mode import Enclave, PrivateModeClient, list_private_models, offers_private_mode, relay_url
-from .netpolicy import InsecureURL, check_url, scrubbed, shown
+from .netpolicy import InsecureURL, UnusableKey, check_url, key_problem, scrubbed, shown
 
 # A TEE model's attestation is made again, with a fresh nonce, before a send once it is this old: on a
 # clock that runs on while the computer sleeps (dcap.since_boot), so one made before a night's suspend
@@ -86,6 +86,9 @@ class Models:
                 check_url(builder_url, "The assistant's endpoint")
         except InsecureURL as e:
             raise UserError(str(e)) from None
+        api_key = (api_key or "").strip() or None        # what a paste brings around it
+        if api_key and (problem := key_problem(api_key, name)):
+            raise UserError(problem)                        # never stored: no request could carry it
         builder_auth = str(data.get("builder_auth", "bearer")).strip() or "bearer"
         if builder_auth not in ("bearer", "x-api-key"):
             raise UserError("The key goes in a bearer header or x-api-key.")
@@ -173,7 +176,7 @@ class Models:
                                                               on_attested=lambda att: self._private_attested(prov, att))
         try:
             return PrivateModeClient(prov.base_url, key, enclave) if is_private_mode(model) else LLMClient(prov.base_url, key)
-        except InsecureURL as e:
+        except (InsecureURL, UnusableKey) as e:
             raise UserError(str(e)) from None
 
     def _private_attested(self, prov: Provider, att) -> None:
@@ -431,7 +434,7 @@ class Models:
             make = self.tee_factory or tee_mod.TeeClient
             try:
                 client = make(prov.base_url, self.key(prov) or "", model)
-            except InsecureURL as e:
+            except (InsecureURL, UnusableKey) as e:
                 raise UserError(f"{model}'s enclave wasn't asked to attest, so nothing was sent to it: {e}") from None
             try:
                 att = await asyncio.to_thread(client.attest)
