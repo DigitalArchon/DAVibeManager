@@ -1467,14 +1467,45 @@ class Engine:
 
     async def _review(self, system: str, context: str, purpose: str, **log) -> dict:
         prov, model, tier = self.models.review_target()
-        await self.models.tee_guard(prov, model)
         messages = [{"role": "system", "content": system}, {"role": "user", "content": context}]
-        self.log("sent_to_reviewer", purpose=purpose, provider=prov.name, model=model, tier=tier, **log)
+        # in Sandbox activity beside the assistant's requests: how private it was, and for a TEE model what
+        # its reply's check found
+        row = {"kind": "review", "purpose": purpose, "model": model, **({"private": True} if is_private_mode(model) else {})}
+        started = time.monotonic()
         try:
-            text = await self.models.complete(self.models.client(prov, model), prov, model, messages)
+            await self.models.tee_guard(prov, model)          # a TEE model's enclave attested first, or nothing goes
+            check = self.models.reply_check(prov, model)      # its reply's check, against the attestation made now
+            self.log("sent_to_reviewer", purpose=purpose, provider=prov.name, model=model, tier=tier, **log)
+            client = self.models.client(prov, model)
+            text = await self.models.complete(client, prov, model, messages)
         except Exception as e:  # noqa: BLE001
+            self._network_event({**row, "status": 502, "error": str(e)[:300], "seconds": round(time.monotonic() - started, 2)})
             raise UserError(f"The reviewer couldn't be asked: {e}") from e
+        row.update(status=200, seconds=round(time.monotonic() - started, 2))
+        self._check_reply(check, client, row)
+        self._network_event(row)
         return {"model": model, "tier": tier, "text": text.strip(), **self._parse_review(text)}
+
+    def _check_reply(self, check, client, row: dict) -> None:
+        """A TEE model's reply to a request of the app's own (a second opinion, a change log summarised, a
+        picture described), checked aside against the record its attested enclave signed, as the gateway
+        checks the assistant's (gateway._check_later): `row`, the request's event, goes out marked "checking",
+        and is marked later with what was found (Sandbox activity, network.jsonl). It never holds up the
+        answer; a reply that fails is said once, and its model attested again before its next request
+        (Models.reply_check). `check` comes from just after the attestation the request went out under."""
+        reply = getattr(client, "last_reply", None)
+        if check is None or reply is None:
+            return
+        row.update(id=secrets.token_hex(6), tee="checking")
+        model = row.get("model")
+
+        async def run():
+            try:
+                found = await check(reply)
+            except Exception as e:  # noqa: BLE001 - a check that couldn't be made is "unchecked", never a failure
+                found = {"tee": "unchecked", "detail": str(e)[:300]}
+            self._network_event({"kind": "tee_reply", "of": row["id"], "model": model, **found})
+        self._spawn(run())
 
     def _private_review_check(self) -> None:
         """A command a private chat proposes goes to a reviewer only sealed too: it, and what it's for, come
@@ -2029,19 +2060,23 @@ class Engine:
                         {"type": "text", "text": "What the assistant is doing: " + (context.strip() or "(not said)")},
                         {"type": "image_url", "image_url": {"url": data_url}}]}]
         started = time.monotonic()
+        private = {"private": True} if is_private_mode(model) else {}
         try:
             await self.models.tee_guard(prov, model)      # a TEE model's enclave attested first, as before any request to one
+            check = self.models.reply_check(prov, model)  # and its reply checked against that attestation (_check_reply)
             client = self.models.client(prov, model)
             text = await self.models.complete(client, prov, model, messages)
         except Exception as e:
-            self._network_event({"kind": "vision", "model": model, "status": 502, "error": str(e)[:300]})
+            self._network_event({"kind": "vision", "model": model, "status": 502, "error": str(e)[:300], **private})
             raise
         usage = getattr(client, "last_usage", None)
         route = self.models.route(prov, model)     # a host the user chose for it: paid per use, as the gateway counts it
         ev = {"kind": "vision", "model": model, "status": 200, "seconds": round(time.monotonic() - started, 2),
-              **({"usage": openai_usage(usage)} if usage else {}), **({"route": routes_mod.describe(route)} if route else {})}
+              **({"usage": openai_usage(usage)} if usage else {}), **({"route": routes_mod.describe(route)} if route else {}),
+              **private}
         if route and ev.get("usage", {}).get("cost") is not None:
             ev["route_held"] = ev["usage"]["cost"] > 0
+        self._check_reply(check, client, ev)
         self._network_event(ev)
         return text.strip()
 
@@ -2101,10 +2136,11 @@ class Engine:
     def _network_event(self, ev: dict) -> None:
         ev = {"ts": time.time(), **ev}
         if ev.get("kind") == "tee_reply":
-            # a TEE reply checked after it went on (gateway._check_later): the request it was is marked with
-            # what was found, and the window told (it marks its row); the log keeps the check as it came
+            # a TEE reply checked after it went on (gateway._check_later, _check_reply): the request it was (the
+            # assistant's, or the app's own) is marked with what was found, and the window told (it marks its
+            # row); the log keeps the check as it came
             for old in reversed(self.network):
-                if old.get("kind") == "model" and old.get("id") and old.get("id") == ev.get("of"):
+                if old.get("kind") != "tee_reply" and old.get("id") and old.get("id") == ev.get("of"):
                     old["tee"] = ev.get("tee")
                     if ev.get("detail"):
                         old["tee_detail"] = ev["detail"]

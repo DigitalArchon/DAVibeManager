@@ -371,9 +371,7 @@ function handle(ev) {
       break;
     case "network":
       if (ev.event.kind === "tee_reply") {
-        // a TEE reply, checked after it went on: the request it was is marked with what was found
-        const req = st.network.find((e) => e.kind === "model" && e.id && e.id === ev.event.of);
-        if (req) Object.assign(req, { tee: ev.event.tee }, ev.event.detail ? { tee_detail: ev.event.detail } : {});
+        markChecked(st.network, ev.event);
       } else {
         st.network.push(ev.event);
         if (st.network.length > 300) st.network.shift();
@@ -1814,7 +1812,8 @@ function activityPanel() {
     h("div", { class: "section" }, h("h3", {}, "Sites it reached"), h("div", { class: "small" }, Object.entries(hosts).sort((a, b) => b[1] - a[1]).map(([k, n]) => `${k} (${n})`).join(", ") || "None yet.")),
     h("div", { class: "section" }, h("h3", {}, "Every connection"), evs.length ? h("table", { class: "netlog" }, h("tbody", {}, [...evs].reverse().slice(0, 200).map((e) => {
       const bad = e.refused || (e.status && e.status >= 400);
-      return h("tr", { class: bad ? "bad" : "" }, h("td", { class: "muted" }, fmtTime(e.ts)), h("td", {}, connectionWhat(e), e.kind === "model" ? [" ", privacyMark(e)] : null),
+      const asked = ["model", "vision", "review"].includes(e.kind);     // of a model: how private it was
+      return h("tr", { class: bad ? "bad" : "" }, h("td", { class: "muted" }, fmtTime(e.ts)), h("td", {}, connectionWhat(e), asked ? [" ", privacyMark(e)] : null),
         h("td", {}, bad ? `✗ ${e.refused || e.error || e.status}` : e.kind === "search" ? `✓ ${e.results} result${e.results === 1 ? "" : "s"}`
           : `✓${e.bytes_in != null ? ` ${fmtBytes(e.bytes_in)}` : ""}`));
     }))) : h("div", { class: "small muted" }, "None yet.")),
@@ -1839,12 +1838,23 @@ const TEE_TIPS = {
   unchecked: "No signed record of this reply could be read, so nothing shows it came from the attested enclave.",
 };
 // What a row of Sandbox activity was: the assistant's own (a model request, a site reached, a search) or one
-// the app made for it (a picture described, a fetch refused)
+// the app made for it (a picture described, a second opinion, a fetch refused)
 function connectionWhat(e) {
   return e.kind === "model" ? `🤖 ${e.model || e.path}` : e.kind === "http" ? `http ${e.target}`
     : e.kind === "search" ? `🔎 ${e.provider ? `${e.provider}: ` : ""}${e.query}`
     : e.kind === "vision" ? `🖼 ${e.model} · describing a picture`
+    : e.kind === "review" ? `🧐 ${e.model} · ${REVIEW_WHAT[e.purpose] || "second opinion"}`
     : e.kind === "fetch" ? `🌐 ${e.url}` : `${e.host}:${e.port}`;
+}
+// what the app asks its reviewer model for (Engine._review's purposes)
+const REVIEW_WHAT = { second_opinion: "second opinion", shared_app_review: "reviewing a shared app", changelog_summary: "summarising a change log" };
+
+// A TEE reply's check, come back after the reply went on (gateway._check_later, Engine._check_reply): the
+// request it was (the assistant's, a second opinion, a picture described) is marked with what was found
+function markChecked(network, check) {
+  const req = network.find((e) => e.kind !== "tee_reply" && e.id && e.id === check.of);
+  if (req) Object.assign(req, { tee: check.tee }, check.detail ? { tee_detail: check.detail } : {});
+  return req;
 }
 
 function privacyMark(e) {

@@ -261,6 +261,8 @@ async def test_second_opinions_from_a_private_reviewer_go_sealed_after_attestati
         assert review["level"] == "ok" and review["tier"] == "e2ee"
         assert relay.verifies == 1 and relay.requests          # attested, then sent sealed
         assert "lsblk" not in json.dumps(relay.preflights)     # the preflight carries no content
+        row = next(e for e in engine.network if e.get("kind") == "review")
+        assert row["private"] is True and "tee" not in row     # shown sealed: proved so, nothing more to check
     finally:
         await engine.stop()
 

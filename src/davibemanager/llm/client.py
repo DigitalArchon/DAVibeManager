@@ -178,9 +178,25 @@ class LLMClient:
                     yield event
         acc.result.body_hash = "sha256:" + digest.hexdigest()
 
-    async def complete(self, model: str, messages: list[dict], params: dict | None = None) -> str:
+    async def complete(self, model: str, messages: list[dict], params: dict | None = None, *,
+                       exact: bool = False) -> str:
+        """The reply's text. With `exact` (a TEE model's, checked against its signed record afterwards), it
+        is read as a stream, every byte of it hashed as the gateway's are (stream, exact): a stream's bytes are
+        what NanoGPT's signed record was seen to hash, live on every model that named a receipt (SealedLore,
+        Nov 2026); a reply that isn't streamed was never compared, and could only be "signed", its text not
+        compared (tee.check_reply). The reply's id, receipt and hash are then on `last_reply`."""
         if is_private_mode(model):
             raise RuntimeError(f"{model} is a Private Mode model and is only ever sent sealed; nothing was sent")
+        self.last_reply = None
+        if exact:
+            text = ""
+            async for kind, value in self.stream(model, messages, params=params, exact=True):
+                if kind == "text":
+                    text += value
+                elif kind == "done":
+                    self.last_reply = value
+                    self.last_usage = value.usage       # what it cost (Engine.spend)
+            return text
         resp = await self._client.chat.completions.create(model=model, messages=messages, **_split_params(params))
         self.last_usage = resp.usage.model_dump() if resp.usage else None     # what it cost (Engine.spend)
         return resp.choices[0].message.content or ""

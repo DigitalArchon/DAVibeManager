@@ -1361,6 +1361,156 @@ async def test_the_log_marks_a_request_with_what_its_replys_check_found(env):
 
 # --- the app's own requests to a TEE model: second opinions, update summaries, pictures described --------
 
+async def test_a_tee_completion_is_read_as_a_stream_every_byte_hashed():
+    """A stream's bytes are what NanoGPT's signed record was seen to hash, live (SealedLore, Nov 2026); a
+    reply that isn't streamed never was compared. So a TEE model's one-off reply is streamed, hashed to its end."""
+    from davibemanager.config import Provider
+
+    tail = b": a comment after the end\n\n"
+    factory, asked = _stream_of(STREAM + tail)
+    client = factory(Provider("NanoGPT", "https://nano-gpt.com/api/v1"))
+    assert await client.complete("TEE/glm-5.3-flash", [{"role": "user", "content": "hi"}], exact=True) == "ok"
+    reply = client.last_reply
+    assert asked[-1]["stream"] is True and (reply.id, reply.receipt_id) == ("req_9", "rcpt-1")
+    assert reply.body_hash == streamed(STREAM + tail)
+
+
+async def test_only_a_tee_models_one_off_reply_is_streamed_to_be_checked():
+    from davibemanager.config import Config, Provider
+    from davibemanager.llm.client import LLMClient
+    from davibemanager.models import Models
+
+    prov = Provider("NanoGPT", "https://nano-gpt.com/api/v1")
+    m = Models(Config(providers=[prov]), save_config=lambda c: None, emit=lambda *a, **k: None, log=lambda *a, **k: None)
+    factory, asked = _stream_of(STREAM)
+    tee_client = factory(prov)
+    assert await m.complete(tee_client, prov, "TEE/glm-5.3-flash", []) == "ok"
+    assert asked[-1]["stream"] is True and tee_client.last_reply.body_hash == streamed()
+
+    plain: list = []
+
+    def whole(request: httpx.Request) -> httpx.Response:
+        plain.append(json.loads(request.content))
+        return httpx.Response(200, json={"id": "c", "object": "chat.completion", "created": 0, "model": "z-ai/glm-5.3",
+                                         "choices": [{"index": 0, "finish_reason": "stop",
+                                                      "message": {"role": "assistant", "content": "fine"}}]})
+    client = LLMClient(prov.base_url, "k", httpx.AsyncClient(transport=httpx.MockTransport(whole)))
+    assert await m.complete(client, prov, "z-ai/glm-5.3", []) == "fine"
+    assert "stream" not in plain[-1] and client.last_reply is None         # asked as ever: nothing to check
+
+    class Sealed:                    # a private model's client: sealed by the attested enclave's key, not checked
+        async def complete(self, model, messages, params=None, **kwargs):
+            assert kwargs == {}
+            return "sealed"
+    assert await m.complete(Sealed(), prov, "private/glm-5-3", []) == "sealed"
+
+
+def _tee_reviewer(engine, seen: list, **server) -> list:
+    """The engine's reviewer and picture describer a TEE model: attested against receipt_server, their replies
+    streamed by _stream_of, and checked. What was asked of the model is returned."""
+    engine.models.tee_factory = lambda base, key, model: TeeClient(
+        base, key, model, client=receipt_server(seen=seen, **server), intel=lambda raw, session: UP_TO_DATE,
+        nvidia=lambda answer, nonce, session: 8)
+    engine.models.client_factory, asked = _stream_of(STREAM)
+    return asked
+
+
+async def _settled(engine, kind: str, rows: int) -> list:
+    for _ in range(300):
+        done = [e for e in engine.network if e.get("kind") == kind and e.get("tee") not in (None, "checking")]
+        if len(done) >= rows:
+            return done
+        await asyncio.sleep(0.01)
+    raise AssertionError(f"the check of {kind}'s reply didn't come back")
+
+
+def _logged() -> list:
+    from davibemanager.config import data_dir
+
+    return [json.loads(line) for line in (data_dir() / "network.jsonl").read_text().splitlines()]
+
+
+async def test_a_tee_reviewers_reply_is_checked_and_marked_as_the_assistants_are(env):
+    from davibemanager.llm import prompts
+
+    engine, fake, events = env
+    seen: list = []
+    engine.cfg.settings.review_model = "Fake|TEE/glm-5.3-flash"
+    asked = _tee_reviewer(engine, seen)
+    out = await engine._review(prompts.REVIEW_PROMPT, "rm -rf ~/build", "second_opinion")
+    row = next(e for e in engine.network if e.get("kind") == "review")
+    assert out["text"] == "ok" and row["tee"] == "checking"           # answered at once: the check comes after
+    assert asked[-1]["stream"] is True and asked[-1]["model"] == "TEE/glm-5.3-flash"
+    assert row["purpose"] == "second_opinion" and row["status"] == 200 and row["id"]
+    (done,) = await _settled(engine, "review", 1)
+    assert done["tee"] == "verified"
+    lookups = [str(r.url) for r in seen if "/tee/signature/" in str(r.url)]
+    assert lookups and "rcpt-1" in lookups[-1]                        # by the receipt its stream named
+    told = [e["event"] for e in events if e.get("type") == "network" and e["event"].get("kind") == "tee_reply"]
+    assert told and told[-1]["of"] == row["id"] and told[-1]["tee"] == "verified"    # the window marks its row
+    logged = _logged()
+    assert [e["kind"] for e in logged] == ["review", "tee_reply"] and logged[1]["of"] == row["id"]
+    assert not [e for e in events if e.get("type") == "toast" and e.get("level") == "error"]
+
+
+async def test_a_tee_reviewers_reply_that_fails_is_said_once_and_its_model_attested_again(env):
+    from davibemanager.llm import prompts
+
+    engine, fake, events = env
+    seen: list = []
+    engine.cfg.settings.review_model = "Fake|TEE/glm-5.3-flash"
+    _tee_reviewer(engine, seen, body_hash="sha256:" + "0" * 64)       # it signed other bytes
+    for n in (1, 2):
+        out = await engine._review(prompts.REVIEW_PROMPT, "rm -rf ~/build", "changelog_summary")
+        assert out["text"] == "ok"                                    # nothing held back or changed
+        await _settled(engine, "review", n)
+    assert [e["tee"] for e in engine.network if e.get("kind") == "review"] == ["failed", "failed"]
+    errors = [e["text"] for e in events if e.get("type") == "toast" and e.get("level") == "error"]
+    assert len(errors) == 1 and "didn't match the record" in errors[0]          # said once
+    # attested before the first, and again before the second, though the first was minutes fresh
+    assert len([r for r in seen if "/tee/attestation" in str(r.url)]) == 2
+
+
+async def test_a_tee_reviewer_whose_attestation_fails_is_sent_nothing(env):
+    from davibemanager.models import UserError
+    from davibemanager.llm import prompts
+
+    engine, fake, events = env
+    engine.cfg.settings.review_model = "Fake|TEE/glm-5.3-flash"
+    engine.models.tee_factory = lambda base, key, model: client_for(attestation_status=400)
+    engine.models.client_factory, asked = _stream_of(STREAM)
+    with pytest.raises(UserError, match="attestation didn't hold, so nothing was sent"):
+        await engine._review(prompts.REVIEW_PROMPT, "rm -rf ~/build", "second_opinion")
+    assert asked == []
+    row = next(e for e in engine.network if e.get("kind") == "review")
+    assert row["status"] == 502 and "attestation" in row["error"] and "tee" not in row
+
+
+async def test_a_reviewer_that_isnt_tee_is_asked_as_ever_and_nothing_checked(env):
+    from davibemanager.llm import prompts
+
+    engine, fake, events = env
+    fake.completions.append("Looks fine.\nVERDICT: proceed")
+    out = await engine._review(prompts.REVIEW_PROMPT, "ls", "second_opinion")
+    assert out["text"].startswith("Looks fine") and "stream" not in fake.requests[-1]
+    row = next(e for e in engine.network if e.get("kind") == "review")
+    assert row["status"] == 200 and "tee" not in row and "id" not in row
+
+
+async def test_a_tee_picture_describer_is_attested_first_and_its_reply_checked(env):
+    engine, fake, events = env
+    seen: list = []
+    engine.cfg.settings.builder_vision_model = "TEE/qwen2.5-vl-72b-instruct"
+    asked = _tee_reviewer(engine, seen)
+    assert await engine._describe_image("data:image/png;base64,iVBORw0KGgo=", "checking the zoom box") == "ok"
+    attested = [i for i, r in enumerate(seen) if "/tee/attestation" in str(r.url)]
+    assert attested and asked and asked[-1]["stream"] is True         # attested, then the picture went
+    row = next(e for e in engine.network if e.get("kind") == "vision")
+    assert row["tee"] == "checking" and row["model"] == "TEE/qwen2.5-vl-72b-instruct"
+    (done,) = await _settled(engine, "vision", 1)
+    assert done["tee"] == "verified"
+
+
 async def test_a_tee_picture_describer_whose_attestation_fails_is_sent_nothing(env):
     engine, fake, events = env
     engine.cfg.settings.builder_vision_model = "TEE/qwen2.5-vl-72b-instruct"

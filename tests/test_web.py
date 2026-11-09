@@ -115,9 +115,35 @@ def test_every_picture_goes_through_the_editor_before_it_is_attached():
 
 
 def test_each_row_of_sandbox_activity_says_what_it_was():
-    """A picture described and a fetch refused read "undefined:undefined"."""
-    code = script("connectionWhat") + "\nconst test = (e) => connectionWhat(e);"
+    """A picture described and a fetch refused read "undefined:undefined"; second opinions weren't listed."""
+    code = script("connectionWhat", "REVIEW_WHAT") + "\nconst test = (e) => connectionWhat(e);"
     cases = [{"kind": "model", "model": "TEE/glm-5.3"}, {"kind": "vision", "model": "TEE/qwen2.5-vl-72b-instruct"},
+             {"kind": "review", "model": "z-ai/glm-5.3", "purpose": "changelog_summary"},
+             {"kind": "review", "model": "z-ai/glm-5.3", "purpose": "something new"},
              {"kind": "fetch", "url": "https://example.com/x"}, {"kind": "connect", "host": "example.com", "port": 443}]
     assert run(code, cases) == ["🤖 TEE/glm-5.3", "🖼 TEE/qwen2.5-vl-72b-instruct · describing a picture",
+                                "🧐 z-ai/glm-5.3 · summarising a change log", "🧐 z-ai/glm-5.3 · second opinion",
                                 "🌐 https://example.com/x", "example.com:443"]
+
+
+def test_a_tee_replys_check_marks_the_request_it_was_whoever_made_it():
+    """The assistant's requests, second opinions and pictures described are each marked with what their
+    reply's check found (gateway._check_later, Engine._check_reply), and each shows its mark."""
+    code = script("markChecked") + """
+const test = (check) => {
+  const rows = [{ kind: "model", id: "a", tee: "checking" }, { kind: "review", id: "b", tee: "checking" },
+                { kind: "vision", id: "c", tee: "checking" }, { kind: "tee_reply", id: "d" }];
+  markChecked(rows, check);
+  return rows.map((e) => [e.tee || null, e.tee_detail || null]);
+};"""
+    waiting = [["checking", None]] * 3 + [[None, None]]
+    cases = [{"of": "a", "tee": "verified"}, {"of": "b", "tee": "failed", "detail": "keys changed"},
+             {"of": "c", "tee": "unchecked"}, {"of": "d", "tee": "failed"}, {"of": "nobody", "tee": "failed"}]
+    assert run(code, cases) == [
+        [["verified", None]] + waiting[1:],
+        [waiting[0], ["failed", "keys changed"]] + waiting[2:],
+        waiting[:2] + [["unchecked", None], waiting[3]],
+        waiting, waiting]
+    text = APP_JS.read_text(encoding="utf-8")
+    assert "markChecked(st.network, ev.event);" in text
+    assert 'const asked = ["model", "vision", "review"].includes(e.kind);' in text and "asked ? [\" \", privacyMark(e)]" in text

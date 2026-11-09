@@ -373,15 +373,24 @@ class Models:
         self._log("setting_unsupported", model=model, setting=key, error=str(err)[:300])
         return key
 
+    def is_tee(self, prov: Provider, model: str) -> bool:
+        """A model attested before anything is sent to it (tee_guard), whose replies are checked against the
+        record its enclave signs (reply_check)."""
+        return detect_tier(model, prov.base_url, prov.tier_overrides) == "tee"
+
     async def complete(self, client, prov: Provider, model: str, messages: list[dict]) -> str:
-        """A one-off completion, dropping a generation setting the provider refuses."""
+        """A one-off completion, dropping a generation setting the provider refuses. A TEE model's reply is
+        read as a stream, every byte hashed (LLMClient.complete, exact), to be checked as the gateway checks
+        the assistant's: its id, receipt and hash are then on the client's `last_reply` (Engine._check_reply).
+        A private model's needs none: it is sealed by the attested enclave's key."""
         params = self.params(prov, model)
+        exact = {"exact": True} if isinstance(client, LLMClient) and self.is_tee(prov, model) else {}
         try:
-            return await client.complete(model, messages, params)
+            return await client.complete(model, messages, params, **exact)
         except Exception as e:  # noqa: BLE001
             if not self.learn_unsupported(prov, model, params, e):
                 raise
-            return await client.complete(model, messages, self.params(prov, model))
+            return await client.complete(model, messages, self.params(prov, model), **exact)
 
     # ---------------------------------------------------------------- the two roles
 
@@ -428,7 +437,7 @@ class Models:
         """Nothing goes to a TEE model whose enclave hasn't attested; an attestation older than
         TEE_REATTEST_SECONDS, or one a reply of failed its check against (reply_check), is made again
         first. None for a model that isn't TEE."""
-        if detect_tier(model, prov.base_url, prov.tier_overrides) != "tee":
+        if not self.is_tee(prov, model):
             return None
         key = (prov.name, prov.base_url, model)     # another address: attested again
         async with self._attest_lock:
