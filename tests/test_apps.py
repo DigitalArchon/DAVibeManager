@@ -141,6 +141,22 @@ async def test_a_change_the_user_chose_to_drop_is_left_out_only_once_they_confir
     assert len(engine.questions) == n
 
 
+async def test_a_release_page_its_host_names_is_taken_only_at_an_https_address(gthumb):
+    """The page comes from the source host's API (a GitLab of any host, whatever a shared .vibe names), and the
+    window opens it as a link: a javascript: or plain http one is not taken, the source's own is."""
+    engine, sb, fake, told = gthumb
+    fake.completions.append("SUMMARY: Faster thumbnails.\nIMPORTANCE: minor")
+    assert (await engine.app_manager.check("gthumb", quiet=True))["status"] == "available"
+    for given, page in (("javascript:alert(1)", "https://gitlab.gnome.org/GNOME/gthumb/-/releases/3.12.7"),
+                        ("http://evil.example/release", "https://gitlab.gnome.org/GNOME/gthumb/-/releases/3.12.7"),
+                        ("https://gitlab.gnome.org/GNOME/gthumb/-/releases/v3.12.7", "https://gitlab.gnome.org/GNOME/gthumb/-/releases/v3.12.7")):
+        sb.changelog = {**sb.changelog, "url": given}
+        fake.completions.append("SUMMARY: Faster thumbnails.\nIMPORTANCE: minor")
+        assert (await engine.app_manager.changelog("gthumb"))["page"] == page
+    app_js = (Path(__file__).resolve().parents[1] / "src/davibemanager/web/app.js").read_text()
+    assert '/^https:\\/\\//i.test(log.page || "") ? h("p"' in app_js           # and the window holds it so too
+
+
 async def test_a_new_release_brings_its_change_log_security_fixes_and_a_summary(gthumb):
     engine, sb, fake, told = gthumb
     fake.completions.append("A security fix for TIFF files, and faster thumbnails.\n"

@@ -756,7 +756,11 @@ class AppManager:
             log = None
         if log is None:
             raise UserError(f"The change log couldn't be read: {out.strip()[-300:]}")
-        log.update(tag=tag, since=a["base_ref"], page=log.get("url") or release_page(a["upstream"], tag), at=time.time())
+        # the release's page as its host's API names it (a GitLab of any host; a shared app may name any source):
+        # an https address, or the one made from the source's
+        page = str(log.get("url") or "")
+        log.update(tag=tag, since=a["base_ref"], page=page if page.startswith("https://") else release_page(a["upstream"], tag),
+                   at=time.time())
         apps.write_file(app_id, f"changelog-{tag}.json", json.dumps(log, ensure_ascii=False))
         lines = security_lines(log.get("notes", ""), *log.get("news", {}).values(), "\n".join(log.get("commits", [])))
         a = apps.save({**a, "update": {**u, "changelog": True, "security_lines": lines, "page": log["page"],

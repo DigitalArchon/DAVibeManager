@@ -1467,7 +1467,9 @@ async function showChangelog(a) {
   const u = a.update || {};
   const body = h("div", {},
     h("p", { class: "small muted" }, `What changed from ${log.since} to ${log.tag}${log.commit_count ? ` (${log.commit_count} changes by its developers)` : ""}. This comes from the project itself.`),
-    log.page ? h("p", { class: "small" }, h("a", { href: log.page, target: "_blank", rel: "noopener noreferrer" }, "The official release page ↗")) : null,
+    // the project's own word, from whatever host its source is on (a shared app may name any): https only, as
+    // the source's link is (sourceEl)
+    /^https:\/\//i.test(log.page || "") ? h("p", { class: "small" }, h("a", { href: log.page, target: "_blank", rel: "noopener noreferrer" }, "The official release page ↗")) : null,
     u.security_lines?.length ? h("div", { class: "warnbox" }, h("b", {}, "Lines about security: "), h("ul", {}, u.security_lines.map((l) => h("li", {}, l)))) : null,
     log.notes ? h("div", {}, h("h3", {}, "Release notes"), h("div", { class: "md", html: md(log.notes) })) : null,
     ...Object.entries(log.news || {}).map(([name, text]) => h("div", {}, h("h3", {}, `New in ${name}`), h("pre", { class: "outview small" }, text))),
