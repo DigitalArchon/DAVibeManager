@@ -1,0 +1,6 @@
+# The tools that write the locks (build-appimage.sh lock), and what they pull in, locked with hashes in
+# lock-requirements.lock, which the same run re-resolves with the others. Named exactly: pip 26.2.2 is
+# the first whose vendored certifi no longer carries emSign ECC Root CA - G3 (see build.sh); move either
+# deliberately.
+pip==26.2.2
+pip-tools==7.6.1

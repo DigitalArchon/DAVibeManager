@@ -2,7 +2,8 @@
 # Build DAVibeManager's AppImage reproducibly with rootless Podman (see packaging/README.md).
 #   packaging/build-appimage.sh build   AppImage of HEAD -> dist/
 #   packaging/build-appimage.sh check   build HEAD twice from scratch and compare the hashes
-#   packaging/build-appimage.sh lock    re-resolve packaging/appimage/*.lock (review, then commit)
+#   packaging/build-appimage.sh lock    lock what pyproject.toml and the *.in files add (UPGRADE=1:
+#                                       re-resolve everything); review, then commit
 # Only committed files are built (git archive HEAD); SOURCE_DATE_EPOCH is HEAD's commit time.
 set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"
@@ -35,7 +36,7 @@ mkdir -p "$CACHE" dist
 run() {  # out-dir mode
     mkdir -p "$1"
     podman run --rm -v "$WORK/src.tar:/src.tar:ro,Z" -v "$CACHE:/cache:Z" -v "$1:/out:Z" \
-        -e SOURCE_DATE_EPOCH="$EPOCH" -e VERSION="$VERSION" "$TAG" \
+        -e SOURCE_DATE_EPOCH="$EPOCH" -e VERSION="$VERSION" -e UPGRADE="${UPGRADE:-0}" "$TAG" \
         bash -c 'tar -xOf /src.tar packaging/appimage/build.sh > /tmp/build.sh && bash /tmp/build.sh "$0"' "$2"
 }
 

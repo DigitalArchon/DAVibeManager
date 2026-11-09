@@ -43,16 +43,27 @@ export PATH="$V:$PATH"      # meson and ninja for the source builds
 if [ "$mode" = lock ]; then
     # The resolver's own TLS trust while it reads PyPI: the container's CA store (the snapshot's
     # ca-certificates, which blacklists emSign ECC Root CA - G3 since 20260816ubuntu0.24.04.1),
-    # never pip's vendored certifi, which pip reads beside the system store; pip 26.2.2 is the
-    # first with the root gone from its own copy too. The build itself needs none of this: every
-    # package it installs is checked against the lock's hashes.
+    # never pip's vendored certifi, which pip reads beside the system store; pip 26.2.2
+    # (lock-requirements.in) is the first with the root gone from its own copy too. The build
+    # itself needs none of this: every package it installs is checked against the lock's hashes.
     export PIP_CERT=/etc/ssl/certs/ca-certificates.crt
-    "$V/pip" install -q "pip==26.2.2" "pip-tools==7.6.1"
+    # pip-tools and everything it runs on, checked against their hashes as the build's own tools
+    # are: what writes the locks is pinned like what the locks pin.
+    "$V/pip" install -q --require-hashes --no-deps -r "$P/lock-requirements.lock"
     cd "$P"
+    # pip-compile keeps the pins of a lock it is writing over: so a floor or a package added is
+    # locked without moving everything else to whatever is newest today. UPGRADE=1 re-resolves the
+    # lot, the lock tools' own lock with them.
+    for name in requirements build-requirements sdists lock-requirements; do
+        if [ "${UPGRADE:-0}" != 1 ] && [ -f "$name.lock" ]; then
+            cp "$name.lock" "/out/$name.lock"
+        fi
+    done
     "$V/pip-compile" -q --generate-hashes --allow-unsafe --no-strip-extras --output-file /out/requirements.lock \
         "$W/src/pyproject.toml"
-    "$V/pip-compile" -q --generate-hashes --allow-unsafe --output-file /out/build-requirements.lock build-requirements.in
-    "$V/pip-compile" -q --generate-hashes --allow-unsafe --output-file /out/sdists.lock sdists.in
+    for name in build-requirements sdists lock-requirements; do
+        "$V/pip-compile" -q --generate-hashes --allow-unsafe --output-file "/out/$name.lock" "$name.in"
+    done
     sed -i "s#$W/src/#./#g; s#/out/#packaging/appimage/#g" /out/*.lock
     exit 0
 fi
