@@ -112,3 +112,12 @@ def test_every_picture_goes_through_the_editor_before_it_is_attached():
     assert 'file.type?.startsWith("image/")' in flow and "await redactPicture(file)" in flow
     editor = re.search(r"^function redactPicture\(file\) \{.*?^}$", text, re.M | re.S).group(0)
     assert 'ctx.fillStyle = "#000"' in editor and "if (!rects.length) { result = file; return; }" in editor
+
+
+def test_each_row_of_sandbox_activity_says_what_it_was():
+    """A picture described and a fetch refused read "undefined:undefined"."""
+    code = script("connectionWhat") + "\nconst test = (e) => connectionWhat(e);"
+    cases = [{"kind": "model", "model": "TEE/glm-5.3"}, {"kind": "vision", "model": "TEE/qwen2.5-vl-72b-instruct"},
+             {"kind": "fetch", "url": "https://example.com/x"}, {"kind": "connect", "host": "example.com", "port": 443}]
+    assert run(code, cases) == ["🤖 TEE/glm-5.3", "🖼 TEE/qwen2.5-vl-72b-instruct · describing a picture",
+                                "🌐 https://example.com/x", "example.com:443"]

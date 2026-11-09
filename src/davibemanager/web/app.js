@@ -1814,9 +1814,7 @@ function activityPanel() {
     h("div", { class: "section" }, h("h3", {}, "Sites it reached"), h("div", { class: "small" }, Object.entries(hosts).sort((a, b) => b[1] - a[1]).map(([k, n]) => `${k} (${n})`).join(", ") || "None yet.")),
     h("div", { class: "section" }, h("h3", {}, "Every connection"), evs.length ? h("table", { class: "netlog" }, h("tbody", {}, [...evs].reverse().slice(0, 200).map((e) => {
       const bad = e.refused || (e.status && e.status >= 400);
-      const what = e.kind === "model" ? `🤖 ${e.model || e.path}` : e.kind === "http" ? `http ${e.target}`
-        : e.kind === "search" ? `🔎 ${e.provider ? `${e.provider}: ` : ""}${e.query}` : `${e.host}:${e.port}`;
-      return h("tr", { class: bad ? "bad" : "" }, h("td", { class: "muted" }, fmtTime(e.ts)), h("td", {}, what, e.kind === "model" ? [" ", privacyMark(e)] : null),
+      return h("tr", { class: bad ? "bad" : "" }, h("td", { class: "muted" }, fmtTime(e.ts)), h("td", {}, connectionWhat(e), e.kind === "model" ? [" ", privacyMark(e)] : null),
         h("td", {}, bad ? `✗ ${e.refused || e.error || e.status}` : e.kind === "search" ? `✓ ${e.results} result${e.results === 1 ? "" : "s"}`
           : `✓${e.bytes_in != null ? ` ${fmtBytes(e.bytes_in)}` : ""}`));
     }))) : h("div", { class: "small muted" }, "None yet.")),
@@ -1840,6 +1838,15 @@ const TEE_TIPS = {
   failed: "This reply doesn't match the record its attested enclave signed: not signed by that enclave's key, or not the text that was signed. The model is attested again before its next request.",
   unchecked: "No signed record of this reply could be read, so nothing shows it came from the attested enclave.",
 };
+// What a row of Sandbox activity was: the assistant's own (a model request, a site reached, a search) or one
+// the app made for it (a picture described, a fetch refused)
+function connectionWhat(e) {
+  return e.kind === "model" ? `🤖 ${e.model || e.path}` : e.kind === "http" ? `http ${e.target}`
+    : e.kind === "search" ? `🔎 ${e.provider ? `${e.provider}: ` : ""}${e.query}`
+    : e.kind === "vision" ? `🖼 ${e.model} · describing a picture`
+    : e.kind === "fetch" ? `🌐 ${e.url}` : `${e.host}:${e.port}`;
+}
+
 function privacyMark(e) {
   if (e.private) return h("span", { class: "chip private", title: "Sealed end to end: only the attested enclave could read it." }, "🔒 sealed");
   const mark = TEE_MARKS[e.tee];
