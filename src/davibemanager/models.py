@@ -59,6 +59,7 @@ class Models:
         self.caps_http = None                         # httpx client override (tests)
         self._unsupported: dict[tuple[str, str], set[str]] = {}   # generation settings a model's route refused
         self._tee: dict[tuple[str, str, str], tuple[tee_mod.TeeClient, float, dict]] = {}
+        self._doubted: set[tuple[str, str, str]] = set()   # TEE models a reply of failed its check: attested again
         self.tee_factory: Callable | None = None      # tests: (base_url, key, model) -> TeeClient
         self.client_factory: Callable | None = None   # tests: (provider, model) -> client
         self.private_lister: Callable | None = None   # tests: base_url -> private model ids
@@ -400,12 +401,14 @@ class Models:
 
     async def tee_guard(self, prov: Provider, model: str) -> dict | None:
         """Nothing goes to a TEE model whose enclave hasn't attested; an attestation older than
-        TEE_REATTEST_SECONDS is made again first. None for a model that isn't TEE."""
+        TEE_REATTEST_SECONDS, or one a reply of failed its check against (reply_check), is made again
+        first. None for a model that isn't TEE."""
         if detect_tier(model, prov.base_url, prov.tier_overrides) != "tee":
             return None
+        key = (prov.name, prov.base_url, model)     # another address: attested again
         async with self._attest_lock:
-            hit = self._tee.get((prov.name, prov.base_url, model))     # another address: attested again
-            if hit and dcap.since_boot() - hit[1] < TEE_REATTEST_SECONDS:
+            hit = self._tee.get(key)
+            if hit and key not in self._doubted and dcap.since_boot() - hit[1] < TEE_REATTEST_SECONDS:
                 return hit[2]
             make = self.tee_factory or tee_mod.TeeClient
             try:
@@ -418,7 +421,8 @@ class Models:
                 client.close()
                 self._log("enclave_attestation_failed", model=model, error=str(e))
                 raise UserError(f"{model}'s TEE attestation didn't hold, so nothing was sent to it: {e}") from e
-            self._tee[(prov.name, prov.base_url, model)] = (client, dcap.since_boot(), att.to_dict())
+            self._tee[key] = (client, dcap.since_boot(), att.to_dict())
+            self._doubted.discard(key)
             self._log("enclave_attested", model=model, **att.to_dict())
             told = (model, tuple(att.shortfalls))
             if att.level == "partial" and told not in self._told_partial:
@@ -428,3 +432,36 @@ class Models:
                     f"{model} is attested only in part ({', '.join(att.shortfalls)}). What goes to it isn't sealed "
                     "end to end: for that, choose a private model."))
             return att.to_dict()
+
+    def reply_check(self, prov: Provider, model: str):
+        """How a reply of TEE `model` is checked, against the attestation in force now (tee_guard made it
+        just before the request): an async (reply's TurnResult) -> {"tee": "verified" | "signed" | "failed"
+        | "unchecked", "detail"?} that never raises (llm/tee.py check_reply), or None when none is kept.
+
+        The outcome goes in the log; a reply that failed (not signed by the attested key, or not the text it
+        signed) is said to the user, and its model attested again before its next request. One that couldn't
+        be checked ("unchecked": a provider that signs no replies, a record not found) is no reason to
+        attest again (DA Assistant's rule, Nov 2026)."""
+        key = (prov.name, prov.base_url, model)
+        hit = self._tee.get(key)
+        if hit is None:
+            return None
+        client = hit[0]
+
+        async def check(reply) -> dict:
+            try:
+                mark = await asyncio.to_thread(
+                    client.check_reply, getattr(reply, "id", None), receipt_id=getattr(reply, "receipt_id", None),
+                    body_hash=getattr(reply, "body_hash", None), route=getattr(reply, "tee_route", None))
+                found = {"tee": mark}
+            except Exception as e:  # noqa: BLE001 - an unreachable check is not a failed one
+                found = {"tee": "unchecked", "detail": str(e)[:300]}
+            self._log("tee_reply_checked", model=model, **found)
+            if found["tee"] == "failed":
+                self._doubted.add(key)
+                self._emit("toast", level="error", text=(
+                    f"{model}'s reply didn't match the record its attested enclave signed: it wasn't signed by "
+                    "that enclave's key, or it isn't the text that was signed. Its enclave is attested again "
+                    "before anything more is sent to it."))
+            return found
+        return check

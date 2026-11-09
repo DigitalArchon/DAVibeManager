@@ -4,7 +4,11 @@
   random token (the container never holds the API key); the gateway checks the model against
   the ones this project may use, adds the provider's real key from the keyring and streams the
   request to the provider over HTTPS. Each request is logged (model, sizes, status, timing, and the
-  tokens it used, which is what this chat's cost is worked out from).
+  tokens it used, which is what this chat's cost is worked out from). A TEE model's enclave is
+  attested before anything is sent to it, and each reply it sends is checked against the record
+  the attested key signed once the reply has gone on (llm/tee.py check_reply): never holding up or
+  changing what Claude Code gets, but said in the log, and a reply that fails has its model
+  attested again before its next request.
 - **proxy.sock**: an HTTPS proxy. It accepts only `CONNECT host:443`, resolves the name here
   and refuses unless every address is globally routable (no LAN, loopback, link-local, CGNAT
   or ULA), then connects to the address it checked, so a DNS answer can't change under it.
@@ -251,6 +255,10 @@ class Upstream:
     chat: Callable[[str], object] | None = None
     # checks a model before anything is sent to it (a TEE model's attestation); raises to refuse
     guard: Callable[[str], Awaitable[object]] | None = None
+    # for a TEE model just attested (`guard` gave its attestation): the check of a reply from it, against
+    # that attestation: (the reply's TurnResult) -> {"tee": "verified" | "signed" | "failed" |
+    # "unchecked", "detail"?} (models.Models.reply_check); None when there is none to make
+    reply_check: Callable[[str], Callable[[object], Awaitable[dict]] | None] | None = None
     # the vision helper for models that can't see: (data URL, context) -> description
     describe: bridge.Describe | None = None
     vision_model: str = ""
@@ -333,6 +341,8 @@ class Gateway:
     _efforts: dict = field(default_factory=dict)
     # where reasoning handed back (reasoning_content) was refused: not sent there again
     _no_reasoning_back: set = field(default_factory=set)
+    # TEE replies being checked against their signed records, after they went on (_check_later)
+    _checks: set = field(default_factory=set)
 
     @property
     def model_socket(self) -> Path:
@@ -374,6 +384,8 @@ class Gateway:
         for s in self._servers:
             s.close()
         self._servers.clear()
+        for task in list(self._checks):
+            task.cancel()
         if self._uvicorn is not None:
             self._uvicorn.should_exit = True
             try:
@@ -546,8 +558,11 @@ class Gateway:
             params = with_effort(params, effort)
             route = None if private else up.route(model)
             params.update(routes.body(route))      # which of NanoGPT's hosts runs it, if the user chose
+            attested = None
             if up.guard is not None:
-                await up.guard(model)              # e.g. a TEE model's enclave attested; raises to refuse
+                attested = await up.guard(model)   # e.g. a TEE model's enclave attested; raises to refuse
+            # a TEE model's reply is checked against the record its attested key signs, once it has gone on
+            check = up.reply_check(model) if attested is not None and up.reply_check is not None else None
             client = up.chat(model)
         except Refused as e:
             return err(e)
@@ -558,13 +573,18 @@ class Gateway:
         show = not (isinstance(data.get("thinking"), dict) and data["thinking"].get("type") == "disabled")
         rec.update(status=200, effort=effort, **({"effort_asked": wanted} if effort != wanted else {}),
                    **({"route": routes.describe(route)} if route else {}), **({"sees": True} if native else {}))
+        if check is not None:
+            # its reply's check comes later, as an event of its own naming this one (the log marks the request)
+            rec.update(id=secrets.token_hex(6), tee="checking")
         where = f"{up.provider}:{'e2ee' if private else 'plain'}"
         if where in self._no_reasoning_back and bridge.handed_back(messages):
             messages = bridge.without_reasoning(messages)
             rec["reasoning_back"] = False
+        ended: dict = {}                            # the provider's whole reply, once its stream has ended
         try:
             # the provider's answer first: a request it refuses is told by its status, not as a reply cut short
-            events = await answered(self._stream(client, model, messages, tools, params, rec, where))
+            events = await answered(self._stream(client, model, messages, tools, params, rec, where,
+                                                 exact=check is not None, ended=ended))
         except Exception as e:  # noqa: BLE001
             return err(upstream_refusal(model, e, up.provider))
         if not data.get("stream"):
@@ -577,6 +597,7 @@ class Gateway:
             # (the reply's own figures would be the gateway's estimate)
             self.on_event(_route_held({**rec, "seconds": round(time.monotonic() - started, 2),
                                        **({"usage": openai_usage(stats["usage"])} if stats.get("usage") else {})}))
+            self._check_later(check, ended, rec)
             return JSONResponse(reply)
 
         async def body():
@@ -593,7 +614,27 @@ class Gateway:
                 if "usage" in stats:
                     stats["usage"] = openai_usage(stats["usage"])
                 self.on_event(_route_held({**rec, **stats, "bytes_in": n, "seconds": round(time.monotonic() - started, 2)}))
+                self._check_later(check, ended, rec)
         return StreamingResponse(body(), media_type="text/event-stream")
+
+    def _check_later(self, check, ended: dict, rec: dict) -> None:
+        """A TEE model's reply, which has gone on to Claude Code as it came, checked against the record its
+        attested key signed (llm/tee.py check_reply), aside: said afterwards as an event naming the request
+        (rec["id"]). Only a reply its stream carried to the end is checked; one stopped or cut short has no
+        record to match."""
+        reply = ended.get("reply")
+        if check is None or reply is None:
+            return
+
+        async def run():
+            try:
+                found = await check(reply)
+            except Exception as e:  # noqa: BLE001 - a check that couldn't be made is "unchecked", never a failure
+                found = {"tee": "unchecked", "detail": str(e)[:300]}
+            self.on_event({"kind": "tee_reply", "of": rec.get("id"), "model": rec.get("model"), **found})
+        task = asyncio.get_running_loop().create_task(run())
+        self._checks.add(task)
+        task.add_done_callback(self._checks.discard)
 
     async def _effort(self, up: Upstream, model: str, asked: str) -> str:
         """The effort `model` is sent for `asked`: the nearest it takes, as it said when it refused one,
@@ -620,18 +661,23 @@ class Gateway:
             return ""
         return None
 
-    def _stream(self, client, model: str, messages: list[dict], tools, params: dict, rec: dict, where: str):
+    def _stream(self, client, model: str, messages: list[dict], tools, params: dict, rec: dict, where: str,
+                exact: bool = False, ended: dict | None = None):
         """The model's events. Refused before it answers, it is asked again (twice at most): without the
         reasoning handed back, if `where` won't take that field (nor from then on); with an effort it
-        takes, if it named those (rec["effort"] says which went)."""
+        takes, if it named those (rec["effort"] says which went). With `exact` (a TEE model's reply, to be
+        checked), its stream's every byte is hashed as it passes (LLMClient.stream); the whole reply, once
+        the stream has ended, goes in `ended`["reply"]."""
         async def events():
             msgs, prm = messages, params
             for attempt in range(3):
                 sent = prm.get("reasoning_effort")
                 begun = False
                 try:
-                    async for event in client.stream(model, msgs, tools, prm):
+                    async for event in client.stream(model, msgs, tools, prm, **({"exact": True} if exact else {})):
                         begun = True
+                        if event[0] == "done" and ended is not None:
+                            ended["reply"] = event[1]
                         yield event
                     return
                 except Exception as e:

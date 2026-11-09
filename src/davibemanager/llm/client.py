@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+import codecs
+import hashlib
 import json
+import re
 from dataclasses import dataclass, field
 from typing import AsyncIterator
 from urllib.parse import urlparse
 
-from openai import AsyncOpenAI, DefaultAsyncHttpxClient
+from openai import APIError, AsyncOpenAI, DefaultAsyncHttpxClient
+from openai.types.chat import ChatCompletionChunk
 
 from ..netpolicy import check_url, is_local_host
 
@@ -86,6 +90,11 @@ class TurnResult:
     finish_reason: str | None = None
     usage: dict | None = None
     id: str | None = None  # the completion's id: a TEE model's reply signature is looked up by it
+    # a TEE model's reply, read with `exact` (LLMClient.stream): its receipt's id and nano-gpt's route
+    # (its headers), and the hash of every byte its stream carried, which the signed record names
+    receipt_id: str | None = None
+    tee_route: str | None = None
+    body_hash: str | None = None
 
 
 class LLMClient:
@@ -102,11 +111,14 @@ class LLMClient:
         return sorted(m.id for m in page.data)
 
     async def stream(
-        self, model: str, messages: list[dict], tools: list[dict] | None = None, params: dict | None = None
+        self, model: str, messages: list[dict], tools: list[dict] | None = None, params: dict | None = None,
+        *, exact: bool = False,
     ) -> AsyncIterator[tuple[str, object]]:
         """Yield ("open", None) once the provider has taken the request and its reply has begun,
         ("text"|"reasoning", str) deltas and ("tool", name) as each tool call starts, then ("done",
-        TurnResult)."""
+        TurnResult). With `exact` (a TEE model's reply, checked against its signed record afterwards:
+        llm/tee.py check_reply), the stream is read as it came and every byte of it hashed, to its
+        end, and the receipt's headers kept, on the TurnResult."""
         if is_private_mode(model):
             raise RuntimeError(f"{model} is a Private Mode model and is only ever sent sealed; nothing was sent")
         kwargs: dict = {"model": model, "messages": messages, "stream": True,
@@ -116,6 +128,11 @@ class LLMClient:
             kwargs["tool_choice"] = "auto"
         kwargs.update(_split_params(params))
         acc = StreamAccumulator()
+        if exact:
+            async for event in self._exactly(kwargs, acc):
+                yield event
+            yield "done", acc.finish()
+            return
         stream = await self._client.chat.completions.create(**kwargs)
         try:
             yield "open", None                 # the provider took it, and its reply has begun
@@ -126,12 +143,62 @@ class LLMClient:
             await stream.close()     # stopped or cancelled: drop the connection, so the provider stops generating
         yield "done", acc.finish()
 
+    async def _exactly(self, kwargs: dict, acc: StreamAccumulator) -> AsyncIterator[tuple[str, object]]:
+        """The stream as the SDK would read it (its chunks, an error chunk raised as its APIError),
+        but by this client, so that every byte it carries is hashed, the "[DONE]" and anything after
+        it too: the hash the signed record names is of the exact bytes the stream carried (SealedLore's
+        openai_compat._lines, Nov 2026)."""
+        digest = hashlib.sha256()
+        async with self._client.chat.completions.with_streaming_response.create(**kwargs) as response:
+            headers = response.headers
+            acc.result.receipt_id = headers.get("x-receipt-id") or headers.get("x-tee-signature-id")
+            acc.result.tee_route = headers.get("x-tee-verification-route")
+            yield "open", None                 # the provider took it, and its reply has begun
+            done = False
+            async for line in _lines(response.iter_bytes(), digest):
+                if done or not line.startswith("data:"):
+                    continue
+                data = line[5:].strip()
+                if data == "[DONE]":
+                    done = True                # read on (nothing after it is taken): the hash covers it all
+                    continue
+                try:
+                    parsed = json.loads(data)
+                except ValueError:
+                    raise RuntimeError(f"the provider's stream held a line that isn't JSON: {data[:200]!r}") from None
+                if not isinstance(parsed, dict):
+                    raise RuntimeError(f"the provider's stream held a line that isn't a chunk: {data[:200]!r}")
+                if parsed.get("error"):
+                    error = parsed["error"]
+                    message = error.get("message") if isinstance(error, dict) else None
+                    raise APIError(message if isinstance(message, str) and message else "An error occurred during streaming",
+                                   response.http_request, body=error)
+                for event in acc.feed(ChatCompletionChunk.model_construct(**parsed)):
+                    yield event
+        acc.result.body_hash = "sha256:" + digest.hexdigest()
+
     async def complete(self, model: str, messages: list[dict], params: dict | None = None) -> str:
         if is_private_mode(model):
             raise RuntimeError(f"{model} is a Private Mode model and is only ever sent sealed; nothing was sent")
         resp = await self._client.chat.completions.create(model=model, messages=messages, **_split_params(params))
         self.last_usage = resp.usage.model_dump() if resp.usage else None     # what it cost (Engine.spend)
         return resp.choices[0].message.content or ""
+
+
+async def _lines(chunks, digest) -> AsyncIterator[str]:
+    """The stream's lines, each byte also fed to `digest` as it arrives, decoded of any content
+    encoding (the bytes the receipt's hash is of: SealedLore's openai_compat._lines)."""
+    decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+    pending = ""
+    async for chunk in chunks:
+        digest.update(chunk)
+        pending += decoder.decode(chunk)
+        *complete, pending = re.split(r"\r\n|\r|\n", pending)
+        for line in complete:
+            yield line
+    pending += decoder.decode(b"", final=True)
+    if pending:
+        yield pending
 
 
 # provider extensions sent in the request body, whatever the SDK version knows about:

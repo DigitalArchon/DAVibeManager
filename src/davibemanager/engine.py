@@ -1994,7 +1994,7 @@ class Engine:
             vision = ""                         # what it's shown would go to it in the clear: none at all
         return Upstream(base_url=prov.builder_url, auth=prov.builder_auth, key=lambda: self.models.key(prov),
                         models=(model, small), provider=prov.name, tier=tier, chat=chat,
-                        guard=lambda m: self.models.tee_guard(prov, m),
+                        guard=lambda m: self.models.tee_guard(prov, m), reply_check=lambda m: self.models.reply_check(prov, m),
                         describe=self._describe_image if vision and prov.base_url else None, vision_model=vision,
                         sees=lambda m: self.models.sees(prov, m), efforts=lambda m: self.models.efforts(prov, m),
                         reasoning=self.cfg.settings.builder_reasoning, route=lambda m: self.models.route(prov, m))
@@ -2080,13 +2080,23 @@ class Engine:
 
     def _network_event(self, ev: dict) -> None:
         ev = {"ts": time.time(), **ev}
-        self._count_tokens(ev)
-        if ev.get("route_held") is False and ev.get("model") not in self._route_told:
-            self._route_told.add(ev.get("model"))
-            self.emit("toast", level="info", text=f"NanoGPT didn't use the host you chose for {ev.get('model')} "
-                      f"({ev['route']}): it may be down or busy, so NanoGPT chose one itself, as it does with no route "
-                      "(included in a subscription).")
-        self.network = (self.network + [ev])[-500:]
+        if ev.get("kind") == "tee_reply":
+            # a TEE reply checked after it went on (gateway._check_later): the request it was is marked with
+            # what was found, and the window told (it marks its row); the log keeps the check as it came
+            for old in reversed(self.network):
+                if old.get("kind") == "model" and old.get("id") and old.get("id") == ev.get("of"):
+                    old["tee"] = ev.get("tee")
+                    if ev.get("detail"):
+                        old["tee_detail"] = ev["detail"]
+                    break
+        else:
+            self._count_tokens(ev)
+            if ev.get("route_held") is False and ev.get("model") not in self._route_told:
+                self._route_told.add(ev.get("model"))
+                self.emit("toast", level="info", text=f"NanoGPT didn't use the host you chose for {ev.get('model')} "
+                          f"({ev['route']}): it may be down or busy, so NanoGPT chose one itself, as it does with no "
+                          "route (included in a subscription).")
+            self.network = (self.network + [ev])[-500:]
         try:
             d = data_dir()
             d.mkdir(parents=True, exist_ok=True, mode=0o700)

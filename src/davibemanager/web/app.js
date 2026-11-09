@@ -246,8 +246,14 @@ function handle(ev) {
       if (S.panel === "apps") openPanel("apps");
       break;
     case "network":
-      st.network.push(ev.event);
-      if (st.network.length > 300) st.network.shift();
+      if (ev.event.kind === "tee_reply") {
+        // a TEE reply, checked after it went on: the request it was is marked with what was found
+        const req = st.network.find((e) => e.kind === "model" && e.id && e.id === ev.event.of);
+        if (req) Object.assign(req, { tee: ev.event.tee }, ev.event.detail ? { tee_detail: ev.event.detail } : {});
+      } else {
+        st.network.push(ev.event);
+        if (st.network.length > 300) st.network.shift();
+      }
       if (S.panel === "activity") openPanel("activity");
       break;
     case "spend":
@@ -1684,11 +1690,35 @@ function activityPanel() {
       const bad = e.refused || (e.status && e.status >= 400);
       const what = e.kind === "model" ? `🤖 ${e.model || e.path}` : e.kind === "http" ? `http ${e.target}`
         : e.kind === "search" ? `🔎 ${e.provider ? `${e.provider}: ` : ""}${e.query}` : `${e.host}:${e.port}`;
-      return h("tr", { class: bad ? "bad" : "" }, h("td", { class: "muted" }, fmtTime(e.ts)), h("td", {}, what),
+      return h("tr", { class: bad ? "bad" : "" }, h("td", { class: "muted" }, fmtTime(e.ts)), h("td", {}, what, e.kind === "model" ? [" ", privacyMark(e)] : null),
         h("td", {}, bad ? `✗ ${e.refused || e.error || e.status}` : e.kind === "search" ? `✓ ${e.results} result${e.results === 1 ? "" : "s"}`
           : `✓${e.bytes_in != null ? ` ${fmtBytes(e.bytes_in)}` : ""}`));
     }))) : h("div", { class: "small muted" }, "None yet.")),
   ];
+}
+
+// How private a model request was (gateway.py): sealed end to end, or a TEE model's reply as its check found
+// it (llm/tee.py check_reply). Anything short of verified says so in the mark itself, not only its tooltip
+// (SealedLore's marks and the author's rule there: warn wherever it is less secure than wanted).
+const TEE_MARKS = {
+  checking: ["TEE · checking its signature…", ""],
+  verified: ["TEE verified", "ok"],
+  signed: ["TEE signed, text not compared", ""],
+  failed: ["TEE ⚠ check failed", "danger"],
+  unchecked: ["TEE ⚠ reply not verified", "warn"],
+};
+const TEE_TIPS = {
+  checking: "This reply is being checked against the record its attested enclave signed.",
+  verified: "The attested enclave's key signed this reply's record, and the record is for the exact text that came back. Where NanoGPT's gateway kept a signed receipt, it was read too, saying the model the reply came from was verified. What a TEE proves stops there: the request passed NanoGPT's gateway in the clear, and no measurement of the software is compared.",
+  signed: "The attested enclave's key signed this reply's record, but the text couldn't be compared with it (NanoGPT rebuilds this model's replies).",
+  failed: "This reply doesn't match the record its attested enclave signed: not signed by that enclave's key, or not the text that was signed. The model is attested again before its next request.",
+  unchecked: "No signed record of this reply could be read, so nothing shows it came from the attested enclave.",
+};
+function privacyMark(e) {
+  if (e.private) return h("span", { class: "chip private", title: "Sealed end to end: only the attested enclave could read it." }, "🔒 sealed");
+  const mark = TEE_MARKS[e.tee];
+  if (!mark) return null;
+  return h("span", { class: `chip${mark[1] ? ` ${mark[1]}` : ""}`, title: TEE_TIPS[e.tee] + (e.tee_detail ? ` (${e.tee_detail})` : "") }, mark[0]);
 }
 
 function searchesEl(evs) {
