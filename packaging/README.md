@@ -43,14 +43,25 @@ You need rootless [Podman](https://podman.io) (`sudo apt install podman`).
 packaging/build-appimage.sh build    # dist/DAVibeManager-<version>-x86_64.AppImage (+ .sha256)
 packaging/build-appimage.sh check    # build twice from scratch, compare: must be identical
 packaging/test-appimage.sh           # smoke-test it on Ubuntu, Debian, Fedora, Arch, CachyOS
-packaging/build-appimage.sh lock     # re-resolve the dependency locks (review the diff, commit)
+packaging/build-appimage.sh lock     # lock what pyproject.toml and the *.in files add (review the diff, commit)
+UPGRADE=1 packaging/build-appimage.sh lock   # re-resolve every lock to what is newest now
+DIST=/some/folder packaging/build-appimage.sh build   # the results somewhere other than dist/
 ```
 
-Only committed files are built (`git archive HEAD`), and every timestamp is HEAD's commit
-time (`SOURCE_DATE_EPOCH`). Builds run in `packaging/appimage/Containerfile`: Ubuntu 24.04 pinned
-by digest, with packages from the Ubuntu archive as it was at a fixed moment
-([snapshot.ubuntu.com](https://snapshot.ubuntu.com)). Downloads are cached in
-`~/.cache/davibemanager-appimage` and verified on every build.
+Only committed files are built: HEAD's, read from git's own objects as they were committed (not
+through `git archive`, which would hand them through this machine's git settings first: line endings,
+filters), and every timestamp is HEAD's commit time (`SOURCE_DATE_EPOCH`). Builds run in
+`packaging/appimage/Containerfile`: Ubuntu 24.04 pinned by digest, with packages from the Ubuntu
+archive as it was at a fixed moment ([snapshot.ubuntu.com](https://snapshot.ubuntu.com)); the host's
+CA bundle goes into that image's build as a copy, for apt to reach the snapshot over https, and is
+removed again. Every download is over https only, redirects included, and is cached in
+`~/.cache/davibemanager-appimage` and verified against its pinned hash on every build. Nothing in the
+image names the folder it was built in: the bytecode names its source as it is inside the image, and
+pip's console scripts, which would name the build's Python, are left out (the build stops if anything
+still names it).
+
+A relock keeps the versions the locks already pin, and moves only what a new floor or a new package
+needs; `UPGRADE=1` moves everything.
 
 ## What is pinned, and where
 
@@ -60,6 +71,7 @@ by digest, with packages from the Ubuntu archive as it was at a fixed moment
 | Runtime Python packages (wheels, with hashes) | `appimage/requirements.lock` |
 | PyGObject, pycairo (source archives, with hashes) | `appimage/sdists.lock` |
 | meson, meson-python, ninja, setuptools (with hashes) | `appimage/build-requirements.lock` |
+| pip and pip-tools, which write the locks (with hashes) | `appimage/lock-requirements.lock` |
 
 Changing any of these changes the AppImage, which is the point: an update is a reviewed commit.
 Most runtime packages are installed only as prebuilt wheels; the few without one
@@ -67,7 +79,8 @@ Most runtime packages are installed only as prebuilt wheels; the few without one
 
 ## Verifying a release
 
-1. Check out the release's tag.
+1. Check out the release's tag (`git clone -c core.autocrlf=false`: the scripts run from the
+   checkout, and with Windows line endings they would not start).
 2. `packaging/build-appimage.sh build`.
 3. Compare `sha256sum dist/DAVibeManager-*.AppImage` with the release's `.sha256`.
 
