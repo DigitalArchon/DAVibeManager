@@ -597,6 +597,22 @@ async def test_the_apps_own_tor_is_started_logged_into_and_stopped_with_it(tmp_p
     assert oct(os.stat(t.paths.torrc).st_mode & 0o777) == "0o600"
 
 
+async def test_something_else_at_tors_socket_naming_a_cookie_of_its_own_is_refused(tmp_path, monkeypatch):
+    """PROTOCOLINFO's COOKIEFILE comes from whatever answers on the control socket: an impostor names its own
+    cookie and proves it read that one. The cookie read is the one in the data folder the app gave its tor."""
+    import tempfile
+    from pathlib import Path
+    monkeypatch.setenv("FAKE_TOR_IMPOSTOR", "1")
+    clean = tor.tor_environment
+    monkeypatch.setattr(tor, "tor_environment", lambda t, environ=None: {
+        **clean(t), **{k: v for k, v in os.environ.items() if k.startswith("FAKE_TOR_")}})
+    run = Path(tempfile.mkdtemp(prefix="dvm-", dir="/tmp"))
+    t = tor.Tor(tor.paths_for(tmp_path / "state", run), binary=Path(__file__).with_name("faketor.py"))
+    with pytest.raises(tor.TorError, match="didn't prove it is tor"):
+        await t.start()
+    assert t.state["step"] == "failed" and t.paths.cookie == tmp_path / "state" / "tor" / "control_auth_cookie"
+
+
 async def test_tor_that_isnt_there_or_wont_start_says_so(tmp_path):
     import tempfile
     from pathlib import Path

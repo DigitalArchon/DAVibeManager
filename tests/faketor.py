@@ -3,7 +3,8 @@
 login, bootstrap, and onion services, as much of tor's control protocol as the app speaks.
 FAKE_TOR_LOG: where the commands it was sent are written. ADD_ONION answers with the address
 worked out from the key it was given, as tor does (the test gives the seed's address in
-FAKE_TOR_ADDRESS). It exits when the controller that took ownership goes."""
+FAKE_TOR_ADDRESS). It exits when the controller that took ownership goes. FAKE_TOR_IMPOSTOR: it plays
+something else at tor's socket, naming a cookie of its own (and the data folder holds another)."""
 
 import asyncio
 import hashlib
@@ -32,6 +33,10 @@ async def main():
     control = re.match(r'unix:"(.*)"', conf["ControlPort"]).group(1)
     cookie_path = os.path.join(data, "control_auth_cookie")
     cookie = secrets.token_bytes(32)
+    if os.environ.get("FAKE_TOR_IMPOSTOR"):
+        with open(cookie_path, "wb") as f:                  # what a tor before it left there
+            f.write(secrets.token_bytes(32))
+        cookie_path = os.path.join(os.path.dirname(data), "impostors_cookie")
     with open(cookie_path, "wb") as f:
         f.write(cookie)
     log = open(os.environ.get("FAKE_TOR_LOG", os.devnull), "a")

@@ -15,7 +15,9 @@ environment.
 The control protocol, as much of it as sync speaks (tor's control-spec.txt), after SealedLore's:
 PROTOCOLINFO, AUTHCHALLENGE SAFECOOKIE and AUTHENTICATE (the cookie is never sent, and tor proves
 it read it), TAKEOWNERSHIP, SETEVENTS, GETINFO status/bootstrap-phase, ADD_ONION and DEL_ONION,
-ONION_CLIENT_AUTH_ADD and ONION_CLIENT_AUTH_REMOVE.
+ONION_CLIENT_AUTH_ADD and ONION_CLIENT_AUTH_REMOVE. The cookie is read from the data folder the app
+gave its tor, never from where PROTOCOLINFO says it is: whatever answers on the socket says that,
+and an impostor would name a cookie of its own, and prove it read that one.
 """
 
 from __future__ import annotations
@@ -135,7 +137,8 @@ def quoted(value: str) -> str:
 
 
 def cookie_file(protocolinfo: Reply) -> str:
-    """Where tor keeps the cookie, from PROTOCOLINFO; SAFECOOKIE must be offered."""
+    """Where tor says it keeps the cookie, from PROTOCOLINFO; SAFECOOKIE must be offered. (Never read
+    from there: see TorPaths.cookie.)"""
     for line in protocolinfo.lines:
         if line.startswith("AUTH "):
             f = fields(line[5:])
@@ -232,6 +235,12 @@ class TorPaths:
     @property
     def socks(self) -> Path:
         return self.sockets / "socks.sock"
+
+    @property
+    def cookie(self) -> Path:
+        """The cookie the app's tor writes (CookieAuthentication, in its DataDirectory: tor's default),
+        which only this user can read. It, not the file PROTOCOLINFO names, is what the login proves."""
+        return self.data / "control_auth_cookie"
 
 
 def paths_for(state: Path, runtime: Path) -> TorPaths:
@@ -355,8 +364,12 @@ class Tor:
             raise TorError("Tor didn't start: " + (self._last_log() or "it opened no control socket."))
         self._reader, self._writer = await asyncio.open_unix_connection(str(self.paths.control))
         self._tasks.append(asyncio.ensure_future(self._read_control()))
-        info = await self.command("PROTOCOLINFO 1")
-        cookie = Path(cookie_file(info)).read_bytes()
+        cookie_file(await self.command("PROTOCOLINFO 1"))     # SAFECOOKIE offered (where it says is no matter)
+        try:
+            cookie = self.paths.cookie.read_bytes()
+        except OSError:
+            raise TorError("Tor didn't write its cookie where the app's tor keeps it, so what answered on its "
+                           "control socket isn't the app's tor.") from None
         nonce = secrets.token_bytes(32)
         challenge = await self.command(f"AUTHCHALLENGE SAFECOOKIE {nonce.hex()}", check=False)
         await self.command(authenticate(cookie, nonce, challenge))
