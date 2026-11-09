@@ -176,12 +176,15 @@ RedPill's gateway, which passes each request on to the model's host: its attesta
 
 After each reply has reached the assistant, the app fetches the record NanoGPT keeps of it, signed by
 the attested key, and checks it is for the exact text that came back; where the gateway kept a signed
-receipt, that too, saying the model the reply came from was verified. **☰ → Sandbox activity** marks
-each such request: **TEE verified**; **TEE signed, text not compared** (NanoGPT rebuilds that model's
-replies); **TEE ⚠ reply not verified** (no record of it could be read, so nothing shows it came from
-the attested enclave); or **TEE ⚠ check failed**: the reply doesn't match its record. Then the app
-says so, and attests the model again before anything more goes to it. The check never holds up or
-changes what the assistant gets.
+receipt, that too, saying the model the reply came from was verified. The app's own requests to a TEE
+model are checked the same way: a second opinion, the summary of what's new in an update, the review
+of an app you import, and a picture described for the assistant. **☰ → Sandbox activity** lists them
+beside the assistant's requests and marks each: **TEE verified**; **TEE signed, text not compared**
+(NanoGPT rebuilds that model's replies); **TEE ⚠ reply not verified** (no record of it could be read,
+so nothing shows it came from the attested enclave); or **TEE ⚠ check failed**: the reply doesn't
+match its record. Then the app says so, once for as long as that model's replies keep failing, and
+attests the model again before anything more goes to it. The check never holds up or changes what
+the assistant, or you, are given.
 
 What this doesn't prove: which software the enclave runs. No measurement of it is compared with a
 published one, so what the attestation shows is genuine, current hardware holding a live key, bound
