@@ -363,3 +363,16 @@ async def test_choosing_a_private_assistant_turns_keep_nothing_on_and_the_users_
     engine.save_settings({"search_zero_retention": False})          # Best results, chosen
     engine.save_settings(private)
     assert engine.cfg.settings.search_zero_retention is False
+
+
+async def test_a_key_no_header_can_carry_sends_no_search_and_is_never_quoted():
+    """As every other client of the app's: a key pasted with a line break or a zero-width space is refused
+    before anything is sent, in words that say nothing of it (h11 would have quoted the header whole)."""
+    from davibemanager.llm import websearch
+    seen = []
+    http = httpx.AsyncClient(transport=httpx.MockTransport(lambda r: seen.append(r) or httpx.Response(200, json={})))
+    for key in ("sk-secret123\n", "sk-sec​ret123"):
+        with pytest.raises(websearch.SearchError) as caught:
+            await websearch.web_search("https://nano-gpt.com/api/v1", key, "nginx 502", http=http)
+        assert "sk-sec" not in str(caught.value) and "Settings" in str(caught.value)
+    assert not seen

@@ -14,7 +14,7 @@ from urllib.parse import urlsplit
 
 import httpx
 
-from ..netpolicy import InsecureURL, check_url
+from ..netpolicy import InsecureURL, check_url, key_problem, shown
 
 # Best first, from DA-Assistant's measurement (2026-09-21: three queries, eight results each, scored
 # by primary sources): perplexity 10/16 with ~1,300 clean characters per result; valyu 5/16, clean
@@ -88,6 +88,9 @@ async def web_search(base_url: str, api_key: str, query: str, provider: str = "p
         check_url(base_url, "The provider's base URL")      # the key goes with the search
     except InsecureURL as e:
         raise SearchError(str(e)) from None
+    problem = key_problem(api_key, "NanoGPT")             # one no header can carry: nothing is sent with it
+    if problem:
+        raise SearchError(problem)
     body = {"query": query, "provider": provider, "outputType": "searchResults", "excludeDomains": list(UNREADABLE)}
     if provider == "kagi":
         body["kagiSource"] = "search"   # full web search; "web" and "news" are enrichment tiers that find little
@@ -103,7 +106,7 @@ async def web_search(base_url: str, api_key: str, query: str, provider: str = "p
     try:
         r = await client.post(search_url(base_url), json=body, headers={"Authorization": f"Bearer {api_key}"})
     except httpx.HTTPError as e:
-        raise SearchError(f"could not reach {search_url(base_url)}: {e}") from e
+        raise SearchError(f"could not reach {shown(search_url(base_url))}: {e}") from e
     finally:
         if http is None:
             await client.aclose()
