@@ -21,7 +21,8 @@ P="$W/src/packaging/appimage"
 fetch() {  # url sha256 dest: download once into the cache, always verify
     local url=$1 sum=$2 dest=$3
     if [ ! -f "$dest" ] || ! echo "$sum  $dest" | sha256sum -c --quiet - 2>/dev/null; then
-        curl -fsSL --retry 3 -o "$dest.part" "$url"
+        # https only, redirects included: a hash proves what arrived, not who saw it asked for
+        curl --proto '=https' --tlsv1.2 -fsSL --retry 3 -o "$dest.part" "$url"
         echo "$sum  $dest.part" | sha256sum -c --quiet -
         mv "$dest.part" "$dest"
     fi
@@ -66,14 +67,27 @@ SDIST_ONLY="proxy-tools"
 fetch_sdists() {  # lock [names...]: fetch pinned source archives from PyPI, checked against the lock
     "$W/buildpy/bin/python3" - "$W/sdists" "$@" <<'PY'
 import hashlib, json, re, sys, urllib.request
+
+class HttpsOnly(urllib.request.HTTPRedirectHandler):
+    # what curl --proto '=https' does above: a redirect away from https is refused
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        if not newurl.startswith("https://"):
+            sys.exit(f"{req.full_url} redirects to {newurl}, which is not https")
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+def urlopen(url):
+    if not url.startswith("https://"):
+        sys.exit(f"{url} is not https")
+    return urllib.request.build_opener(HttpsOnly).open(url)
+
 dest, lockfile, names = sys.argv[1], sys.argv[2], set(sys.argv[3:])
 lock = open(lockfile).read()
 for name, version, hashes in re.findall(r"^([\w.-]+)==([\w.]+)((?:\s*\\\s*--hash=sha256:\w+)+)", lock, re.M):
     if names and name not in names:
         continue
-    meta = json.load(urllib.request.urlopen(f"https://pypi.org/pypi/{name}/{version}/json"))
+    meta = json.load(urlopen(f"https://pypi.org/pypi/{name}/{version}/json"))
     sdist = next(u for u in meta["urls"] if u["packagetype"] == "sdist")
-    data = urllib.request.urlopen(sdist["url"]).read()
+    data = urlopen(sdist["url"]).read()
     if hashlib.sha256(data).hexdigest() not in re.findall(r"sha256:(\w+)", hashes):
         sys.exit(f"{sdist['filename']}: its hash isn't in {lockfile}")
     # saved under a normalised name, which the build steps below look for

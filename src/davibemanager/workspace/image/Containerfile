@@ -63,14 +63,15 @@ RUN printf '%s\n' \
       'Acquire::https::Proxy "http://127.0.0.1:3128";' \
       'Acquire::Retries "3";' > /etc/apt/apt.conf.d/90dvm-proxy
 
-# appimagetool (an AppImage itself, so unpacked: there is no FUSE here) and the type 2 runtime
-RUN curl -fsSL -o /tmp/appimagetool "$APPIMAGETOOL_URL" \
+# appimagetool (an AppImage itself, so unpacked: there is no FUSE here) and the type 2 runtime, over https
+# only, redirects included: a hash proves what arrived, not who saw it asked for
+RUN curl --proto '=https' --tlsv1.2 -fsSL -o /tmp/appimagetool "$APPIMAGETOOL_URL" \
  && echo "$APPIMAGETOOL_SHA256  /tmp/appimagetool" | sha256sum -c - \
  && chmod +x /tmp/appimagetool && cd /opt && /tmp/appimagetool --appimage-extract >/dev/null \
  && mv /opt/squashfs-root /opt/appimagetool && ln -s /opt/appimagetool/AppRun /usr/local/bin/appimagetool \
  && rm /tmp/appimagetool \
  && mkdir -p /usr/local/share/appimage \
- && curl -fsSL -o /usr/local/share/appimage/runtime-x86_64 "$RUNTIME_URL" \
+ && curl --proto '=https' --tlsv1.2 -fsSL -o /usr/local/share/appimage/runtime-x86_64 "$RUNTIME_URL" \
  && echo "$RUNTIME_SHA256  /usr/local/share/appimage/runtime-x86_64" | sha256sum -c -
 
 # Claude Code: the CLI bundled with the pinned claude-agent-sdk the app talks to it with
