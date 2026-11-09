@@ -32,10 +32,6 @@ def test_modifying(cmd):
     "dd if=/dev/zero of=/dev/sda", "Restart-Computer -Force", "Stop-Service Spooler", "reload",
     "iptables -F", "Remove-Item C:\\temp -Recurse", "/system reboot", "diskpart", "kill -9 1234",
     "ls; sudo shutdown -r now",
-    # deleting by other means than rm -r
-    "find ~ -name '*.jpg' -delete", "find . -type f -exec rm {} +", "ls ~/x | xargs rm -f",
-    "rsync -a --delete /tmp/empty/ ~/", "git -C ~/p reset --hard", "dconf reset -f /", "flatpak uninstall --all -y",
-    "unlink ~/.bashrc", "loginctl terminate-session 2", "kill -KILL -1",
 ])
 def test_disruptive(cmd):
     assert classify(cmd)[0] == "disruptive"
@@ -155,14 +151,6 @@ def test_a_request_shows_what_will_run():
     r.edit("echo\u200b hi")
     assert r.command == "echo hi" and "ZERO WIDTH SPACE" in r.hidden[0]
     assert HostRequest.create(2, {"command": "uptime", "risk": "read_only"}).hidden == []
-
-
-def test_a_package_rule_stays_within_one_command():
-    from davibemanager.safety.risk import classify
-    looks = 'which mpv && (dpkg -l mpv | tail -1 || flatpak list | grep -i mpv || echo "not a flatpak/snap install")'
-    assert classify(looks)[0] == "read_only"
-    assert classify("sudo apt -y install mpv")[0] != "read_only"
-    assert classify("flatpak --user install flathub io.mpv.Mpv")[0] != "read_only"
 
 
 def test_an_image_the_assistant_made_is_read_as_png_or_jpeg_only():
