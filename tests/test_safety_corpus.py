@@ -14,6 +14,7 @@ import pytest
 from davibemanager.safety import images
 from davibemanager.safety.hidden import clean
 from davibemanager.safety.inject import suspicious
+from davibemanager.safety.redact import redact
 from davibemanager.safety.risk import LEVELS, classify, session_impact
 from davibemanager.safety.sensitive import sensitive
 
@@ -149,6 +150,55 @@ def test_listing_forms_are_read_only(cmd):
 ])
 def test_changing_forms_still_raise(cmd, level):
     assert classify(cmd)[0] == level
+
+
+@pytest.mark.parametrize("text,secret", [
+    ('{"username": "app", "password": "s3cr3tJSON"}', "s3cr3tJSON"),
+    ("$cfg = ['password' => 'phpSecret1'];", "phpSecret1"),
+    ('<add key="DbPassword" value="webConfigPw1"/>', "webConfigPw1"),
+    ("password: |\n  yamlBlockSecret\n  moreSecret\nhost: db", "yamlBlockSecret"),
+    ("password:\n  s3cretNextLine\nhost: db", "s3cretNextLine"),
+    ("    Key Content            : WifiSecret123", "WifiSecret123"),
+    ("-----BEGIN PGP PRIVATE KEY BLOCK-----\nlQOYBF\n-----END PGP PRIVATE KEY BLOCK-----", "lQOYBF"),
+    ("Cookie: session=abcSESSION123; theme=dark", "abcSESSION123"),
+    ("Set-Cookie: sid=SETCOOKIE999; Path=/; HttpOnly", "SETCOOKIE999"),
+    ("Authorization: Negotiate YIIGhgYGKwYBBQUCoIIGejCCBnag", "YIIGhgYGKwYBBQUCoIIGejCCBnag"),
+    ("mysql -u root -pHunter2Mysql -h db app", "Hunter2Mysql"), ("sshpass -p Hunter2Ssh ssh bob@web01", "Hunter2Ssh"),
+    ("Server=db;Uid=sa;Pwd=OdbcSecret1;", "OdbcSecret1"), ("password=123456", "123456"),
+    ('Authorization: Digest username="bob", response="6629fae49393a05397450978507c4ef1"', "6629fae49393a05397450978507c4ef1"),
+    ("Authorization: NTLM TlRMTVNTUAABAAAAB4IIog==", "TlRMTVNTUAABAAAAB4IIog=="),
+    # in quotes, as JSON and Python print them (DA Vibe Manager's)
+    ('{"password": "hunter2", "api_key": "abc123def456"}', "hunter2"),
+    ('{"password": "hunter2", "api_key": "abc123def456"}', "abc123def456"),
+    ("{'client_secret': 'S3cr3tValue'}", "S3cr3tValue"),
+    ('{"auths": {"ghcr.io": {"auth": "dXNlcjpodW50ZXIy"}}}', "dXNlcjpodW50ZXIy"),     # docker's config.json
+    # PGP's private keys, and one cut short (the head of a key file, or output shortened); these keys
+    # are in two pieces, joined again when the test runs: a file that seems to hold real keys can't be
+    # pushed to GitHub
+    ("-----BEGIN PGP PRIVATE " "KEY BLOCK-----\n\nlQOYBF1234secret\n=abcd\n-----END PGP PRIVATE " "KEY BLOCK-----", "lQOYBF1234secret"),
+    ("-----BEGIN OPENSSH PRIVATE " "KEY-----\nb3BlbnNzaC1rZXktdjEAAAAABG5vbmUA", "b3BlbnNzaC1rZXktdjEAAAAABG5vbmUA"),
+    ("gl" "pat-abcdefghijklmnopqrst", "abcdefghijklmnopqrst"),
+    ("STRIPE=sk_" "live_51HabcdefghijklmnopqrstuvwxYZ in .env", "51HabcdefghijklmnopqrstuvwxYZ"),
+    ("stripe key: rk_" "live_51HabcdefghijklmnopqrstuvwxYZ", "51HabcdefghijklmnopqrstuvwxYZ"),
+    ("key AIza" "SyA-abcdefghijklmnopqrstuvwxyz12345", "AIza" "SyA-abcdefghijklmnopqrstuvwxyz12345"),
+])
+def test_secrets_in_these_forms_are_redacted(text, secret):
+    out, n = redact(text)
+    assert secret not in out and n >= 1
+
+
+@pytest.mark.parametrize("text,kept", [
+    ("PasswordExpires       :\nPasswordLastSet       : 1/2/2025 10:00:00 AM", "PasswordLastSet       : 1/2/2025"),
+    ("PasswordRequired      : True", "True"), ("UserMayChangePassword : True", "True"),
+    ("Password expires             Never", "Password expires             Never"),
+    ("Password last set            1/2/2025 10:00:00 AM", "Password last set"),
+    ("PWD=/home/bob\nOLDPWD=/home/bob/src", "OLDPWD=/home/bob/src"),
+    ("kubectl get secret db-creds -o yaml", "db-creds"), ("db:\n  password:\n    host: db", "host: db"),
+    ("TOKEN=\nNEXT_KEY=value", "NEXT_KEY=value"),
+])
+def test_diagnostic_output_is_not_mangled(text, kept):
+    out, n = redact(text)
+    assert kept in out and n == 0, out
 
 
 def test_default_ignorable_marks_are_removed_from_commands():
