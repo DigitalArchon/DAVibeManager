@@ -13,6 +13,12 @@ reply's usage says which input tokens came from the prompt cache, as Anthropic's
 stream is kept alive with a ping whenever the model is quiet (attestation, the preflight, a model
 that reasons without streaming it), not only between its deltas.
 
+The model's reasoning is shown as Claude Code shows Claude's: as thinking blocks, signed as DA Vibe
+Manager's (SIGNATURE). Only Anthropic's API checks a signature (Claude Code 2.1.318 takes one it
+didn't make, shows it and sends it back unchanged, as DA Private Coder found), and the gateway takes
+these out before a request goes to a Claude model. What Claude Code sends back of them reaches the
+model as its earlier reasoning (reasoning_content), as models that reason between tool calls expect.
+
 Images in a request (screenshots the assistant took, PNGs it read) go as they are to a model that
 can see (`native`). A text-only model never gets them: a vision helper, a private model too,
 describes each one for what the assistant is doing, and the description takes the image's place.
@@ -116,6 +122,12 @@ class ImageDescriber:
         return f"[Image, described for you by a vision model ({self.model}):]\n{self._cache[digest]}"
 
 
+# the signature on a thinking block of DA Vibe Manager's (another model's reasoning, shown as Claude
+# Code shows Claude's): only Anthropic's API checks a signature, and the gateway never sends it one of
+# these (drop_our_thinking). Claude Code keeps them and sends them back, as it does Claude's.
+SIGNATURE = "da-vibe-manager"
+
+
 def has_images(body: dict) -> bool:
     """Whether a request carries an image anywhere: in a message, or in a tool's result."""
     def any_image(content) -> bool:
@@ -123,6 +135,33 @@ def has_images(body: dict) -> bool:
             isinstance(b, dict) and (b.get("type") == "image" or (b.get("type") == "tool_result" and any_image(b.get("content"))))
             for b in content)
     return any(isinstance(m, dict) and any_image(m.get("content")) for m in body.get("messages") or [])
+
+
+def drop_our_thinking(data: dict) -> bool:
+    """Take DA Vibe Manager's thinking blocks (another model's reasoning) out of an Anthropic request's
+    history, in place, before it goes to a Claude model: Anthropic's API refuses a signature it didn't
+    make. Claude's own go as they are. Whether there were any."""
+    found = False
+    for m in data.get("messages") or []:
+        content = m.get("content") if isinstance(m, dict) else None
+        if m.get("role") != "assistant" or not isinstance(content, list):
+            continue
+        kept = [b for b in content if not (isinstance(b, dict) and b.get("type") == "thinking"
+                                           and b.get("signature") == SIGNATURE)]
+        if len(kept) != len(content):
+            found = True
+            m["content"] = kept or [{"type": "text", "text": "…"}]
+    return found
+
+
+def handed_back(messages: list[dict]) -> bool:
+    """Whether chat messages carry the model's earlier reasoning."""
+    return any("reasoning_content" in m for m in messages)
+
+
+def without_reasoning(messages: list[dict]) -> list[dict]:
+    """The messages without the reasoning handed back (for a provider that won't take the field)."""
+    return [{k: v for k, v in m.items() if k != "reasoning_content"} for m in messages]
 
 
 def _image_part(block: dict) -> dict | None:
@@ -170,9 +209,11 @@ async def to_openai(body: dict, images: ImageDescriber, native: bool = False) ->
                 context = content[-1500:]
             continue
         if role == "assistant":
-            text, calls = [], []
+            text, calls, reasoning = [], [], []
             for b in content or []:
-                if b.get("type") == "text":
+                if b.get("type") == "thinking" and b.get("thinking"):
+                    reasoning.append(b["thinking"])        # the model's own, handed back as Claude Code does
+                elif b.get("type") == "text":
                     text.append(b.get("text", ""))
                 elif b.get("type") == "tool_use":
                     calls.append({"id": b.get("id") or f"toolu_{secrets.token_hex(8)}", "type": "function",
@@ -182,6 +223,9 @@ async def to_openai(body: dict, images: ImageDescriber, native: bool = False) ->
                 msg["tool_calls"] = calls
             if msg["content"] is None and not calls:
                 msg["content"] = ""
+            if reasoning:
+                # the field NanoGPT's models and vLLM's chat templates take (OpenRouter's too, as an alias)
+                msg["reasoning_content"] = "\n\n".join(reasoning)
             messages.append(msg)
             context = (msg["content"] or context)[-1500:]
             continue
@@ -239,8 +283,9 @@ async def to_openai(body: dict, images: ImageDescriber, native: bool = False) ->
         params["tool_choice"] = {"type": "function", "function": {"name": choice["name"]}}
     elif choice.get("type") == "none":
         tools = []
-    # Claude Code's "thinking" setting isn't passed on: the gateway sets the effort (never "none":
-    # GLM with its thinking off reasons all the more, in its answer)
+    # Claude Code's "thinking" setting doesn't turn the model's reasoning off (GLM with its thinking off
+    # reasons all the more, in its answer): the gateway sets the effort, and shows the reasoning as Claude
+    # Code would Claude's, unless thinking is off (sse, message)
     return messages, tools or None, params
 
 
@@ -335,14 +380,36 @@ async def _paced(events: AsyncIterator[tuple[str, object]], every: float) -> Asy
 
 async def sse(events: AsyncIterator[tuple[str, object]], model: str, input_estimate: int,
               ping_every: float = 5.0, stats: dict | None = None,
-              progress: Callable[[dict], None] | None = None) -> AsyncIterator[bytes]:
-    """The private model's stream as Anthropic server-sent events. Reasoning isn't passed on
-    (Anthropic thinking blocks carry signatures this can't make); pings keep the stream alive."""
+              progress: Callable[[dict], None] | None = None, thinking: bool = True) -> AsyncIterator[bytes]:
+    """The model's stream as Anthropic server-sent events: its reasoning as thinking blocks (unless
+    `thinking` is off, as Claude Code asks when its thinking is), its answer as text, its tool calls.
+    Pings keep the stream alive, and say how long the model has been at it (`progress`)."""
     msg_id = f"msg_{secrets.token_hex(12)}"
     yield _sse("message_start", {"type": "message_start", "message": {
         "id": msg_id, "type": "message", "role": "assistant", "model": model, "content": [],
         "stop_reason": None, "stop_sequence": None, "usage": {"input_tokens": input_estimate, "output_tokens": 0}}})
-    index, text_open, last_ping = 0, False, time.monotonic()
+    index, last_ping = 0, time.monotonic()
+    block = ""                          # the block open now: "thinking", "text", or none
+
+    def close() -> list[bytes]:
+        nonlocal index, block
+        out = []
+        if block == "thinking":
+            out.append(_sse("content_block_delta", {"type": "content_block_delta", "index": index,
+                                                    "delta": {"type": "signature_delta", "signature": SIGNATURE}}))
+        if block:
+            out.append(_sse("content_block_stop", {"type": "content_block_stop", "index": index}))
+            index += 1
+        block = ""
+        return out
+
+    def open_block(kind: str) -> list[bytes]:
+        nonlocal block
+        out = close()
+        start = {"type": "thinking", "thinking": "", "signature": ""} if kind == "thinking" else {"type": "text", "text": ""}
+        out.append(_sse("content_block_start", {"type": "content_block_start", "index": index, "content_block": start}))
+        block = kind
+        return out
     result = None
     stats = stats if stats is not None else {}
     started = time.monotonic()
@@ -370,11 +437,18 @@ async def sse(events: AsyncIterator[tuple[str, object]], model: str, input_estim
                     stats["reasoning_chars"] += len(val)
                 elif kind == "text":
                     stats["text_chars"] += len(val)
-                if kind == "text" and val:
-                    if not text_open:
-                        yield _sse("content_block_start", {"type": "content_block_start", "index": index,
-                                                           "content_block": {"type": "text", "text": ""}})
-                        text_open = True
+                if kind == "reasoning" and val and thinking:
+                    if block != "thinking":
+                        for out in open_block("thinking"):
+                            yield out
+                    yield _sse("content_block_delta", {"type": "content_block_delta", "index": index,
+                                                       "delta": {"type": "thinking_delta", "thinking": val}})
+                    if time.monotonic() - last_ping > ping_every:
+                        yield ping()            # how long it has been thinking, for the chat
+                elif kind == "text" and val:
+                    if block != "text":
+                        for out in open_block("text"):
+                            yield out
                     yield _sse("content_block_delta", {"type": "content_block_delta", "index": index,
                                                        "delta": {"type": "text_delta", "text": val}})
                 elif kind == "done":
@@ -385,9 +459,8 @@ async def sse(events: AsyncIterator[tuple[str, object]], model: str, input_estim
         stats["error"] = str(e)
         yield _sse("error", {"type": "error", "error": {"type": "api_error", "message": f"{model}: {e}"}})
         return
-    if text_open:
-        yield _sse("content_block_stop", {"type": "content_block_stop", "index": index})
-        index += 1
+    for out in close():
+        yield out
     calls, stop = _calls_and_stop(result)
     for call in calls:
         yield _sse("content_block_start", {"type": "content_block_start", "index": index, "content_block": {
@@ -406,16 +479,21 @@ async def sse(events: AsyncIterator[tuple[str, object]], model: str, input_estim
 
 
 async def message(events: AsyncIterator[tuple[str, object]], model: str, input_estimate: int,
-                  stats: dict | None = None) -> dict:
-    """The private model's reply as one Anthropic message (for requests that don't stream). `stats` gets
-    the provider's own usage, as sse gives it (its cached tokens, what NanoGPT billed)."""
-    text, result = "", None
+                  stats: dict | None = None, thinking: bool = True) -> dict:
+    """The model's reply as one Anthropic message (for requests that don't stream), its reasoning first
+    as a thinking block unless `thinking` is off. `stats` gets the provider's own usage, as sse gives
+    it (its cached tokens, what NanoGPT billed)."""
+    text, reasoning, result = "", "", None
     async for kind, val in events:
         if kind == "text":
             text += val
+        elif kind == "reasoning" and val:
+            reasoning += val
         elif kind == "done":
             result = val
-    content: list[dict] = [{"type": "text", "text": text}] if text else []
+    content: list[dict] = [{"type": "thinking", "thinking": reasoning, "signature": SIGNATURE}] \
+        if thinking and reasoning else []
+    content += [{"type": "text", "text": text}] if text else []
     calls, stop = _calls_and_stop(result)
     for call in calls:
         content.append({"type": "tool_use", "id": call.id or f"toolu_{secrets.token_hex(8)}", "name": call.name,

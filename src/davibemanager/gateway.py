@@ -331,6 +331,8 @@ class Gateway:
     _images: bridge.ImageDescriber | None = None
     # what models said when they refused an effort: model -> the efforts it takes (() for none at all)
     _efforts: dict = field(default_factory=dict)
+    # where reasoning handed back (reasoning_content) was refused: not sent there again
+    _no_reasoning_back: set = field(default_factory=set)
 
     @property
     def model_socket(self) -> Path:
@@ -449,6 +451,9 @@ class Gateway:
                             "(Settings), or leave them empty to use the same one.", "permission_error", model=sent_model)
             if up.chat is not None and not is_anthropic(sent_model):
                 return await self._translated(path, data, up, sent_model, model, len(body))
+            if bridge.drop_our_thinking(data):
+                # another model's reasoning, signed as ours: Anthropic's API refuses a signature it didn't make
+                body = json.dumps(data).encode()
             headers = {k: v for k, v in request.headers.items() if k.lower() in PASS_HEADERS}
             if up.auth == "x-api-key":
                 headers["x-api-key"] = key
@@ -549,17 +554,23 @@ class Gateway:
         except Exception as e:  # noqa: BLE001 - the reason goes to the CLI and the log
             return err(Refused(502, f"Couldn't prepare the request for {model}: {e}", "api_error", retry=_may_pass(e)))
         estimate = bridge.estimate_tokens(data)
+        # the model's reasoning is shown as Claude Code shows Claude's, unless its thinking is off
+        show = not (isinstance(data.get("thinking"), dict) and data["thinking"].get("type") == "disabled")
         rec.update(status=200, effort=effort, **({"effort_asked": wanted} if effort != wanted else {}),
                    **({"route": routes.describe(route)} if route else {}), **({"sees": True} if native else {}))
+        where = f"{up.provider}:{'e2ee' if private else 'plain'}"
+        if where in self._no_reasoning_back and bridge.handed_back(messages):
+            messages = bridge.without_reasoning(messages)
+            rec["reasoning_back"] = False
         try:
             # the provider's answer first: a request it refuses is told by its status, not as a reply cut short
-            events = await answered(self._stream(client, model, messages, tools, params, rec))
+            events = await answered(self._stream(client, model, messages, tools, params, rec, where))
         except Exception as e:  # noqa: BLE001
             return err(upstream_refusal(model, e, up.provider))
         if not data.get("stream"):
             stats: dict = {}
             try:
-                reply = await bridge.message(events, model, estimate, stats=stats)
+                reply = await bridge.message(events, model, estimate, stats=stats, thinking=show)
             except Exception as e:  # noqa: BLE001
                 return err(upstream_refusal(model, e, up.provider, answering=True))
             # the provider's own count (cached tokens, the bill), as for a streamed reply; none if it gave none
@@ -572,7 +583,7 @@ class Gateway:
             n = 0
             stats: dict = {}
             try:
-                async for chunk in bridge.sse(events, model, estimate, stats=stats,
+                async for chunk in bridge.sse(events, model, estimate, stats=stats, thinking=show,
                                               progress=lambda st: self.on_progress({"model": model, **st})):
                     n += len(chunk)
                     if chunk.startswith(b"event: error"):
@@ -609,12 +620,13 @@ class Gateway:
             return ""
         return None
 
-    def _stream(self, client, model: str, messages: list[dict], tools, params: dict, rec: dict):
-        """The model's events. Refused before it answers, it is asked again once with an effort it takes,
-        if it named those (rec["effort"] says which went)."""
+    def _stream(self, client, model: str, messages: list[dict], tools, params: dict, rec: dict, where: str):
+        """The model's events. Refused before it answers, it is asked again (twice at most): without the
+        reasoning handed back, if `where` won't take that field (nor from then on); with an effort it
+        takes, if it named those (rec["effort"] says which went)."""
         async def events():
             msgs, prm = messages, params
-            for attempt in range(2):
+            for attempt in range(3):
                 sent = prm.get("reasoning_effort")
                 begun = False
                 try:
@@ -623,8 +635,13 @@ class Gateway:
                         yield event
                     return
                 except Exception as e:
-                    if begun or attempt == 1:
+                    if begun or attempt == 2:
                         raise
+                    if "reasoning_content" in str(e).lower() and bridge.handed_back(msgs):
+                        self._no_reasoning_back.add(where)
+                        msgs = bridge.without_reasoning(msgs)
+                        rec["reasoning_back"] = False          # in the log: the provider wouldn't take it
+                        continue
                     instead = self._learned(model, e, sent)
                     if instead is None or instead == sent:
                         raise

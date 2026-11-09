@@ -682,3 +682,88 @@ async def test_one_new_image_in_two_requests_at_once_is_described_once():
     with pytest.raises(asyncio.CancelledError):
         await first
     assert "OK button" in await images.text_for(block, "later") and len(calls) == 1
+
+
+class Reasons(FakePrivate):
+    """A model that reasons before it answers; `refuse_field`: a provider that won't take reasoning handed back."""
+
+    def __init__(self, refuse_field=False):
+        super().__init__()
+        self.refuse_field = refuse_field
+
+    def stream(self, model, messages, tools=None, params=None):
+        self.calls.append((model, messages, tools, params))
+        refuse = self.refuse_field and any("reasoning_content" in m for m in messages)
+
+        async def go():
+            if refuse:
+                raise PrivateModeError("Unrecognized request argument: messages[1].reasoning_content", 400)
+            yield "open", None
+            yield "reasoning", "Let me think."
+            yield "text", "ok"
+            yield "done", TurnResult(content="ok", finish_reason="stop", usage={"prompt_tokens": 10, "completion_tokens": 2})
+        return go()
+
+
+# the signature on our thinking blocks: Claude Code keeps it in its sessions, so it never changes
+SIGNATURE = "da-vibe-manager"
+THOUGHT = {"role": "assistant", "content": [{"type": "thinking", "thinking": "Earlier thought.", "signature": SIGNATURE},
+                                            {"type": "text", "text": "Earlier answer."}]}
+
+
+async def test_the_models_reasoning_is_shown_and_handed_back_as_claude_codes_is(tmp_path):
+    """As with Claude: the reasoning shows as Claude Code's thinking (in the chat, faint), not when its
+    thinking is off; and what Claude Code sends back of it reaches the model with the conversation."""
+    fake = Reasons()
+    async with translating(tmp_path, fake) as (g, log):
+        r = await _post(g, {**ASK, "model": "private/glm-5-3"})
+        evs = parse(r.content)
+        assert [d["content_block"]["type"] for n, d in evs if n == "content_block_start"] == ["thinking", "text"]
+        assert [d["delta"] for n, d in evs if n == "content_block_delta"][:2] == [
+            {"type": "thinking_delta", "thinking": "Let me think."}, {"type": "signature_delta", "signature": SIGNATURE}]
+        r = await _post(g, {**ASK, "model": "private/glm-5-3", "thinking": {"type": "disabled"}})
+        assert [d["content_block"]["type"] for n, d in parse(r.content) if n == "content_block_start"] == ["text"]
+        body = {"model": "private/glm-5-3", "messages": [{"role": "user", "content": "first"}, THOUGHT,
+                                                         {"role": "user", "content": "next"}]}
+        reply = (await _post(g, body)).json()
+    assert reply["content"][0] == {"type": "thinking", "thinking": "Let me think.", "signature": SIGNATURE}
+    sent = fake.calls[-1][1]
+    assert [m.get("reasoning_content") for m in sent if m["role"] == "assistant"] == ["Earlier thought."]
+
+
+async def test_a_provider_that_wont_take_reasoning_handed_back_is_asked_again_without_it_from_then_on(tmp_path):
+    fake = Reasons(refuse_field=True)
+    body = {**ASK, "model": "private/glm-5-3",
+            "messages": [{"role": "user", "content": "first"}, THOUGHT, {"role": "user", "content": "next"}]}
+    async with translating(tmp_path, fake) as (g, log):
+        for _ in range(2):
+            assert (await _post(g, body)).status_code == 200
+    assert len(fake.calls) == 3                                   # refused once; then never sent again
+    assert not any("reasoning_content" in m for m in fake.calls[-1][1])
+    assert [r.get("reasoning_back") for r in log] == [False, False]   # the log says so
+
+
+async def test_our_thinking_never_reaches_a_claude_model(tmp_path):
+    """Another model's reasoning, signed as DA Vibe Manager's, would be refused by Anthropic's API (a chat
+    begun on GLM, then on Claude Opus): taken out; Claude's own thinking goes as it is."""
+    seen = []
+
+    def nanogpt(request):
+        seen.append(json.loads(request.content))
+        return httpx.Response(200, text='event: message_stop\ndata: {"type":"message_stop"}\n\n',
+                              headers={"content-type": "text/event-stream"})
+    g = Gateway(tmp_path / "gw", lambda: Upstream(BASE, "bearer", lambda: "sk", ("anthropic/claude-opus-5.5",), provider="NanoGPT",
+                                                 chat=lambda m: pytest.fail("not translated")),
+                http=httpx.AsyncClient(transport=httpx.MockTransport(nanogpt)))
+    claudes = {"type": "thinking", "thinking": "Claude's own.", "signature": "EqQBCkgIBRAB"}
+    await g.start()
+    try:
+        r = await _post(g, {"model": "anthropic/claude-opus-5.5", "messages": [
+            {"role": "user", "content": "first"}, THOUGHT, {"role": "user", "content": "next"},
+            {"role": "assistant", "content": [claudes, {"type": "text", "text": "x"}]}, {"role": "user", "content": "more"}]})
+    finally:
+        await g.stop()
+    assert r.status_code == 200
+    history = seen[0]["messages"]
+    assert history[1]["content"] == [{"type": "text", "text": "Earlier answer."}]
+    assert history[3]["content"][0] == claudes
