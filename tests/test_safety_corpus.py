@@ -71,6 +71,11 @@ from davibemanager.safety.sensitive import sensitive
      "--method org.freedesktop.login1.Manager.Reboot false", "disruptive"),
     ("xargs -a list rm", "disruptive"), ("xargs --arg-file=list rm", "disruptive"), ("xargs -I {} rm {} < list", "disruptive"),
     ("timeout -s KILL 5 reboot", "disruptive"), ("FOO=1 rm /etc/x", "modifying"), ("LC_ALL=C reboot", "disruptive"),
+    # more forms of what was rated already
+    ("pacman -Syu", "modifying"), ("sudo pacman -Rns foo", "modifying"), ("sudo pacman -U ./x.pkg.tar.zst", "modifying"),
+    ("snap refresh", "modifying"), ("sudo apt full-upgrade", "modifying"), ("dnf reinstall bash", "modifying"),
+    ("git reset -q --hard HEAD~1", "disruptive"), ("git clean --force -d", "disruptive"), ("kill -s KILL -1", "disruptive"),
+    ("kill -- -1", "disruptive"), ("kill -HUP -1", "disruptive"), ("systemctl kexec", "disruptive"), ("systemctl rescue", "disruptive"),
 ])
 def test_commands_are_labelled_at_least(command, level):
     assert LEVELS.index(classify(command)[0]) >= LEVELS.index(level), classify(command)
@@ -90,6 +95,7 @@ def test_commands_are_labelled_at_least(command, level):
     "command -v reboot", "busctl introspect org.freedesktop.login1 /org/freedesktop/login1 | grep Reboot",
     "busctl get-property org.freedesktop.login1 /org/freedesktop/login1 org.freedesktop.login1.Manager CanReboot",
     "xargs -a list echo", "FOO=1 ls", "nice -n 19 ls", "sudo -u postgres psql -c 'select 1'",
+    "pacman -Ss firefox", "pacman -Si firefox", "pacman -Qi foo", "snap info firefox", "apt-cache policy firefox",
 ])
 def test_ordinary_commands_stay_read_only(command):
     assert classify(command) == ("read_only", [])

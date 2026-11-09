@@ -49,19 +49,21 @@ DISRUPTIVE: list[tuple[re.Pattern, str]] = [
      "find deleting what it finds"),
     (re.compile(r"\bxargs\s+" + _OPTS + r"(?:\S*/)?(?:rm|shred|unlink)\b"), "deleting a list of files"),
     (re.compile(r"\brsync\b[^;&|\n]*\s--(?:delete|remove-source-files)"), "rsync deleting files"),
-    (re.compile(r"\bgit\b[^;&|\n]*\s(?:reset\s+--hard|clean\s+-[a-z]*f)"), "a repository's changes discarded"),
+    (re.compile(r"\bgit\b[^;&|\n]*\s(?:reset\s+(?:-\S+\s+)*--hard|clean\s+(?:-\S+\s+)*(?:-[a-z]*f|--force))"),
+     "a repository's changes discarded"),
     (re.compile(r"\bdconf\s+reset\s+-f\b"), "desktop settings reset"),
     (re.compile(r"\bflatpak\s+(?:uninstall|remove)\b[^;&|\n]*\s--all\b"), "every Flatpak removed"),
     (re.compile(CMD + r"unlink\s", re.M), "file destroyed"),
     (re.compile(r"\bloginctl\s+(?:terminate|kill)-(?:session|user)\b"), "session ended"),
-    (re.compile(r"\bkill\s+-(?:KILL|9|TERM|15)?\s*-1\b"), "every process killed"),
+    (re.compile(r"\bkill\s+(?:-[A-Za-z0-9]+\s+|-s\s+\S+\s+|--\s+)+-1\b"), "every process killed"),
     (re.compile(r">\s*/dev/(sd|nvme|vd|hd|mmcblk)"), "write to block device"),
     (re.compile(CMD + r"(shutdown|reboot|poweroff|halt)\b", re.M), "shutdown/reboot"),
     (re.compile(CMD + r"(telinit|init)\s+[06]\b", re.M), "runlevel change"),
     # the same asked of systemd over D-Bus (logind's Reboot, PowerOff...)
     (re.compile(r"\b(?:busctl|dbus-send|gdbus|qdbus)\b[^;&|\n]*[\s.](?:Reboot|PowerOff|Halt|KExec|SoftReboot)\w*\b"),
      "shutdown/reboot"),
-    (re.compile(r"\bsystemctl\s+(\S+\s+)*(stop|restart|disable|mask|kill|isolate|reboot|poweroff|halt)\b"), "service stop/restart"),
+    (re.compile(r"\bsystemctl\s+(\S+\s+)*(stop|restart|disable|mask|kill|isolate|reboot|poweroff|halt|kexec|rescue|emergency)\b"),
+     "service stop/restart"),
     (re.compile(r"\bservice\s+\S+\s+(stop|restart)\b"), "service stop/restart"),
     (re.compile(r"\b(kill\s+-9|killall|pkill)\b"), "process kill"),
     (re.compile(r"\b(iptables|ip6tables)\s+(-[a-z]*\s+)*-(F|X|P)\b"), "firewall flush/policy"),
@@ -127,7 +129,8 @@ MODIFYING: list[tuple[re.Pattern, str]] = [
     # options may come before the verb, and the match stays within one command: no ; | & or quotes
     # (with quoted text blanked first, _SHELL_SYNTAX: `echo "not a flatpak/snap install"` installs nothing)
     (re.compile(r"\b(apt|apt-get|yum|dnf|zypper|pacman|snap|flatpak)\s+(?:[^\s;|&'\"()]+\s+){0,10}"
-                r"(install|remove|purge|upgrade|dist-upgrade|update|autoremove|-S|-R)\b"), "package change"),
+                r"(install|reinstall|remove|purge|upgrade|full-upgrade|dist-upgrade|update|refresh|autoremove|erase|downgrade|"
+                r"-S(?![silgp]+\b)\w*|-R\w*|-U)(?![\w-])"), "package change"),
     (re.compile(r"\bpip3?\s+(install|uninstall)\b"), "package change"),
     (re.compile(r"\bsystemctl\s+(\S+\s+)*(start|enable|reload|daemon-reload|edit|set-property)\b"), "service change"),
     (re.compile(r"\bsed\s+(-[a-z]*\s+)*-i"), "in-place file edit"),
