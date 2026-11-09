@@ -1357,3 +1357,17 @@ async def test_the_log_marks_a_request_with_what_its_replys_check_found(env):
     assert request["kind"] == "model" and request["tee"] == "failed" and request["tee_detail"] == "not the text signed"
     assert not [e for e in engine.network if e["kind"] == "tee_reply"]        # no row of its own
     assert [e["event"]["kind"] for e in events if e.get("type") == "network"][-1] == "tee_reply"   # the window's told
+
+
+# --- the app's own requests to a TEE model: second opinions, update summaries, pictures described --------
+
+async def test_a_tee_picture_describer_whose_attestation_fails_is_sent_nothing(env):
+    engine, fake, events = env
+    engine.cfg.settings.builder_vision_model = "TEE/qwen2.5-vl-72b-instruct"
+    engine.models.tee_factory = lambda base, key, model: client_for(attestation_status=400)
+    engine.models.client_factory, asked = _stream_of(STREAM)
+    with pytest.raises(Exception, match="attestation didn't hold, so nothing was sent"):
+        await engine._describe_image("data:image/png;base64,iVBORw0KGgo=", "checking the zoom box")
+    assert asked == []                                                # the picture never went
+    row = next(e for e in engine.network if e.get("kind") == "vision")
+    assert row["status"] == 502 and "attestation" in row["error"]

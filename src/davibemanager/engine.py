@@ -2029,8 +2029,9 @@ class Engine:
                         {"type": "text", "text": "What the assistant is doing: " + (context.strip() or "(not said)")},
                         {"type": "image_url", "image_url": {"url": data_url}}]}]
         started = time.monotonic()
-        client = self.models.client(prov, model)
         try:
+            await self.models.tee_guard(prov, model)      # a TEE model's enclave attested first, as before any request to one
+            client = self.models.client(prov, model)
             text = await self.models.complete(client, prov, model, messages)
         except Exception as e:
             self._network_event({"kind": "vision", "model": model, "status": 502, "error": str(e)[:300]})
