@@ -64,6 +64,7 @@ import httpx
 from ..netpolicy import check_url
 from . import dcap, nras
 from .ethsig import keccak256, recover_personal
+from .private_mode import relay_said
 from .secure_http import ProviderError, make_client
 
 NRAS_URL = "https://nras.attestation.nvidia.com/v3/attest/gpu"
@@ -223,16 +224,18 @@ def _bases(base_url: str) -> list[str]:
 
 
 def _error_text(response: httpx.Response) -> str:
-    """The provider's message from an error response, or ""."""
+    """The provider's message from an error response, or "": one short line, without what a reader
+    can't see (private_mode.relay_said). Nothing vouches for it, and it is shown, logged and told the
+    assistant as the reason its request was refused."""
     try:
         body = response.json()
     except ValueError:
-        return (response.text or "").strip()[:200]
+        return relay_said(response.text or "")
     if isinstance(body, dict):
         error = body.get("error")
         if isinstance(error, dict):
             error = error.get("message")
-        return str(error or body.get("message") or "")[:200]
+        return relay_said(str(error or body.get("message") or ""))
     return ""
 
 
@@ -457,7 +460,7 @@ class TeeClient:
         if body.get("signing_address") or body.get("intel_quote"):
             return self._attest_signing_key(body, nonce)
         if body.get("error"):
-            raise TeeRefused(f"nano-gpt couldn't attest {self.model}: {body['error']}")
+            raise TeeRefused(f"nano-gpt couldn't attest {self.model}: {relay_said(str(body['error']))}")
         raise TeeRefused(
             f"{self.model}'s attestation is in a shape this app doesn't recognise "
             f"(it holds {', '.join(sorted(body)) or 'nothing'})"
