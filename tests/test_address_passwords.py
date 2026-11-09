@@ -80,9 +80,17 @@ def test_the_password_goes_only_to_the_address_it_was_typed_for(setup):
     assert fresh(path).providers[0].base_url == "https://other.example/v1"
 
 
-def test_taking_the_password_out_takes_it_out_of_the_keyring(setup):
+def test_taking_the_password_out_takes_it_out_of_the_keyring(setup, memory_keyring, monkeypatch):
     cfg, models, path = setup
     models.save_provider({"name": "Mine", "base_url": ENDPOINT}, "sk-mine")
+    with monkeypatch.context() as m:                      # but not while the keyring can't: nothing changes
+        Locked(memory_keyring, m)
+        with pytest.raises(UserError, match="Unlock your keyring"):
+            models.save_provider({"name": "Mine", "base_url": "https://llm.example/v1"}, None, "Mine")
+    creds.forget()
+    assert cfg.providers[0].base_url == ENDPOINT
+    config.save(cfg, path)                                  # meanwhile, a save about something else
+    assert "hunter2" not in path.read_text()
     models.save_provider({"name": "Mine", "base_url": "https://llm.example/v1"}, None, "Mine")
     assert secret("provider:Mine:base_url") is None
     assert fresh(path).providers[0].base_url == "https://llm.example/v1"
@@ -181,6 +189,9 @@ def test_with_the_keyring_locked_one_in_the_file_is_used_and_kept_there(setup, m
         with pytest.raises(UserError, match="Unlock your keyring"):
             models.save_provider({"name": "Other", "base_url": "https://dan:letmein@other.example/v1"}, None)
         assert "letmein" not in path.read_text() and not cfg.provider("Other")
+        # one without a password is saved as ever: nothing of the keyring's is needed for it
+        models.save_provider({"name": "Ollama", "base_url": "http://192.168.1.201:11434/v1"}, None)
+        assert cfg.provider("Ollama")
     creds.forget()
     assert config.take_passwords(cfg) is True                 # the keyring is back (Engine.retry_keyring)
     config.save(cfg, path)

@@ -292,8 +292,14 @@ def keep_password(cfg: Config, setting: str, address: str) -> None:
         creds.set_secret(ADDRESS_KIND, _secret_name(setting), address)
         kept[setting] = address
         return
-    kept.pop(setting, None)
-    forget_password(setting)
+    had = kept.pop(setting, None)
+    try:
+        forget_password(setting)
+    except creds.KeyringUnavailable:
+        if had is not None:
+            kept[setting] = had             # still the keyring's, and still left out of the file
+            raise                           # one the user just took out must go: nothing is saved until it can
+        # none known: an address without one is saved as it is, whatever the keyring says now
 
 
 def forget_password(setting: str) -> None:
