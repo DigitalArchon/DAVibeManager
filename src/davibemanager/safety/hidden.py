@@ -17,10 +17,14 @@ what was changed is reported so the technician knows the AI's text carried it.""
 
 from __future__ import annotations
 
+import re
 import unicodedata
 
-# invisible, but not "Cf" or "Cc": Hangul fillers render blank
-_BLANK_LETTERS = {"\u115f", "\u1160", "\u3164", "\uffa0"}
+# invisible, but not "Cf" or "Cc": Hangul fillers and the Braille blank render blank; the
+# combining grapheme joiner, Khmer's inherent vowels and Mongolian's variation selectors are
+# default-ignorable marks
+_BLANK_LETTERS = {"\u115f", "\u1160", "\u3164", "\uffa0", "\u2800",
+                  "\u034f", "\u17b4", "\u17b5", "\u180b", "\u180c", "\u180d", "\u180f"}
 
 
 def _hidden(ch: str) -> bool:
@@ -31,6 +35,15 @@ def _hidden(ch: str) -> bool:
         return True
     o = ord(ch)
     return 0xFE00 <= o <= 0xFE0F or 0xE0100 <= o <= 0xE01EF or ch in _BLANK_LETTERS
+
+
+_MAYBE_HIDDEN = re.compile(r"[^\t\n\x20-\x7e]")
+
+
+def visible(text: str) -> str:
+    """`text` without the characters `clean` takes out of commands: what a pattern looks for
+    in, so a zero-width space inside a word can't hide it (safety/inject.py)."""
+    return _MAYBE_HIDDEN.sub(lambda m: "" if _hidden(m.group()) else m.group(), text)
 
 
 def _name(ch: str) -> str:

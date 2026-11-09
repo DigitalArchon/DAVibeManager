@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import re
 
+from . import hidden
+
 _I = re.IGNORECASE
 
 PATTERNS: list[tuple[re.Pattern, str]] = [
@@ -29,10 +31,24 @@ PATTERNS: list[tuple[re.Pattern, str]] = [
 ]
 
 
+# Text the technician can't see but the model reads: Unicode tag characters spell ASCII
+# invisibly (a whole hidden instruction after "Build OK"), bidi controls reorder what is shown.
+_TAGS = re.compile("[\U000E0000-\U000E007F]+")
+_BIDI = re.compile("[\u202A-\u202E\u2066-\u2069]")
+
+
 def suspicious(text: str) -> list[str]:
     """Return a de-duplicated list of reasons the text looks like a prompt injection."""
     out: list[str] = []
+    tagged = "".join(chr(ord(c) - 0xE0000) for m in _TAGS.finditer(text) for c in m.group(0) if 0xE0020 <= ord(c) <= 0xE007E)
+    if tagged:
+        out.append(f"carries invisible text (Unicode tag characters) that reads: {tagged[:120]!r}")
+    if _BIDI.search(text):
+        out.append("contains bidi control characters, which reorder what you see")
+    # the model reads past zero-width and other invisible characters inside a word: so does this
+    shown = hidden.visible(text)
+    texts = [text] + ([shown] if shown != text else []) + ([tagged] if tagged else [])
     for pat, why in PATTERNS:
-        if why not in out and pat.search(text):
+        if why not in out and any(pat.search(t) for t in texts):
             out.append(why)
     return out
