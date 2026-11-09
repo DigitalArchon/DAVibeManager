@@ -68,7 +68,8 @@ You can attach files and pictures to a message (📎, or drop them on the window
 instructions, or a picture of how something should look. A picture opens first so you can black out
 anything that shouldn't reach the AI (a name, an address, a key): drag over it, then **Attach**. The
 black replaces those pixels before the picture leaves the window. Pictures go without their hidden
-details (where and when they were taken). While it builds, you can keep talking with it.
+details (where and when they were taken). A picture that can't be cleaned of them (an iPhone's HEIC,
+say) isn't attached: save it as JPEG or PNG first. While it builds, you can keep talking with it.
 
 A link in a reply that isn't secure (plain `http://`, to anywhere but this computer or your own
 network) is marked **⚠ not secure**, and opening it asks first, naming the whole address: the page
@@ -411,7 +412,8 @@ itself.**
     own password prompt, and **Stop** stops them too.
   - What a command printed is shown to you first, with passwords and keys blanked out. You
     send it or keep it private. (Settings can switch this to automatic. Anything that looks
-    private still waits for you.)
+    private still waits for you, and so does output with text in it aimed at the assistant,
+    even text you can't see, such as a sentence written in invisible characters.)
 - **A second opinion.** A separate AI, outside the sandbox, reads commands that change things
   before you run them. By default it's GLM 5.3 too; a private (end-to-end encrypted) model is a
   choice in Settings. It doesn't review the apps the assistant builds: a whole app is far more
@@ -439,15 +441,20 @@ itself.**
   official sites. The app runs every search, and checks it in code first. A search, a web
   address it reads, or a site name it connects to that holds something you sent from your
   computer is refused: a version, a file, network or computer name, an address, your login, or
-  a line copied from a command's output. This keeps its own searching clean; it can't stop a
-  program in the sandbox from sending on what you gave it.
+  a line copied from a command's output. So is one holding a key, a token or a password, even
+  one you typed or pasted yourself. The check reads a search as the search provider would, so
+  characters no one can see, hidden inside an address or a key, don't get one past it. This
+  keeps its own searching clean; it can't stop a program in the sandbox from sending on what you
+  gave it. What comes back is untrusted: text in the results that looks like instructions to the
+  assistant is pointed out to it and to you, and hidden text is taken out before it reads them.
 - **Its searches aren't end-to-end encrypted, even with a private assistant.** NanoGPT and the
   search provider read every query. In Settings → Web searches you choose what that costs you:
   **Best results** (Perplexity and Kagi, or others you pick) finds the most, but they aren't zero
   data retention: what they keep is up to their own policies. **Keep nothing** searches with
   Linkup only, the one provider NanoGPT allows under Zero Data Retention: it keeps nothing, and
-  no search goes anywhere else, even when Linkup fails, but it finds less. With a private
-  assistant and Best results, Settings says so. When a provider fails on NanoGPT's side the
+  no search goes anywhere else, even when Linkup fails, but it finds less. A private assistant
+  starts with Keep nothing, until you choose; with a private assistant and Best results,
+  Settings says so. When a provider fails on NanoGPT's side the
   search is made with Valyu, and when your NanoGPT account requires zero data retention, with
   Linkup; the assistant is told which ran.
 - **Your apps stay on the official code.** An app is always the project's own release with your
