@@ -233,6 +233,18 @@ def test_the_separator_is_kept_and_the_value_blanked(text):
     assert out.endswith(" [REDACTED]") and out[:-len(" [REDACTED]")].rstrip().endswith(("=", ":"))
 
 
+@pytest.mark.parametrize("text", [
+    "a-" * 20000, "a." * 20000, "x" * 50000 + "-" + "y" * 50000, "mysql " * 20000, "curl " * 20000,
+    "https-" * 20000, "-".join(["Zm9vYmFy"] * 20000),
+])
+def test_a_long_line_is_redacted_at_once(text):
+    # a name with many - or . in it (a base64url blob), or a keyword again and again, was read from
+    # each of them in turn: a line like these took from seconds to hours
+    started = time.monotonic()
+    redact(text)
+    assert time.monotonic() - started < 5
+
+
 @pytest.mark.parametrize("command", [
     "sudo cat /etc/NetworkManager/system-connections/Home.nmconnection", "type C:\\Users\\bob\\.ssh\\id_rsa",
     "Get-Content C:\\ProgramData\\ssh\\ssh_host_ed25519_key", "type %USERPROFILE%\\.aws\\credentials",

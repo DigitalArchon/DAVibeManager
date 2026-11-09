@@ -16,8 +16,12 @@ _I = re.IGNORECASE
 # A replacement may be a function, which returns the match unchanged when it is no secret.
 _SECRET_WORDS = (r"password|passwd|pwd|passphrase|secret|token|api[_-]?key|access[_-]?key|private[_-]?key|client[_-]?secret"
                  r"|auth[_-]?key|shared[_-]?key|account[_-]?key|psk|wep[_-]?key\d*")     # AccountKey: Azure's; wep-key0: NetworkManager's
+# A key is a whole name holding one of the words, taken at once: read from every - or . inside a
+# long name (a base64url blob), and backtracked through, a line took minutes
+_NAME = rf"(?=[A-Za-z0-9_.-]*?(?:{_SECRET_WORDS}))[A-Za-z0-9_.-]++"
+_WORD = re.compile(_SECRET_WORDS, _I)
 _KEY_VALUE = re.compile(
-    rf"\b([A-Za-z0-9_.-]*({_SECRET_WORDS})[A-Za-z0-9_.-]*)"
+    rf"(?<![A-Za-z0-9_.-])({_NAME})"
     # = : or => (JSON's "key": and PHP's 'key' => too), and the value on the key's own line: a key
     # with nothing after it doesn't take the next line's key or text
     r"([\"']?[ \t]*(?:=>|[=:])[ \t]*)(?![ \t]*$)(?!\[REDACTED)(\"[^\"]*\"|'[^']*'|\S+)", _I | re.M)
@@ -26,7 +30,8 @@ _ABOUT_IT = re.compile(r"last|set|expir|age|date|time|changed|count|length|histo
 
 
 def _key_value(m: re.Match) -> str:
-    key, word, sep, value = m.group(1), m.group(2), m.group(3), m.group(4)
+    key, sep, value = m.group(1), m.group(2), m.group(3)
+    word = _WORD.search(key).group()
     if _NO_SECRET.fullmatch(value):                          # PasswordRequired : True
         return m.group(0)
     if _ABOUT_IT.search(key.replace(word, "", 1)) and re.fullmatch(r"[\d/.:-]+[,;]?", value):
@@ -64,7 +69,8 @@ RULES: list[tuple[re.Pattern, object]] = [
     # Wi-Fi keys, as `netsh wlan show profile name=... key=clear` prints them
     (re.compile(r"(\bKey Content[ \t]*:[ \t]*)(?!\[REDACTED)\S[^\r\n]*", _I), r"\1" + MASK),
     # passwords on a command line: mysql -pSECRET (-p alone asks), sshpass -p SECRET
-    (re.compile(r"(\b(?:mysql|mysqldump|mysqladmin|mariadb|mariadb-dump)\b[^\n]*?\s-p)(?!\[REDACTED)(?=\S)\S+"), r"\1" + MASK),
+    (re.compile(r"(\b(?:mysql|mysqldump|mysqladmin|mariadb|mariadb-dump)\b(?:(?!\b(?:mysql|mariadb)\b)[^\n])*?\s-p)(?!\[REDACTED)(?=\S)\S+"),
+     r"\1" + MASK),
     (re.compile(r"(\bsshpass\s+(?:-\S+\s+)*?-p[ \t]*)(?!\[REDACTED)\S+"), r"\1" + MASK),
     # curl -u user:password (and its proxy's), the password after the first colon
     (re.compile(r"(\b(?:curl|wget)\b(?:(?!\b(?:curl|wget)\b)[^\n])*?\s(?:-u|--user|-U|--proxy-user)[ \t]*=?[ \t]*)(['\"])?([^\s:'\"]+:)(?!\[REDACTED)"
@@ -91,19 +97,19 @@ RULES: list[tuple[re.Pattern, object]] = [
     (re.compile(r"(-(Password|Secret|Token|ApiKey|Key|Credential)\s+)(['\"]).*?\3", _I), r"\1" + MASK),
     (re.compile(r"(ConvertTo-SecureString\s+(-String\s+)?)(['\"]).*?\3", _I), r"\1" + MASK),
     # web.config / app.config: <add key="DbPassword" value="..."/>
-    (re.compile(rf"(\bkey[ \t]*=[ \t]*\"[^\"]*(?:{_SECRET_WORDS}|connection[_-]?string)[^\"]*\"[ \t]+value[ \t]*=[ \t]*\")"
+    (re.compile(rf"(\bkey[ \t]*=[ \t]*\"(?=[^\"]*?(?:{_SECRET_WORDS}|connection[_-]?string))[^\"]*+\"[ \t]+value[ \t]*=[ \t]*\")"
                 r"(?!\[REDACTED)[^\"]*\"", _I), r"\1" + MASK + '"'),
     # YAML block scalars: `password: |` and the lines indented under it
-    (re.compile(rf"^(([ \t]*)[A-Za-z0-9_.-]*(?:{_SECRET_WORDS})[A-Za-z0-9_.-]*[ \t]*:[ \t]*[|>][-+]?[ \t]*\n)"
+    (re.compile(rf"^(([ \t]*){_NAME}[ \t]*:[ \t]*[|>][-+]?[ \t]*\n)"
                 r"(?:\2[ \t]+\S[^\n]*(?:\n|$))+", _I | re.M), r"\1\2  " + MASK + "\n"),
     # a YAML value on the line under its key (`password:` then `  s3cret`), not a mapping under it
-    (re.compile(rf"^(([ \t]*)[A-Za-z0-9_.-]*(?:{_SECRET_WORDS})[A-Za-z0-9_.-]*[ \t]*:[ \t]*\n\2[ \t]+)"
+    (re.compile(rf"^(([ \t]*){_NAME}[ \t]*:[ \t]*\n\2[ \t]+)"
                 r"(?![^\n]*:(?:[ \t]|$))(?!-[ \t])(?!\[REDACTED)\S[^\n]*", _I | re.M), r"\1" + MASK),
     # key=value / key: value (env files, config files, JSON, a Python dict, URLs, RouterOS password=)
     (_KEY_VALUE, _key_value),
     (re.compile(r"([\"']auth[\"'][ \t]*:[ \t]*)(?!\[REDACTED)(\"[^\"]*\"|'[^']*')", _I), r"\1" + MASK),     # docker's config.json
     # credentials in URLs: scheme://user:pass@host
-    (re.compile(r"(\b[a-z][a-z0-9+.-]*://[^\s:/@]+:)[^\s@/]+@", _I), r"\1" + MASK + "@"),
+    (re.compile(r"((?<![a-z0-9+.-])[a-z][a-z0-9+.-]*+://[^\s:/@]+:)[^\s@/]+@", _I), r"\1" + MASK + "@"),
 ]
 
 
