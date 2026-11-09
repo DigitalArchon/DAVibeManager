@@ -10,7 +10,9 @@ import re
 import secrets
 import shutil
 import socket
+import stat
 import sys
+import tempfile
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -726,11 +728,36 @@ def create_app(token: str, make_engine: Callable[[Callable[[dict], None]], Engin
     return app
 
 
+def _ours(path: Path) -> bool:
+    """A folder of this user's own, itself and not a link to one."""
+    try:
+        st = os.lstat(path)
+    except OSError:
+        return False
+    return stat.S_ISDIR(st.st_mode) and st.st_uid == os.getuid()
+
+
 def runtime_dir() -> Path:
+    """This copy's own folder, for what it runs and listens on: the wrapper Claude Code is started with,
+    tor's sockets, an AppImage being tried, and the gateway's sockets where there is no XDG_RUNTIME_DIR. Made
+    here, 0700. Without XDG_RUNTIME_DIR it is in /tmp, named for the process: another user could make that
+    folder first (the number can be guessed) and have the app run a wrapper of theirs, so one that is anyone
+    else's, or a link, is never used; a new folder of a name no one can know is made instead (tempfile).
+    (As DA Toolkit's sessions/askpass.py and SealedLore's phone/torrc.py make theirs, Nov 2026.)"""
     base = Path(os.environ.get("XDG_RUNTIME_DIR") or "/tmp")
-    # sweep leftovers from instances that were killed before they could clean up
+    # sweep leftovers from instances that were killed before they could clean up (only this user's own)
     for d in base.glob("davibemanager-*"):
         pid = d.name.removeprefix("davibemanager-")
-        if pid.isdigit() and not Path(f"/proc/{pid}").exists() and d.owner() == os.environ.get("USER", d.owner()):
+        if pid.isdigit() and not Path(f"/proc/{pid}").exists() and _ours(d):
             shutil.rmtree(d, ignore_errors=True)
-    return base / f"davibemanager-{os.getpid()}"
+    d = base / f"davibemanager-{os.getpid()}"
+    try:
+        d.mkdir(mode=0o700)
+    except FileExistsError:
+        pass
+    except OSError:
+        pass                                    # (a base that can't be written: the folder below says so)
+    if not _ours(d):
+        d = Path(tempfile.mkdtemp(prefix=f"davibemanager-{os.getpid()}-", dir=base if base.is_dir() else None))
+    os.chmod(d, 0o700)
+    return d

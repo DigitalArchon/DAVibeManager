@@ -289,3 +289,47 @@ async def test_the_page_exchanges_its_code_for_the_token_and_nothing_else_does(t
             assert (await c.post("/api/launch", json={"code": "nope"})).status_code == 403
             assert (await c.post("/api/launch", content=b"x" * 2000)).status_code == 413     # nothing big read
             assert (await c.post("/api/launch", content=b"{")).status_code == 403
+
+
+def test_the_runtime_folder_is_made_private_to_this_user(tmp_path, monkeypatch):
+    from davibemanager.server.app import runtime_dir
+
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
+    d = runtime_dir()
+    assert d == tmp_path / f"davibemanager-{os.getpid()}"
+    assert d.stat().st_mode & 0o777 == 0o700 and d.stat().st_uid == os.getuid()
+    d.chmod(0o755)
+    assert runtime_dir() == d and d.stat().st_mode & 0o777 == 0o700
+
+
+def test_one_someone_else_made_first_or_a_link_is_never_used(tmp_path, monkeypatch):
+    """In /tmp its name, the process id, can be guessed: another user could make it first, and have the app
+    run a wrapper of theirs from it (Claude Code is started through one there)."""
+    from davibemanager.server import app as app_mod
+
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
+    elsewhere = tmp_path / "theirs"
+    elsewhere.mkdir()
+    (tmp_path / f"davibemanager-{os.getpid()}").symlink_to(elsewhere)
+    d = app_mod.runtime_dir()
+    assert d.parent == tmp_path and d.name.startswith(f"davibemanager-{os.getpid()}-") and not d.is_symlink()
+    assert d.stat().st_mode & 0o777 == 0o700 and not any(elsewhere.iterdir())
+    # and a folder of that name that is another user's (as it would be seen by this one)
+    (tmp_path / f"davibemanager-{os.getpid()}").unlink()
+    (tmp_path / f"davibemanager-{os.getpid()}").mkdir()
+    real = os.getuid()
+    monkeypatch.setattr(app_mod.os, "getuid", lambda: real + 1)
+    other = app_mod.runtime_dir()
+    assert other.name != f"davibemanager-{os.getpid()}" and other.stat().st_mode & 0o777 == 0o700
+
+
+def test_only_this_users_leftovers_are_swept(tmp_path, monkeypatch):
+    from davibemanager.server import app as app_mod
+
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
+    dead = tmp_path / "davibemanager-999999999"
+    dead.mkdir()
+    (tmp_path / "target").mkdir()
+    (tmp_path / "davibemanager-999999998").symlink_to(tmp_path / "target")
+    app_mod.runtime_dir()
+    assert not dead.exists() and (tmp_path / "target").is_dir()          # a link is no leftover of ours
