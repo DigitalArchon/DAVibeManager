@@ -28,7 +28,9 @@ Anything that breaks one of DA Vibe Manager's promises, for example:
   passes that isn't its attested enclave's;
 - output reaching the AI without being shown to you first (when that's the setting), or secrets
   surviving redaction;
-- something from your computer getting into a web search the app runs for the assistant;
+- something from your computer, or a key or password, getting into a web search the app runs for
+  the assistant or a web address it lets it read, or text aimed at the assistant in search
+  results reaching it unmarked;
 - a delivered or imported app built from anything but the official source with its recorded
   changes, or what **What changed?** shows differing from what was built;
 - an add-on installed somewhere that runs things by itself or holds secrets;
