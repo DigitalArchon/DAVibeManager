@@ -2489,14 +2489,29 @@ function wireFiles() {
   let depth = 0;
   document.addEventListener("dragenter", (e) => { if (hasFiles(e)) { depth++; document.body.classList.add("dropping"); } });
   document.addEventListener("dragleave", (e) => { if (hasFiles(e) && --depth <= 0) { depth = 0; document.body.classList.remove("dropping"); } });
-  document.addEventListener("dragover", (e) => { if (hasFiles(e)) e.preventDefault(); });
-  document.addEventListener("drop", (e) => {
-    if (!hasFiles(e)) return;
+  document.addEventListener("dragover", (e) => {
+    const what = dropping(e.dataTransfer?.types, e.target);
+    if (what === "default") return;
     e.preventDefault();
+    if (what === "cancel" && e.dataTransfer) e.dataTransfer.dropEffect = "none";
+  });
+  document.addEventListener("drop", (e) => {
+    const what = dropping(e.dataTransfer?.types, e.target);
+    if (what === "default") return;
+    e.preventDefault();
+    if (what === "cancel") return;
     depth = 0;
     document.body.classList.remove("dropping");
     if (S.state?.ready && !S.panel) addFiles([...e.dataTransfer.files]);
   });
+}
+
+// What a drop on the page does: files are attached ("files"); text dropped into a box to type in goes there
+// ("default"); anything else, a link or text dropped on the page itself, would load in place of the
+// window's own page (a browser does that, WebKitGTK too), so it is cancelled ("cancel").
+function dropping(types, target) {
+  if ([...(types || [])].includes("Files")) return "files";
+  return target?.closest?.("textarea, input, [contenteditable]") ? "default" : "cancel";
 }
 
 function hideMenu() { $("#menu").classList.add("hidden"); }

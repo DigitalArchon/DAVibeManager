@@ -85,3 +85,14 @@ def test_the_link_guard_and_the_mark_are_wired_in():
     assert 'document.addEventListener("click", ask, true)' in text and '"auxclick"' in text
     css = (APP_JS.parent / "style.css").read_text(encoding="utf-8")
     assert '.insecure-link::after { content: "⚠ not secure"; }' in css and "user-select: none !important" in css
+
+
+def test_a_link_or_text_dropped_on_the_page_is_cancelled_and_files_are_attached():
+    """Only files were cancelled (and attached): a link dropped on the window loaded in place of its page."""
+    code = script("dropping") + """
+const field = { closest: (sel) => (sel.includes("textarea") ? field : null) };
+const page = { closest: () => null };
+const test = ([types, where]) => dropping(types, where === "field" ? field : page);"""
+    cases = [[["Files"], "page"], [["Files", "text/uri-list"], "field"], [["text/uri-list", "text/plain"], "page"],
+             [["text/plain"], "page"], [["text/plain"], "field"], [[], "page"], [None, "page"]]
+    assert run(code, cases) == ["files", "files", "cancel", "cancel", "default", "cancel", "cancel"]
