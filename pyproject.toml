@@ -41,6 +41,13 @@ dependencies = [
     # ECC Root CA - G3, whose eMudhra intermediates had recoverable keys (Oct 2026); the floor keeps
     # a relock from standing still on an older one. AppRun prefers the host's own CA store.
     "certifi>=2026.10.19",
+    # pyasn1, which tinfoil and sigstore decode attestation certificates' extensions with: 0.6.5 fixes four
+    # denials of service in its decoders (GHSA-2qm8-x737-gmw5, GHSA-fm9c-5rcf-2q5p, GHSA-mm57-4v3p-rchx,
+    # GHSA-9m75-vc3g-4x39; Oct 2026). dnspython, under pydantic's email-validator: 2.9.0 fixes one in its
+    # name parser (GHSA-45c3-73f7-pv4m). The AppImage's lock stood on pyasn1 0.6.4; the floors keep a relock
+    # from standing still on either (DA Assistant's, Nov 2026).
+    "pyasn1>=0.6.5",
+    "dnspython>=2.9.0",
     # The builder (builder/bridge.py). Pinned exactly: its bundled Claude Code CLI is what the
     # workspace image runs (workspace/pins.py holds that binary's hash)
     "claude-agent-sdk==0.2.164",
