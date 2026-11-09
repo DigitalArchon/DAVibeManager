@@ -49,8 +49,93 @@ CONNECT_TIMEOUT = 20
 PASS_HEADERS = ("content-type", "accept", "anthropic-version", "anthropic-beta", "user-agent", "x-stainless-retry-count",
                 "x-app")
 # response headers passed back
-RETURN_HEADERS = ("content-type", "request-id", "x-request-id", "retry-after", "anthropic-ratelimit-requests-remaining",
-                  "anthropic-ratelimit-tokens-remaining")
+RETURN_HEADERS = ("content-type", "request-id", "x-request-id", "retry-after", "x-should-retry",
+                  "anthropic-ratelimit-requests-remaining", "anthropic-ratelimit-tokens-remaining")
+
+
+class Refused(Exception):
+    """A request the gateway won't send, or one the provider refused, and the reason Claude Code
+    shows for it. Unless `retry`, asking again won't help, and Claude Code is told so (it would
+    otherwise ask up to ten times, for minutes, calling it a temporary server-side issue)."""
+
+    def __init__(self, status: int, message: str, kind: str = "permission_error", retry: bool = False):
+        super().__init__(message)
+        self.status = status
+        self.kind = kind
+        self.retry = retry
+
+
+def _may_pass(e: BaseException | None) -> bool:
+    """Whether a failure may well pass if asked again: the network, or the provider's server error,
+    also as what caused the error that says so; not a check that was made and didn't hold (a TEE
+    model's attestation), nor a key or a request the provider refused."""
+    from .llm.secure_http import ProviderError
+    from .llm.tee import TeeRefused
+    try:
+        from openai import APIConnectionError
+    except ImportError:  # pragma: no cover - openai is a dependency
+        APIConnectionError = ()                                      # noqa: N806
+    for _ in range(8):
+        if e is None:
+            return False
+        if isinstance(e, (httpx.TransportError, asyncio.TimeoutError)) or (APIConnectionError and isinstance(e, APIConnectionError)):
+            return True
+        if isinstance(e, ProviderError) and not isinstance(e, TeeRefused) and (e.status_code is None or e.status_code >= 500):
+            return True
+        e = e.__cause__
+    return False
+
+
+def upstream_refusal(model: str, e: BaseException, provider: str, answering: bool = False) -> Refused:
+    """What Claude Code is told of a request for `model` that failed on its way to the provider (or,
+    `answering`, while it answered), by the provider's HTTP status. NanoGPT answers an empty balance
+    with 402 ("Insufficient balance": it reserves max_tokens at the model's price, so this comes a little
+    before the balance is quite zero). Asked again only when that may help: a busy or failing provider,
+    the network."""
+    from .llm.private_mode import ModelRetired
+    status = getattr(e, "status_code", None)
+    status = status if isinstance(status, int) and not isinstance(status, bool) else None
+    name = provider or "the provider"
+    said = f"{model}: {e}"
+    if isinstance(e, ModelRetired):
+        return Refused(400, said, "invalid_request_error")
+    if status == 402:
+        return Refused(402, f"{model}: your {name} balance is too low for this request, so it wasn't run. Top it up, "
+                            f"then try again. ({name} said: {e})", "billing_error")
+    if status in (401, 403):
+        # never a 401 to Claude Code: it would take its own login for the one refused
+        check = " Check the API key in Settings." if status == 401 else ""
+        return Refused(403, f"{model}: {name} refused the request (HTTP {status}): {e}{check}")
+    if status == 429:
+        return Refused(429, said, "rate_limit_error", retry=True)
+    if status is not None and 400 <= status < 500:
+        return Refused(400, said, "invalid_request_error")
+    return Refused(502, said, "api_error", retry=_may_pass(e) or (status or 0) >= 500 or (answering and status is None))
+
+
+async def answered(events):
+    """`events` once the provider has answered (its first event, or "open" when its reply began), so a
+    request it refuses (an empty balance, its key, too long) is told Claude Code by its status, before
+    any reply has started; the "open" markers aren't passed on. Raises what the provider's refusal raised."""
+    it = aiter(events)
+    try:
+        first = await anext(it)
+    except StopAsyncIteration:
+        first = None
+
+    async def rest():
+        try:
+            if first is not None and first[0] != "open":
+                yield first
+            if first is not None:
+                async for event in it:
+                    if event[0] != "open":
+                        yield event
+        finally:
+            close = getattr(it, "aclose", None)
+            if close is not None:
+                await close()
+    return rest()
 
 
 def is_anthropic(model: str) -> bool:
@@ -130,6 +215,13 @@ def _route_held(rec: dict) -> dict:
     if rec.get("route") and cost is not None and rec.get("status") == 200:
         rec["route_held"] = cost > 0
     return rec
+
+
+def refusal_response(e: Refused):
+    """A refusal as Anthropic's API says one, telling Claude Code not to ask again unless it may help."""
+    from starlette.responses import JSONResponse
+    return JSONResponse({"type": "error", "error": {"type": e.kind, "message": str(e)}}, status_code=e.status,
+                        headers={} if e.retry else {"x-should-retry": "false"})
 
 
 def _error_text(raw: bytes) -> str:
@@ -295,13 +387,11 @@ class Gateway:
         from starlette.responses import JSONResponse, Response, StreamingResponse
         from starlette.routing import Route
 
-        def error(status: int, message: str, kind: str = "permission_error") -> JSONResponse:
-            return JSONResponse({"type": "error", "error": {"type": kind, "message": message}}, status_code=status)
-
-        def fail(path: str, status: int, message: str, kind: str = "permission_error", **extra) -> JSONResponse:
+        def fail(path: str, status: int, message: str, kind: str = "permission_error", retry: bool = False,
+                 **extra) -> JSONResponse:
             """Refuse, and say so in the activity log: the CLI only retries, and the user would see nothing."""
             self.on_event({"kind": "model", "path": path, "status": status, "error": message, **extra})
-            return error(status, message, kind)
+            return refusal_response(Refused(status, message, kind, retry))
 
         async def forward(request: Request):
             path = request.url.path
@@ -321,9 +411,10 @@ class Gateway:
                 return fail(path, 403, f"DA Vibe Manager refused this request: {e}")
             key = up.key()
             if not key:
-                return fail(path, 401, f"No API key is stored for {up.provider}; add it in Settings.", "authentication_error")
+                # a 403, not a 401: Claude Code would take a 401 for its own login refused
+                return fail(path, 403, f"No API key is stored for {up.provider}; add it in Settings.")
             body = await request.body()
-            model, sent_model = "", ""
+            model, sent_model, data = "", "", {}
             sealed = any(is_private_mode(m) for m in up.models[:1])     # the assistant's model is private
             if body and request.method == "POST":
                 try:
@@ -351,7 +442,7 @@ class Gateway:
                             "can't be used for its chat in the clear. Choose private models for quick tasks too "
                             "(Settings), or leave them empty to use the same one.", "permission_error", model=sent_model)
             if up.chat is not None and not is_anthropic(sent_model):
-                return await self._translated(path, data if body else {}, up, sent_model, model, len(body))
+                return await self._translated(path, data, up, sent_model, model, len(body))
             headers = {k: v for k, v in request.headers.items() if k.lower() in PASS_HEADERS}
             if up.auth == "x-api-key":
                 headers["x-api-key"] = key
@@ -364,7 +455,7 @@ class Gateway:
             try:
                 resp = await client.send(req, stream=True)
             except httpx.HTTPError as e:
-                return fail(path, 502, f"Could not reach {up.provider}: {e}", "api_error", model=sent_model)
+                return fail(path, 502, f"Could not reach {up.provider}: {e}", "api_error", retry=True, model=sent_model)
             if resp.is_redirect:
                 # never followed: the key would go wherever the provider points (one points at 0.0.0.0)
                 where = resp.headers.get("location", "")[:200]
@@ -417,18 +508,19 @@ class Gateway:
         private model), Anthropic back."""
         from starlette.responses import JSONResponse, StreamingResponse
         private = is_private_mode(model)
+        rec = {"kind": "model", "path": path, "model": model, "asked_for": asked if asked != model else "",
+               "provider": up.provider, "tier": "e2ee" if private else up.tier, "private": private, "bytes_out": size}
+        started = time.monotonic()
 
-        def err(status: int, message: str):
-            self.on_event({"kind": "model", "path": path, "model": model, "status": status, "error": message,
-                           "private": private})
-            return JSONResponse({"type": "error", "error": {"type": "api_error", "message": message}}, status_code=status)
+        def err(e: Refused):
+            self.on_event({**rec, "status": e.status, "error": str(e), "seconds": round(time.monotonic() - started, 2)})
+            return refusal_response(e)
         if path == "/v1/messages/count_tokens":
             return JSONResponse({"input_tokens": bridge.estimate_tokens(data)})
         if path != "/v1/messages":
-            return err(404, f"{path} isn't available for {model}.")
+            return err(Refused(404, f"{path} isn't available for {model}.", "not_found_error"))
         if self._images is None or self._images.model != up.vision_model:
             self._images = bridge.ImageDescriber(up.describe, up.vision_model)
-        started = time.monotonic()
         try:
             native = bool(up.sees and await up.sees(model))
             messages, tools, params = await bridge.to_openai(data, self._images, native=native)
@@ -438,20 +530,23 @@ class Gateway:
             if up.guard is not None:
                 await up.guard(model)              # e.g. a TEE model's enclave attested; raises to refuse
             client = up.chat(model)
-        except Exception as e:  # noqa: BLE001 - the CLI retries; the reason goes to the log
-            return err(502, f"Couldn't prepare the request for {model}: {e}")
+        except Refused as e:
+            return err(e)
+        except Exception as e:  # noqa: BLE001 - the reason goes to the CLI and the log
+            return err(Refused(502, f"Couldn't prepare the request for {model}: {e}", "api_error", retry=_may_pass(e)))
         estimate = bridge.estimate_tokens(data)
-        rec = {"kind": "model", "path": path, "model": model, "asked_for": asked if asked != model else "",
-               "status": 200, "provider": up.provider, "tier": "e2ee" if private else up.tier, "private": private,
-               "bytes_out": size, **({"route": routes.describe(route)} if route else {}),
-               **({"sees": True} if native else {})}
-        events = client.stream(model, messages, tools, params)
+        rec.update(status=200, **({"route": routes.describe(route)} if route else {}), **({"sees": True} if native else {}))
+        try:
+            # the provider's answer first: a request it refuses is told by its status, not as a reply cut short
+            events = await answered(client.stream(model, messages, tools, params))
+        except Exception as e:  # noqa: BLE001
+            return err(upstream_refusal(model, e, up.provider))
         if not data.get("stream"):
             stats: dict = {}
             try:
                 reply = await bridge.message(events, model, estimate, stats=stats)
             except Exception as e:  # noqa: BLE001
-                return err(502, f"{model}: {e}")
+                return err(upstream_refusal(model, e, up.provider, answering=True))
             # the provider's own count (cached tokens, the bill), as for a streamed reply; none if it gave none
             # (the reply's own figures would be the gateway's estimate)
             self.on_event(_route_held({**rec, "seconds": round(time.monotonic() - started, 2),

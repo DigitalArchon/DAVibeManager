@@ -104,8 +104,9 @@ class LLMClient:
     async def stream(
         self, model: str, messages: list[dict], tools: list[dict] | None = None, params: dict | None = None
     ) -> AsyncIterator[tuple[str, object]]:
-        """Yield ("text"|"reasoning", str) deltas and ("tool", name) as each tool call starts,
-        then ("done", TurnResult)."""
+        """Yield ("open", None) once the provider has taken the request and its reply has begun,
+        ("text"|"reasoning", str) deltas and ("tool", name) as each tool call starts, then ("done",
+        TurnResult)."""
         if is_private_mode(model):
             raise RuntimeError(f"{model} is a Private Mode model and is only ever sent sealed; nothing was sent")
         kwargs: dict = {"model": model, "messages": messages, "stream": True,
@@ -117,6 +118,7 @@ class LLMClient:
         acc = StreamAccumulator()
         stream = await self._client.chat.completions.create(**kwargs)
         try:
+            yield "open", None                 # the provider took it, and its reply has begun
             async for chunk in stream:
                 for event in acc.feed(chunk):
                     yield event

@@ -335,3 +335,47 @@ def test_with_selinux_the_sockets_are_made_for_a_confined_container(tmp_path, mo
     monkeypatch.setattr(gw, "_sockcreate", lambda context: done.append(context or "(default)") and False)
     gw.unix_listener(tmp_path / "c.sock").close()                    # it can't be set: a socket all the same
     assert done == [gw.CONTAINER_SOCKET, "socket"]
+
+
+async def test_the_gateways_own_refusals_tell_claude_code_not_to_ask_again(gw):
+    """Claude Code asks again up to ten times, for minutes, unless told not to: a refusal that will
+    hold says so. The network failing may pass, and is asked again. No key is a 403: a 401 would be
+    taken for Claude Code's own login."""
+    g, _, upstream_reqs, state = gw
+    async with _model_client(g) as c:
+        r = await c.post("/v1/messages", headers={"authorization": "Bearer wrong"}, json={"model": "big-model"})
+        assert r.status_code == 401 and r.headers["x-should-retry"] == "false"
+        state["refuse"] = "This project is CONFIDENTIAL"
+        r = await c.post("/v1/messages", headers={"authorization": f"Bearer {g.token}"}, json={"model": "big-model"})
+        assert r.status_code == 403 and r.headers["x-should-retry"] == "false"
+        state["refuse"] = None
+
+        def down(request):
+            raise httpx.ConnectError("no route to host")
+        g.http = httpx.AsyncClient(transport=httpx.MockTransport(down))
+        r = await c.post("/v1/messages", headers={"authorization": f"Bearer {g.token}"}, json={"model": "big-model"})
+        assert r.status_code == 502 and "x-should-retry" not in r.headers
+    assert not upstream_reqs
+
+
+async def test_without_a_key_the_request_is_refused_as_forbidden_not_as_claude_codes_login(tmp_path):
+    g = Gateway(tmp_path / "gw", lambda: Upstream("https://upstream.example/api/v1", "bearer", lambda: None, ("big-model",),
+                                                 provider="NanoGPT"),
+                http=httpx.AsyncClient(transport=httpx.MockTransport(lambda r: pytest.fail("nothing is sent"))))
+    await g.start()
+    try:
+        async with _model_client(g) as c:
+            r = await c.post("/v1/messages", headers={"authorization": f"Bearer {g.token}"}, json={"model": "big-model"})
+        assert r.status_code == 403 and r.headers["x-should-retry"] == "false"
+        assert "No API key is stored for NanoGPT" in r.json()["error"]["message"]
+    finally:
+        await g.stop()
+
+
+async def test_the_providers_own_word_on_retrying_reaches_claude_code(gw):
+    g, _, _, _ = gw
+    g.http = httpx.AsyncClient(transport=httpx.MockTransport(lambda r: httpx.Response(
+        402, json={"type": "error", "error": {"type": "billing_error", "message": "no credit"}}, headers={"x-should-retry": "false"})))
+    async with _model_client(g) as c:
+        r = await c.post("/v1/messages", headers={"authorization": f"Bearer {g.token}"}, json={"model": "big-model"})
+    assert r.status_code == 402 and r.headers["x-should-retry"] == "false"

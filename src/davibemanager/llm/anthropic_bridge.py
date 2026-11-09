@@ -341,6 +341,8 @@ async def sse(events: AsyncIterator[tuple[str, object]], model: str, input_estim
     try:
         async with aclosing(paced):
             async for kind, val in paced:
+                if kind == "open":
+                    continue                    # the provider's reply has begun (the gateway waits for this)
                 if kind == "quiet":
                     yield ping()
                     continue
@@ -362,7 +364,8 @@ async def sse(events: AsyncIterator[tuple[str, object]], model: str, input_estim
                 elif time.monotonic() - last_ping > ping_every:
                     yield ping()
     except Exception as e:  # noqa: BLE001 - told to the CLI the way Anthropic tells errors mid-stream
-        yield _sse("error", {"type": "error", "error": {"type": "api_error", "message": f"Private model: {e}"}})
+        stats["error"] = str(e)
+        yield _sse("error", {"type": "error", "error": {"type": "api_error", "message": f"{model}: {e}"}})
         return
     if text_open:
         yield _sse("content_block_stop", {"type": "content_block_stop", "index": index})

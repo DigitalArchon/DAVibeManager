@@ -443,3 +443,89 @@ async def test_a_reply_abandoned_midway_closes_the_models_stream():
             break
     await stream.aclose()
     await asyncio.wait_for(closed.wait(), 1)
+
+
+# ---------------------------------------------------------------- found by DA Private Coder (Nov 8 2026)
+
+from contextlib import asynccontextmanager  # noqa: E402
+
+from davibemanager.llm.private_mode import PrivateModeError  # noqa: E402
+
+BASE = "https://nano-gpt.com/api/v1"
+ASK = {"stream": True, "messages": [{"role": "user", "content": "hi"}]}
+
+
+@asynccontextmanager
+async def translating(tmp_path, fake, models=("private/kimi-k3", "private/glm-5-3"), **up):
+    log = []
+    g = Gateway(tmp_path / "gw", lambda: Upstream(BASE, "bearer", lambda: "sk", models, provider="NanoGPT",
+                                                 tier="e2ee", chat=lambda m: fake, **up),
+                on_event=log.append, http=httpx.AsyncClient(transport=httpx.MockTransport(lambda r: pytest.fail("no plaintext"))))
+    await g.start()
+    try:
+        yield g, log
+    finally:
+        await g.stop()
+
+
+class Refusing(FakePrivate):
+    """A provider that refuses the request before any reply, or (`partway`) stops after half an answer."""
+
+    def __init__(self, error, partway=False):
+        super().__init__()
+        self.error, self.partway = error, partway
+
+    def stream(self, model, messages, tools=None, params=None):
+        self.calls.append((model, messages, tools, params))
+
+        async def go():
+            if self.partway:
+                yield "open", None
+                yield "text", "Half an answer"
+            raise self.error
+            yield
+        return go()
+
+
+def nanogpt_refused(status, said='{"error":"Insufficient balance"}'):
+    return PrivateModeError(f"NanoGPT refused the Private Mode request (HTTP {status}): {said}", status, said)
+
+
+def network_down():
+    cause = httpx.ConnectError("no route to host")
+    e = PrivateModeError(f"NanoGPT's Private Mode check failed: {cause}")
+    e.__cause__ = cause
+    return e
+
+
+async def test_a_request_the_provider_refuses_is_told_by_its_status_and_asked_again_only_when_that_helps(tmp_path):
+    """An empty balance isn't a temporary server-side issue to be asked about ten times (it was a 502, and the
+    chat said it was having trouble reaching the AI, for minutes): each refusal reaches Claude Code before any
+    reply begins, by what it is."""
+    for error, code, kind, retry in ((nanogpt_refused(402), 402, "billing_error", False),
+                                     (nanogpt_refused(401), 403, "permission_error", False),
+                                     (nanogpt_refused(400), 400, "invalid_request_error", False),
+                                     (nanogpt_refused(429), 429, "rate_limit_error", True),
+                                     (nanogpt_refused(503), 502, "api_error", True),
+                                     (network_down(), 502, "api_error", True),
+                                     (PrivateModeError("the reply wasn't sealed by the enclave; refused"), 502, "api_error", False)):
+        for stream in (True, False):
+            async with translating(tmp_path, Refusing(error)) as (g, log):
+                r = await _post(g, {**ASK, "stream": stream, "model": "private/kimi-k3"})
+            assert (r.status_code, r.json()["error"]["type"]) == (code, kind), (error, stream)
+            assert ("x-should-retry" in r.headers) == (not retry), (error, stream)
+            assert log[-1]["status"] == code and log[-1]["error"]
+    async with translating(tmp_path, Refusing(nanogpt_refused(402))) as (g, log):
+        said = (await _post(g, {**ASK, "model": "private/kimi-k3"})).json()["error"]["message"]
+    assert "NanoGPT balance is too low for this request" in said and "Top it up" in said
+
+
+async def test_a_model_that_stops_partway_says_so_in_the_stream_by_its_name(tmp_path):
+    async with translating(tmp_path, Refusing(PrivateModeError("the model stopped: context length exceeded"), partway=True)) as (g, log):
+        r = await _post(g, {**ASK, "model": "private/kimi-k3"})
+    assert r.status_code == 200
+    evs = parse(r.content)
+    assert "".join(d["delta"].get("text", "") for n, d in evs if n == "content_block_delta") == "Half an answer"
+    error = [d for n, d in evs if n == "error"][0]["error"]
+    assert error["message"] == "private/kimi-k3: the model stopped: context length exceeded"
+    assert log[-1]["status"] == 502 and "context length exceeded" in log[-1]["error"]

@@ -380,7 +380,8 @@ class PrivateModeClient:
 
     async def stream(self, model: str, messages: list[dict], tools: list[dict] | None = None,
                      params: dict | None = None) -> AsyncIterator[tuple[str, object]]:
-        """Yield ("text"|"reasoning", str) deltas, then ("done", TurnResult)."""
+        """Yield ("open", None) once the enclave's sealed reply has begun, ("text"|"reasoning", str)
+        deltas, then ("done", TurnResult)."""
         if not is_private_mode(model):
             raise PrivateModeError(f"{model} isn't a Private Mode model; nothing was sent")
         await self.check_offered(model)
@@ -392,7 +393,7 @@ class PrivateModeClient:
             from ehbp import EHBPError, KeyConfigMismatchError
             try:
                 async for event in self._one_request(model, messages, tools, verified, params):
-                    started = True
+                    started = started or event[0] != "open"     # nothing of the reply yet: it may be asked again
                     yield event
                 return
             except KeyConfigMismatchError as e:
@@ -440,6 +441,7 @@ class PrivateModeClient:
                                            resp.status_code)
                 if resp.headers.get("x-nanogpt-private-mode") != "tinfoil":
                     raise PrivateModeError("the reply didn't come back through Private Mode; refused")
+                yield "open", None                 # its reply has begun (the gateway waits for this much)
                 async for line in resp.aiter_lines():
                     if not line.startswith("data:"):
                         continue
@@ -448,7 +450,18 @@ class PrivateModeClient:
                         saw_done = True
                         break
                     try:
-                        chunk = ChatCompletionChunk.model_validate(json.loads(data))
+                        parsed = json.loads(data)
+                    except ValueError:
+                        continue
+                    if isinstance(parsed, dict) and parsed.get("error") and not parsed.get("choices"):
+                        # the enclave stopped partway and said why (the context too long, say): said as it is
+                        err = parsed["error"]
+                        said = err.get("message") if isinstance(err, dict) else err
+                        code = err.get("code") if isinstance(err, dict) else None
+                        raise PrivateModeError(f"the model stopped: {str(said)[:300]}",
+                                               code if isinstance(code, int) else None, data[:2000])
+                    try:
+                        chunk = ChatCompletionChunk.model_validate(parsed)
                     except ValueError:
                         continue
                     for event in acc.feed(chunk):

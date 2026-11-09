@@ -113,7 +113,7 @@ async def test_sealed_request_protocol():
     client = relay.client()
     events = await collect(client)
     result = events[-1][1]
-    assert events[0] == ("text", "Checking.")
+    assert events[:2] == [("open", None), ("text", "Checking.")]     # its reply begun, once the seal was checked
     assert result.tool_calls[0].name == "propose_commands"
     assert json.loads(result.tool_calls[0].arguments)["items"][0]["command"] == "df -h"
 
@@ -404,3 +404,23 @@ async def test_each_attestation_is_logged_and_an_older_router_release_is_said_on
     await enclave.current()
     await enclave.current()                                     # kept: not attested again
     assert len(seen) == 1 and seen[0].enclave == "enclave.tinfoil.example"
+
+
+async def test_an_error_the_enclave_sends_partway_is_said_as_it_is():
+    """A line `data: {"error": …}` from the enclave (inside the seal) isn't a chunk: it used to be skipped,
+    and the assistant heard only that the reply ended early, never why (the context too long, say)."""
+    said = 'data: {"error": {"message": "This model\'s maximum context length is 262144 tokens", "code": 400}}\n\n'
+    relay = Relay(replies=[(200, chunk({"role": "assistant", "content": "Half"}) + said)])
+    events = []
+    with pytest.raises(PrivateModeError, match="the model stopped: This model's maximum context length is 262144") as e:
+        async for event in relay.client().stream("private/glm-5-3", [{"role": "user", "content": "hi"}]):
+            events.append(event)
+    assert events == [("open", None), ("text", "Half")] and e.value.status_code == 400
+
+
+async def test_a_preflight_refusal_keeps_its_status():
+    """An empty balance (NanoGPT's preflight answers 402) is told as that, by the gateway (upstream_refusal)."""
+    relay = Relay(preflight_status=402)
+    with pytest.raises(PrivateModeError) as e:
+        await collect(relay.client())
+    assert e.value.status_code == 402 and not relay.requests
