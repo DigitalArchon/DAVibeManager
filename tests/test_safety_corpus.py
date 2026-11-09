@@ -286,6 +286,8 @@ def test_a_long_line_is_redacted_at_once(text):
     "cat ~/.ssh/config", "cat ~/.ssh/known_hosts", "type C:\\Users\\bob\\.ssh\\config", "cat ~/.gnupg/private-keys-v1.d/x.key",
     "sqlite3 ~/.mozilla/firefox/abc.default/places.sqlite", "cat ~/.local/share/keyrings/login.keyring",
     "grep -r invoice ~/.thunderbird/", "cat ~/.config/Signal/config.json", "ls ~/Documents", "find ~ -name '*.pdf'",
+    # the folder named whole, not a file in it
+    "find ~/.ssh -name 'id_*' -exec cat {} +", "tar czf keys.tgz ~/.ssh ~/.gnupg", "rsync -a ~/.ssh host:backup",
 ])
 def test_reading_these_is_flagged_sensitive(command):
     assert sensitive(command)
@@ -294,6 +296,7 @@ def test_reading_these_is_flagged_sensitive(command):
 @pytest.mark.parametrize("command", ["find / -name id_rsa", "find / -name id_rsa -exec ls -l {} \\;",
                                      "ls /etc/NetworkManager/system-connections/", "dir C:\\Users\\bob\\.ssh",
                                      "cat ~/.ssh/id_rsa.pub", "cat ~/.ssh/*.pub", "ls -la ~/.ssh/",
+                                     "cd ~/.ssh && ls -la", "chmod 700 ~/.ssh", "ls -la ~/.ssh",
                                      ])
 def test_looking_at_names_only_is_not(command):
     assert sensitive(command) == []

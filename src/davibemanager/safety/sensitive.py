@@ -33,9 +33,10 @@ SECRET_FILES: list[tuple[re.Pattern, str]] = [
      "reads shell history (often holds typed passwords)"),
     (re.compile(r"\bntds\.dit\b|\\config\\(?:SAM|SECURITY)\b", _I), "reads Windows credential stores"),
     # a person's own computer: their keys, browsers, passwords, mail and messages
-    # (not a public key, which is made to be given out)
-    (re.compile(r"\.ssh[\\/](?!\S*\.pub(?![\w.-]))"), "reads your SSH settings or keys"),
-    (re.compile(r"\.gnupg[\\/]"), "reads your encryption keys"),
+    # a file in them or the folder whole (find ~/.ssh -exec cat, tar ~/.gnupg), not a public key,
+    # which is made to be given out
+    (re.compile(r"\.ssh(?:[\\/](?!\S*\.pub(?![\w.-]))|(?=[\s'\"]|$))"), "reads your SSH settings or keys"),
+    (re.compile(r"\.gnupg(?:[\\/]|(?=[\s'\"]|$))"), "reads your encryption keys"),
     (re.compile(r"\.mozilla/|\.config/(?:google-chrome|chromium|BraveSoftware|vivaldi|opera|microsoft-edge)|"
                 r"snap/(?:firefox|chromium)/|\.var/app/(?:org\.mozilla|com\.google\.Chrome|org\.chromium|com\.brave)", _I),
      "reads your browser data (history, saved passwords, cookies)"),
@@ -55,8 +56,8 @@ PERSONAL_PLACES: list[tuple[re.Pattern, str]] = [
      "looks through your whole home folder"),
 ]
 
-# First words that only look at names, sizes or metadata, never contents.
-_METADATA_ONLY = {"ls", "ll", "dir", "stat", "find", "file", "du", "getfacl", "lsattr", "namei", "realpath",
+# First words that only look at names, sizes or metadata, never contents (or go to a folder).
+_METADATA_ONLY = {"ls", "ll", "dir", "stat", "find", "file", "du", "getfacl", "lsattr", "namei", "realpath", "cd", "pushd",
                   "readlink", "test", "[", "wc", "md5sum", "sha1sum", "sha256sum", "sha512sum", "b2sum",
                   "chmod", "chown", "chgrp", "setfacl", "touch", "test-path", "get-acl", "get-item", "gi",
                   "get-childitem", "gci", "get-filehash", "icacls"}
