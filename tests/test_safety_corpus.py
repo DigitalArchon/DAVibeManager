@@ -10,6 +10,7 @@ import io
 import time
 
 import pytest
+from PIL import Image
 
 from davibemanager.safety import images
 from davibemanager.safety.hidden import clean
@@ -242,3 +243,46 @@ def test_invisible_characters_inside_words_dont_hide_an_injection(text):
     # the characters clean() takes out of commands: the model reads past them, so the check does too
     assert suspicious(text)
     assert suspicious("caf\u00e9 \u2615 r\u00e9sum\u00e9 \U0001F44D\u200d") == []      # nothing more is flagged
+
+
+def _encoded(image, fmt, **kw):
+    buf = io.BytesIO()
+    image.save(buf, fmt, **kw)
+    return buf.getvalue()
+
+
+@pytest.mark.filterwarnings("ignore::PIL.Image.DecompressionBombWarning")       # Pillow's own, below its hard limit
+@pytest.mark.parametrize("size", [(8000, 6000), (9000, 8000)])                   # 48 and 72 Mpx: Pillow alone only warns
+def test_an_image_over_the_pixel_limit_is_refused_before_decoding(size):
+    with pytest.raises(ValueError, match="million pixels"):
+        images.clean(_encoded(Image.new("1", size), "PNG"))
+
+
+def test_only_the_readers_of_the_formats_expected_look_at_an_image(monkeypatch):
+    """Pillow would try every format it knows on what arrives; only PNG's and JPEG's are asked (and, for a
+    picture the user attaches, WebP's, GIF's, BMP's and TIFF's, which become PNGs)."""
+    from PIL import TiffImagePlugin
+
+    tiff = _encoded(Image.new("RGB", (4, 4)), "TIFF")
+    gif = _encoded(Image.new("RGB", (4, 4)), "GIF")
+
+    def no(self):
+        raise AssertionError("the TIFF reader was asked")
+    with monkeypatch.context() as m:
+        m.setattr(TiffImagePlugin.TiffImageFile, "_open", no)
+        with pytest.raises(ValueError, match="unsupported"):
+            images.clean(tiff)
+    with pytest.raises(ValueError, match="unsupported"):
+        images.clean(gif)
+    assert images.clean(gif, convert=True).ext == "png" and images.clean(tiff, convert=True)[1] == "png"
+    with pytest.raises(ValueError):
+        images.clean(_encoded(Image.new("RGB", (4, 4)), "PPM"), convert=True)
+
+
+def test_a_photo_stays_upright():
+    im = Image.new("RGB", (300, 400), "white")            # taken sideways: the phone says to turn it
+    exif = Image.Exif()
+    exif[0x0112] = 6                                       # Orientation: rotate 90° clockwise to view
+    out, ext = images.clean(_encoded(im, "JPEG", exif=exif.tobytes()))
+    with Image.open(io.BytesIO(out)) as cleaned:
+        assert ext == "jpg" and cleaned.size == (400, 300) and not cleaned.getexif()

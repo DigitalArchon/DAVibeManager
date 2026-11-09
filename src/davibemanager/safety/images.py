@@ -5,21 +5,31 @@ alone, into a fresh image with no metadata. Whatever the page sent, nothing but 
 pixels survives: no EXIF (GPS, camera, timestamps, the embedded EXIF thumbnail), no XMP,
 ICC profile, PNG text chunks or JPEG comments, no extra APNG frames, and no bytes appended
 after the image. The redaction editor has already painted black boxes into those pixels, so
-what is cleaned here is exactly what the technician saw."""
+what is cleaned here is exactly what the technician saw. A photo is turned upright from its
+EXIF orientation first, so it is sent the way it looks.
+
+Only the readers of the formats expected are let near the bytes: Pillow would otherwise try
+the header of whatever arrives with each of the few dozen formats it knows."""
 
 from __future__ import annotations
 
 from io import BytesIO
+from typing import NamedTuple
 
-from PIL import Image, ImageOps
+from PIL import Image, ImageOps, UnidentifiedImageError
 
 MAX_PIXELS = 40_000_000
 MAX_SIDE = 10_000
 Image.MAX_IMAGE_PIXELS = MAX_PIXELS          # refuse decompression bombs
 
-
 # pictures the user attaches may come in these too: they become PNGs (first frame only)
 CONVERTED = ("WEBP", "GIF", "BMP", "TIFF")
+
+
+class Cleaned(NamedTuple):
+    """An image re-encoded from its pixels: `data` in `ext` ("png" | "jpg"), unpacked as (data, ext)."""
+    data: bytes
+    ext: str
 
 
 def is_image(raw: bytes) -> bool:
@@ -31,25 +41,29 @@ def is_image(raw: bytes) -> bool:
         return False
 
 
-def clean(raw: bytes, convert: bool = False) -> tuple[bytes, str]:
-    """Return (re-encoded bytes, "png" | "jpg"). PNG stays lossless (screenshots); JPEG is
+def clean(raw: bytes, convert: bool = False) -> Cleaned:
+    """Return the image re-encoded from its pixels. PNG stays lossless (screenshots); JPEG is
     re-encoded at quality 90 (photos); with `convert` (the user's own pictures), WebP, GIF, BMP and
-    TIFF become PNG. Raises ValueError for anything else. Without `convert` (an image the assistant
-    made in its sandbox), no reader but PNG's and JPEG's ever looks at it."""
+    TIFF become PNG. Raises ValueError for anything else. Without `convert`, no reader but PNG's
+    and JPEG's ever looks at it."""
+    formats = ("PNG", "JPEG", *(CONVERTED if convert else ()))
     try:
-        with Image.open(BytesIO(raw), formats=("PNG", "JPEG", *(CONVERTED if convert else ()))) as im:
+        with Image.open(BytesIO(raw), formats=formats) as im:
             fmt = im.format
-            if fmt not in ("PNG", "JPEG") and not (convert and fmt in CONVERTED):
+            if fmt not in formats:
                 raise ValueError(f"unsupported image format {fmt}")
             im.seek(0)                                   # first frame only (APNG, GIF)
             if max(im.size) > MAX_SIDE:
                 raise ValueError(f"image is {im.size[0]}x{im.size[1]}, over {MAX_SIDE}px")
-            if im.size[0] * im.size[1] > MAX_PIXELS:     # (Pillow itself only warns up to twice that)
+            # Pillow itself refuses only past twice MAX_IMAGE_PIXELS (it warns in between)
+            if im.size[0] * im.size[1] > MAX_PIXELS:
                 raise ValueError(f"image is {im.size[0]}x{im.size[1]}, over {MAX_PIXELS // 1_000_000} million pixels")
             alpha = fmt != "JPEG" and (im.mode in ("RGBA", "LA", "PA") or "transparency" in im.info)
             # upright, as it's seen: the orientation a phone writes in its EXIF goes with the rest of that
             pixels = ImageOps.exif_transpose(im).convert("RGBA" if alpha else "RGB")
             fmt = "JPEG" if fmt == "JPEG" else "PNG"
+    except UnidentifiedImageError as e:
+        raise ValueError(f"unsupported image format: not {', '.join(formats[:-1])} or {formats[-1]}") from e
     except (OSError, Image.DecompressionBombError, SyntaxError) as e:
         raise ValueError(f"not a readable PNG or JPEG image ({e})") from e
     # a brand-new image from raw pixel bytes: no .info, so nothing can be carried over
@@ -57,6 +71,6 @@ def clean(raw: bytes, convert: bool = False) -> tuple[bytes, str]:
     out = BytesIO()
     if fmt == "JPEG":
         fresh.save(out, "JPEG", quality=90)
-        return out.getvalue(), "jpg"
+        return Cleaned(out.getvalue(), "jpg")
     fresh.save(out, "PNG")
-    return out.getvalue(), "png"
+    return Cleaned(out.getvalue(), "png")
