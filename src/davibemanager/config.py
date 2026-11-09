@@ -1,4 +1,14 @@
-"""Persistent configuration. Never holds secrets - those live in the OS keyring (see creds.py)."""
+"""Persistent configuration. Never holds secrets - those live in the OS keyring (see creds.py).
+
+That goes for a password written into an address too (a provider's endpoint behind one,
+https://user:pass@host/v1, or a package mirror's): config.toml has the address without it, and the
+keyring the address as typed, under "<setting>_with_password" (address_settings, take_passwords,
+keep_password). It is put back together only while the file's address is that one less its password,
+so a password goes to no address but the one it was typed for, whatever the file is edited to; taking
+the password out in Settings takes it out of the keyring. An address an older version left in the file
+with its password is moved to the keyring at the next start, and out of the file once the keyring has
+it; with no keyring to take it, it stays in the file and is used, as before. (DA Assistant's rule for
+its addresses, 729a415, Nov 2026.)"""
 
 from __future__ import annotations
 
@@ -10,6 +20,8 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 import tomli_w
+
+from .netpolicy import without_password
 
 NANOGPT_BASE_URL = "https://nano-gpt.com/api/v1"
 ANTHROPIC_BASE_URL = "https://api.anthropic.com"
@@ -216,11 +228,104 @@ def load(path: Path | None = None) -> Config:
         return from_dict(tomllib.load(f))
 
 
+# ---- passwords written into addresses: in the keyring, never in config.toml
+
+ADDRESS_KIND = "address"          # the keyring's (creds.py) kind for an address kept as typed
+
+
+def address_settings(cfg: Config) -> list[tuple[str, object, str]]:
+    """Every setting that is an address a password can be written into: (its name in the keyring,
+    the object holding it, its attribute)."""
+    found: list[tuple[str, object, str]] = [("image_mirror", cfg.settings, "image_mirror")]
+    for p in cfg.providers:
+        found += [(f"provider:{p.name}:base_url", p, "base_url"), (f"provider:{p.name}:builder_url", p, "builder_url")]
+    return found
+
+
+def _secret_name(setting: str) -> str:
+    return f"{setting}_with_password"
+
+
+def _kept(cfg: Config) -> dict[str, str]:
+    """The addresses with passwords the keyring is known to hold, by setting: config.toml has each
+    without its password (save)."""
+    return cfg.__dict__.setdefault("_with_passwords", {})
+
+
+def take_passwords(cfg: Config) -> bool:
+    """Each address as it was typed: the file's, with the password the keyring has for exactly it. One
+    the file has a password in (written by an older version, or by hand) is moved to the keyring. A
+    keyring that can't be read or written leaves things as they are, to be tried again once it can
+    (Engine.retry_keyring). True if a password moved, so the file should be saved again."""
+    from . import creds
+
+    kept, moved = _kept(cfg), False
+    for setting, holder, attr in address_settings(cfg):
+        written = str(getattr(holder, attr) or "")
+        if not written:
+            continue
+        try:
+            if without_password(written) != written:
+                if kept.get(setting) != written:
+                    creds.set_secret(ADDRESS_KIND, _secret_name(setting), written)
+                    kept[setting] = written
+                    moved = True
+            elif setting not in kept:
+                stored = creds.get_secret(ADDRESS_KIND, _secret_name(setting)) or ""
+                if stored and without_password(stored) == written:
+                    setattr(holder, attr, stored)
+                    kept[setting] = stored
+        except creds.KeyringUnavailable:
+            continue
+    return moved
+
+
+def keep_password(cfg: Config, setting: str, address: str) -> None:
+    """An address the user has just set: with a password written into it, the address as typed goes to
+    the keyring (config.toml will have it without); with none, any kept for this setting is taken out.
+    Raises creds.KeyringUnavailable when the keyring can't do that: as with an API key, nothing of it is
+    written then."""
+    from . import creds
+
+    kept = _kept(cfg)
+    if without_password(address) != address:
+        creds.set_secret(ADDRESS_KIND, _secret_name(setting), address)
+        kept[setting] = address
+        return
+    kept.pop(setting, None)
+    forget_password(setting)
+
+
+def forget_password(setting: str) -> None:
+    """The address kept for `setting` taken out of the keyring (a provider removed or renamed, a
+    password taken out of its address). Raises creds.KeyringUnavailable when the keyring can't say."""
+    from . import creds
+
+    if creds.get_secret(ADDRESS_KIND, _secret_name(setting)) is not None:
+        try:
+            creds.delete_secret(ADDRESS_KIND, _secret_name(setting))
+        except Exception as e:  # noqa: BLE001 - locked, or gone: said as the keyring's
+            raise creds.KeyringUnavailable(f"Your keyring couldn't remove the address's password: {e}") from e
+
+
+def _on_disk(cfg: Config) -> dict:
+    """What config.toml holds of `cfg`: every address whose password the keyring has, without it."""
+    data = cfg.to_dict()
+    kept = _kept(cfg)
+    if data.get("settings", {}).get("image_mirror") and kept.get("image_mirror") == data["settings"]["image_mirror"]:
+        data["settings"]["image_mirror"] = without_password(data["settings"]["image_mirror"])
+    for p in data.get("providers", []):
+        for attr in ("base_url", "builder_url"):
+            if p.get(attr) and kept.get(f"provider:{p.get('name')}:{attr}") == p[attr]:
+                p[attr] = without_password(p[attr])
+    return data
+
+
 def save(cfg: Config, path: Path | None = None) -> None:
     path = path or config_dir() / "config.toml"
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     tmp = path.with_suffix(".tmp")
     with tmp.open("wb") as f:
-        tomli_w.dump(cfg.to_dict(), f)
+        tomli_w.dump(_on_disk(cfg), f)
     os.chmod(tmp, 0o600)
     tmp.replace(path)

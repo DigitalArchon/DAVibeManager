@@ -37,7 +37,7 @@ from .llm import routes
 from .llm.client import is_private_mode
 from .llm.params import effort_unsupported, efforts_named, nearest_effort, with_effort
 from . import netpolicy
-from .netpolicy import InsecureURL, check_url, is_global_ip, is_secure, own_networks
+from .netpolicy import InsecureURL, check_url, is_global_ip, is_secure, own_networks, scrubbed, shown
 
 PROXY_PORTS = frozenset({443})
 # what of the provider's API the assistant may use with the user's key: what Claude Code needs (its
@@ -478,13 +478,14 @@ class Gateway:
             try:
                 resp = await client.send(req, stream=True)
             except httpx.HTTPError as e:
-                return fail(path, 502, f"Could not reach {up.provider}: {e}", "api_error", retry=True, model=sent_model)
+                return fail(path, 502, f"Could not reach {up.provider}: {scrubbed(e)}", "api_error", retry=True,
+                            model=sent_model)
             if resp.is_redirect:
                 # never followed: the key would go wherever the provider points (one points at 0.0.0.0)
-                where = resp.headers.get("location", "")[:200]
+                where = shown(resp.headers.get("location", ""))[:200]
                 await resp.aclose()
                 return fail(path, 502, f"{up.provider} redirected the request to {where}; refusing to follow.",
-                            "api_error", model=sent_model, url=url)
+                            "api_error", model=sent_model, url=shown(url))
             rec = {"kind": "model", "path": path, "model": sent_model,
                    "asked_for": model if model != sent_model else "", "status": resp.status_code,
                    "provider": up.provider, "tier": up.tier, "bytes_out": len(body)}

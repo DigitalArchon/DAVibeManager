@@ -14,6 +14,7 @@ import re
 import time
 from typing import Callable
 
+from . import config as config_mod
 from . import creds
 from .config import Config, Provider, provider_defaults
 from .llm import capabilities
@@ -23,7 +24,7 @@ from .llm import routes as routes_mod
 from .llm import tee as tee_mod
 from .llm.client import LLMClient, detect_tier, is_private_mode
 from .llm.private_mode import Enclave, PrivateModeClient, list_private_models, offers_private_mode, relay_url
-from .netpolicy import InsecureURL, check_url
+from .netpolicy import InsecureURL, check_url, scrubbed, shown
 
 # A TEE model's attestation is made again, with a fresh nonce, before a send once it is this old: on a
 # clock that runs on while the computer sleeps (dcap.since_boot), so one made before a night's suspend
@@ -93,6 +94,18 @@ class Models:
             name=name, base_url=base_url, default_model=str(data.get("default_model", "")).strip(),
             builder_url=builder_url, builder_auth=builder_auth, tier_overrides=overrides))
         old = self.cfg.provider(original_name or name)
+        # a password written into an address goes to the keyring, as the API key does (config.py)
+        renamed = bool(original_name and original_name != name and old)
+        try:
+            for attr in ("base_url", "builder_url"):
+                address = getattr(prov, attr)
+                if renamed or not old or getattr(old, attr) != address:
+                    config_mod.keep_password(self.cfg, f"provider:{name}:{attr}", address)
+                if renamed:
+                    config_mod.forget_password(f"provider:{original_name}:{attr}")
+        except creds.KeyringUnavailable as e:
+            raise UserError(f"{e}. Unlock your keyring (GNOME Keyring or KWallet) and try again: a password in an "
+                            "address is kept there, never in the settings file.") from None
         if original_name and original_name != name and old:
             key = creds.get_secret("provider", original_name)
             if key and not api_key:
@@ -121,6 +134,11 @@ class Models:
     def delete_provider(self, name: str) -> None:
         self.cfg.providers = [p for p in self.cfg.providers if p.name != name]
         creds.delete_secret("provider", name)
+        for attr in ("base_url", "builder_url"):
+            try:
+                config_mod.forget_password(f"provider:{name}:{attr}")
+            except creds.KeyringUnavailable:
+                pass                    # only what an address with its name kept: nothing uses it now
         s = self.cfg.settings
         if s.builder_provider == name:
             s.builder_provider = next((p.name for p in self.cfg.providers if p.builder_url), "")
@@ -184,12 +202,12 @@ class Models:
             except UserError:
                 raise
             except Exception as e:  # noqa: BLE001
-                raise UserError(f"Could not list models from {prov.base_url}: {e}") from e
+                raise UserError(f"Could not list models from {shown(prov.base_url)}: {scrubbed(e)}") from e
             if offers_private_mode(prov.base_url):
                 try:
                     ids = sorted(set(ids) | set(await self._private_ids(prov.base_url)))
                 except Exception as e:  # noqa: BLE001 - the plain models are still usable
-                    self._emit("toast", level="error", text=f"Could not list Private Mode models: {e}")
+                    self._emit("toast", level="error", text=f"Could not list Private Mode models: {scrubbed(e)}")
             self._models[provider_name] = ids
             await self._load_caps(prov)
         out = []
@@ -307,7 +325,7 @@ class Models:
             try:
                 listing = await routes_mod.fetch_hosts(prov.base_url, model, http=self.hosts_http)
             except Exception as e:  # noqa: BLE001 - the reason is the user's to see
-                raise UserError(f"Couldn't get NanoGPT's list of hosts for {model}: {e}") from e
+                raise UserError(f"Couldn't get NanoGPT's list of hosts for {model}: {scrubbed(e)}") from e
             hit = self._hosts[(prov.base_url, model)] = (time.monotonic(), listing)
         return {**hit[1], "route": self.route(prov, model)}
 
@@ -419,8 +437,8 @@ class Models:
                 att = await asyncio.to_thread(client.attest)
             except Exception as e:  # noqa: BLE001
                 client.close()
-                self._log("enclave_attestation_failed", model=model, error=str(e))
-                raise UserError(f"{model}'s TEE attestation didn't hold, so nothing was sent to it: {e}") from e
+                self._log("enclave_attestation_failed", model=model, error=scrubbed(e))
+                raise UserError(f"{model}'s TEE attestation didn't hold, so nothing was sent to it: {scrubbed(e)}") from e
             self._tee[key] = (client, dcap.since_boot(), att.to_dict())
             self._doubted.discard(key)
             self._log("enclave_attested", model=model, **att.to_dict())

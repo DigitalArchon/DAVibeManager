@@ -18,7 +18,7 @@ from urllib.parse import urlparse
 
 import httpx
 
-from ..netpolicy import is_local_host, is_secure
+from ..netpolicy import is_local_host, is_secure, shown
 
 LOOPBACK_HOSTS = {"localhost", "127.0.0.1", "::1", "[::1]"}
 
@@ -60,12 +60,12 @@ def refuse_insecure_redirect(response: httpx.Response) -> None:
     source = str(response.request.url)
     if not is_secure(target):
         raise ProviderError(
-            f"{response.request.url.host} redirected to {target[:120]!r}; refusing to "
+            f"{response.request.url.host} redirected to {shown(target)[:120]!r}; refusing to "
             "send over an insecure connection"
         )
     if is_local(target) and not is_local(source):
         raise ProviderError(
-            f"{response.request.url.host} redirected to {target[:120]!r}, a server on this "
+            f"{response.request.url.host} redirected to {shown(target)[:120]!r}, a server on this "
             "computer or your local network; refused"
         )
 

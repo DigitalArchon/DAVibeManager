@@ -623,6 +623,8 @@ class Backups:
                 except OSError as err:
                     warnings.append(f"The chats' memory couldn't be put in place ({err}): they start afresh.")
                 e.cfg.providers, e.cfg.settings = cfg.providers, cfg.settings     # in place: the app holds e.cfg
+                # an address's password the backup had (written into the address, as typed) goes to the keyring
+                config.take_passwords(e.cfg)
                 try:
                     e._save_config(e.cfg)
                 except OSError as err:

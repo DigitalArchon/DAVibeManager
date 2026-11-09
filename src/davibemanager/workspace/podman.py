@@ -30,6 +30,7 @@ from urllib.parse import urlparse
 
 from .. import podmansetup
 from ..config import data_dir
+from ..netpolicy import shown
 from . import pins
 
 IMAGE_REPO = "localhost/davibemanager-workspace"
@@ -246,7 +247,7 @@ async def build_image(on_line: Callable[[str], None] | None = None, *, source: s
         except OSError:
             await asyncio.to_thread(shutil.copy2, cli, Path(ctx) / "claude")
         argv = [podman(), "build", "-t", tag, "-v", f"{Path(ctx) / 'hostca.crt'}:/hostca.crt:ro,Z",
-                "-v", f"{cache}:/var/cache/apt/archives:Z", "--label", f"{LABEL}=image", "--label", f"{SOURCE_LABEL}={source}",
+                "-v", f"{cache}:/var/cache/apt/archives:Z", "--label", f"{LABEL}=image", "--label", f"{SOURCE_LABEL}={shown(source)}",
                 "--build-arg", f"APT_URI={source}"]
         for key in ("BASE_IMAGE", "APPIMAGETOOL_URL", "APPIMAGETOOL_SHA256", "RUNTIME_URL",
                     "RUNTIME_SHA256", "CLAUDE_SHA256"):

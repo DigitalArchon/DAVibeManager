@@ -52,6 +52,8 @@ from .llm import routes as routes_mod
 from .llm.client import is_private_mode
 from .models import KeyringWait, Models, UserError
 from .netpolicy import InsecureURL, check_url
+from .netpolicy import scrubbed
+from .netpolicy import shown as shown_address
 from .safety import images as images_mod
 from .safety.inject import suspicious
 from .safety.outside import OutsideData
@@ -375,6 +377,12 @@ class Engine:
 
     def retry_keyring(self) -> None:
         app_log("keyring_ready" if self.ready else "keyring_still_waiting")
+        # an address's password, put back from the keyring (or moved there out of config.toml) now it opens
+        if config_mod.take_passwords(self.cfg):
+            try:
+                self._save_config(self.cfg)
+            except OSError:
+                pass
         if self.ready and self.workspace.get("state") in ("stopped", "failed"):
             self.start_workspace()
         self._changed()
@@ -621,6 +629,13 @@ class Engine:
                 if not re.fullmatch(r"[A-Za-z0-9:/._~%+@\[\]-]+", url):
                     raise UserError("The mirror's address has characters an address can't have (spaces, quotes).")
                 url = url if url.endswith("/") else url + "/"
+            if url != s.image_mirror:
+                # a password written into it goes to the keyring, never config.toml (config.py)
+                try:
+                    config_mod.keep_password(self.cfg, "image_mirror", url)
+                except creds.KeyringUnavailable as e:
+                    raise UserError(f"{e}. Unlock your keyring (GNOME Keyring or KWallet) and try again: a "
+                                    "password in an address is kept there, never in the settings file.") from None
             s.image_mirror = url
             if not url and s.image_fallback == "mirror":
                 s.image_fallback = ""
@@ -1639,20 +1654,21 @@ class Engine:
                 built_from = await podman.image_source(image)
                 self._set_workspace(state=st, image=image,
                                     outdated=(await podman.inspect_image(SANDBOX)) not in ("", image),
-                                    unpinned_source=built_from if built_from not in ("", podman.SNAPSHOT_URI) else "")
+                                    unpinned_source=shown_address(built_from) if built_from not in ("", podman.SNAPSHOT_URI) else "")
                 started = True
                 break
             except asyncio.CancelledError:
                 raise
             except podman.BuildError as e:
-                error, failure = str(e)[:4000], e
-                app_log("sandbox_start_failed", attempt=attempt, error=error, kind=e.kind, host=e.host, source=source)
+                error, failure = scrubbed(str(e)[:4000]), e      # (a mirror's address may hold a password)
+                app_log("sandbox_start_failed", attempt=attempt, error=error, kind=e.kind, host=e.host,
+                        source=shown_address(source))
                 other, name = self._image_fallback()
                 if attempt == 1 and source == podman.SNAPSHOT_URI and other and e.kind in ("server", "network"):
                     source = other
                     watch = podman.BuildWatch()
                     shown.update(at=0.0, what=None, trouble="")
-                    app_log("sandbox_image_fallback", source=other)
+                    app_log("sandbox_image_fallback", source=shown_address(other))
                     if self.conv:
                         self._note(f"{e.summary} As Settings say, the sandbox is being built from {name} instead.")
                     continue

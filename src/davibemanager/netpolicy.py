@@ -4,7 +4,9 @@ One rule for every client the app builds (model providers, attestation, the gate
 forwarder): https anywhere; plain http only to this machine or the local network. "Local" is
 exactly localhost, loopback (127.0.0.0/8, ::1), the private ranges (10/8, 172.16/12,
 192.168/16, fc00::/7), link-local, and `.local` names. A URL outside that set that isn't https
-is refused with an explanation, never used and never rewritten.
+is refused with an explanation, never used and never rewritten. An address said in a message or a
+log is said without a user name and password written into it (`shown`), and config.toml keeps it
+without them (config.py: the keyring has it as typed).
 
 The gateway's CONNECT proxy applies the opposite rule for the container: only addresses that
 are globally routable (`is_global_ip`), and none of this computer's own or on its own networks
@@ -33,6 +35,56 @@ _PRIVATE_NETS = tuple(ipaddress.ip_network(n) for n in (
 
 class InsecureURL(ValueError):
     """A URL the app won't use: not https, and not on this machine or the local network."""
+
+
+# Everything of a text up to its last "@" before a query or a fragment, the scheme and "//" aside: where an
+# address that can't be read may have a user name and password.
+_UP_TO_AT = re.compile(r"^((?:[^:/?#]+:)?//)?[^?#]*@")
+# A user name and password written into any address in a text (an error's words)
+_USERINFO = re.compile(r"(?i)\b([a-z][a-z0-9+.-]*://)[^\s/?#@\"'<>]*@")
+
+
+def shown(url) -> str:
+    """`url` as it may be shown or logged: without the user name and password an address may carry
+    (https://alice:secret@host/v1). For any text at all, and never raising: one that can't be read as an
+    address (half typed, without a scheme, or with a port no address can have) says nothing certain of
+    where its host begins, so all it has up to its last "@" goes. (DA Assistant's netguard.shown, Nov 2026.)"""
+    text = str(url or "")
+    try:
+        parsed = urlparse(text)
+        parsed.port                     # raises on a port that is not a number
+    except ValueError:
+        parsed = None
+    if parsed is None or not parsed.netloc:
+        return _UP_TO_AT.sub(r"\1…@", text, count=1)
+    if "@" not in parsed.netloc:
+        return text
+    return parsed._replace(netloc="…@" + parsed.netloc.rsplit("@", 1)[1]).geturl()
+
+
+def without_password(url) -> str:
+    """`url` with the user name and password written into it taken out, as shown() does but leaving an
+    address, not a placeholder, where they were: what config.toml keeps of an address whose password is in
+    the keyring. Text with neither is returned as it is. (DA Assistant's netguard.without_password.)"""
+    text = str(url or "")
+    if "@" not in text:
+        return text
+    try:
+        parsed = urlparse(text)
+        parsed.port
+    except ValueError:
+        parsed = None
+    if parsed is None or not parsed.netloc:
+        return _UP_TO_AT.sub(r"\1", text, count=1)
+    if "@" not in parsed.netloc:
+        return text
+    return parsed._replace(netloc=parsed.netloc.rsplit("@", 1)[1]).geturl()
+
+
+def scrubbed(text) -> str:
+    """An error's words with every address in them shown without a user name and password (httpx names
+    the address whole in some: "... for url 'https://alice:secret@host/v1/models'")."""
+    return _USERINFO.sub(r"\1…@", str(text))
 
 
 def _ip(host: str) -> ipaddress.IPv4Address | ipaddress.IPv6Address | None:
@@ -78,9 +130,9 @@ def check_url(url: str, what: str = "This address") -> str:
         parsed = urlparse(url)
         host = parsed.hostname
     except ValueError as e:              # one urlparse can't take (http://[::1]@evil.example/)
-        raise InsecureURL(f"{what} isn't an address the app can use ({e}): {url[:80]!r}") from None
+        raise InsecureURL(f"{what} isn't an address the app can use ({scrubbed(e)}): {shown(url)[:80]!r}") from None
     if parsed.scheme not in ("http", "https") or not host:
-        raise InsecureURL(f"{what} must be a full https:// URL (got {url[:80]!r})")
+        raise InsecureURL(f"{what} must be a full https:// URL (got {shown(url)[:80]!r})")
     if not is_secure(url):
         raise InsecureURL(
             f"{what} uses plain http to {parsed.hostname}, which isn't on this machine or the local "

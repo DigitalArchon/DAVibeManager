@@ -278,6 +278,12 @@ def main(argv: list[str] | None = None) -> None:
     token = secrets.token_urlsafe(32)
     port = args.port or _free_port()
     cfg = config.load()
+    # a password written into an address: back from the keyring, or moved there out of config.toml
+    if config.take_passwords(cfg):
+        try:
+            config.save(cfg)
+        except OSError:
+            pass
     use_browser = args.browser or args.no_open or (cfg.settings.ui_mode == "browser" and not args.window)
     notice = ""
     if not use_browser:

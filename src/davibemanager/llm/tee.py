@@ -61,7 +61,7 @@ from urllib.parse import quote, urlparse
 
 import httpx
 
-from ..netpolicy import check_url
+from ..netpolicy import check_url, scrubbed, shown
 from . import dcap, nras
 from .ethsig import keccak256, recover_personal
 from .private_mode import relay_said
@@ -358,10 +358,10 @@ class TeeClient:
             try:
                 response = self._client.get(f"{base}{path}", params=params, headers=headers)
             except httpx.HTTPError as exc:
-                last = str(exc)
+                last = scrubbed(exc)
                 continue
             if response.status_code == 404:
-                last = f"{base}{path}: 404"
+                last = f"{shown(base + path)}: 404"
                 continue
             if response.status_code >= 400:
                 # nano-gpt's own words, when it gives any: "Unable to reach RedPill
@@ -376,9 +376,9 @@ class TeeClient:
             try:
                 body = response.json()
             except ValueError as exc:
-                raise ProviderError(f"{base}{path} returned a non-JSON body") from exc
+                raise ProviderError(f"{shown(base + path)} returned a non-JSON body") from exc
             if not isinstance(body, dict):
-                raise ProviderError(f"{base}{path} returned {type(body).__name__}")
+                raise ProviderError(f"{shown(base + path)} returned {type(body).__name__}")
             self._base = base
             return body
         raise ProviderError(f"no TEE endpoint answered ({last})")
