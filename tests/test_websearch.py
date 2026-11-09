@@ -272,3 +272,43 @@ async def test_the_query_sent_is_the_one_checked(searching):
     await engine.builder_search({"query": "gthumb​ drag⁠ to zoom", "sites": ["git​hub.com"]})
     body = fake.requests[-1][2]
     assert body["query"] == "gthumb drag to zoom" and body["includeDomains"] == ["github.com"]
+
+
+@pytest.mark.parametrize("query", [
+    "sk-" "proj-AbCdEfGhIjKlMnOpQrStUvWx0123 returns 401", "why does sk-​" "proj-AbCdEfGhIjKlMnOpQrStUvWx0123 fail",
+    "github_" "pat_11ABCDEFG0123456789_abcdefghijklmnop", "AKIA" "ABCDEFGHIJKLMNOP s3 access denied",
+    "curl https://bob:Hunter2pw@api.example.org fails", "api_key=abc123def456 rejected",
+    "token 9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08 invalid",
+])
+async def test_a_query_with_a_secret_in_it_is_refused_and_never_logged(searching, monkeypatch, query):
+    engine, fake, events = searching
+    logged = []
+    monkeypatch.setattr(engine, "log", lambda event, **data: logged.append((event, data)))
+    reply = await engine.builder_search({"query": query})
+    assert reply.startswith("Not searched") and "looks like a secret" in reply and not fake.requests
+    shown = [e["event"] for e in events if e.get("type") == "network" and e["event"]["kind"] == "search"][-1]
+    assert shown["refused"] == "it holds what looks like a secret"
+    for kept in (reply, shown["query"], repr(logged)):
+        assert "AbCdEfGhIjKl" not in kept and "Hunter2pw" not in kept and "abc123def456" not in kept
+        assert "0123456789_abc" not in kept and "ABCDEFGHIJKLMNOP" not in kept and "c55ad015a3bf" not in kept
+
+
+@pytest.mark.parametrize("query", ["rotate an api key every 90 days", "how to set enable secret on a cisco switch",
+                                   "github personal access token scopes", "password manager for linux"])
+async def test_talking_about_secrets_is_not_one(searching, query):
+    engine, fake, _ = searching
+    await engine.builder_search({"query": query})
+    assert fake.requests and fake.requests[-1][2]["query"] == query
+
+
+def test_an_address_with_a_secret_in_it_is_not_fetched(outside):
+    assert outside.check_url("https://example.org/hook?token=abc123def456&x=1")
+    assert outside.check_url("https://example.org/?q=sk-" "proj-AbCdEfGhIjKlMnOpQrStUvWx0123")
+    # an article's long name is no secret
+    assert outside.check_url("https://example.org/2026/11/how-to-zoom-in-gthumb-with-the-mouse-wheel-and-a-key-123") == []
+
+
+def test_a_long_host_name_is_no_secret(outside):
+    # GitHub's release downloads come from such a host: refused, the sandbox couldn't fetch one
+    assert outside.check_host("github-production-release-asset-2e65be.s3.amazonaws.com") == []
+    assert outside.check_host("sk-" "proj-AbCdEfGhIjKlMnOpQrStUvWx0123.attacker.example")

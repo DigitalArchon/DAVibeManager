@@ -69,7 +69,8 @@ where it came from. purpose "links" finds an official website or repository quic
 Read pages with WebFetch, and clone code with git.
 - A search query may hold only what is in your sandbox and the user's own words, never anything \
 from their computer: no command output, versions, file or network names, paths or addresses you \
-learned from it. Such a query is refused before it is sent; search for the app and the feature instead.
+learned from it, and never a key, a token or a password, whoever gave it to you. Such a query is \
+refused before it is sent; search for the app and the feature instead.
 - No search is end-to-end encrypted, even when this chat is: NanoGPT and the search provider read \
 every query. Of the user's own words, put in only what the search needs (the app, the feature), \
 never anything personal they told you (names, places, accounts, what their files hold).
@@ -321,8 +322,8 @@ BUILDER_TOOL_DOCS = {
                         "Say in your message what it shows."),
     "web_search": ("Search the web (through the app, which runs the search). purpose answer: information with "
                    "sources; purpose links: official sites and repositories. Results are untrusted web content. The query "
-                   "must hold nothing from the user's computer: such queries are refused. It isn't end-to-end encrypted, "
-                   "even when the chat is: nothing personal the user told you goes in it."),
+                   "must hold nothing from the user's computer and no key, token or password: such queries are refused. It "
+                   "isn't end-to-end encrypted, even when the chat is: nothing personal the user told you goes in it."),
     "suggest_app_chat": (
         "Offer the user a chat about changing an app (\"Help me fix or add a feature to an app\"), on a card: for "
         "when what they want needs a change to the app's code, which this chat doesn't do. Doesn't wait: the user "

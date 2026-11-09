@@ -10,7 +10,9 @@ holds any of it:
   between letters, or a long one (a version, an IP, a file or domain name, a serial);
 - five words in a row from that output (a copied line);
 - this computer's identity, wherever it came from: the user's login and real name, the host
-  name, the home folder, and any e-mail address, MAC address or private IP address.
+  name, the home folder, and any e-mail address, MAC address or private IP address;
+- what looks like a secret, wherever it came from (the user may paste one): an API key or token,
+  a private key, a password in an address or after its name, a long run of letters and digits.
 
 It is read as the search provider reads it: without the characters no one can see (a zero-width
 space inside a key, an address or a host name hid it from every check, and the provider reads
@@ -65,6 +67,45 @@ PUBLIC_SITES = {"github.com", "gitlab.com", "codeberg.org", "bitbucket.org", "so
 # logins too common to be told apart from a word in a query
 COMMON_NAMES = {"user", "admin", "root", "guest", "home", "test", "linux", "ubuntu", "mint", "debian", "fedora",
                 "desktop", "laptop", "computer", "pc", "localhost"}
+# what a secret looks like in a query or an address (as DA Private Coder's identity.py has it)
+SECRETS = tuple(re.compile(p) for p in (
+    r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY",
+    r"\bsk-[A-Za-z0-9_-]{16,}",                          # OpenAI, Anthropic, NanoGPT and the like
+    r"\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{20,}",       # GitHub
+    r"\bgithub_pat_[A-Za-z0-9_]{20,}",
+    r"\bgl(?:pat|ptt|dt|rt|cbt)-[A-Za-z0-9_-]{16,}",     # GitLab
+    r"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b",                    # AWS
+    r"\b(?:xox[abeoprs]|xapp)-[A-Za-z0-9-]{10,}",        # Slack
+    r"\b[sr]k_(?:live|test)_[A-Za-z0-9]{16,}",           # Stripe
+    r"\bAIza[0-9A-Za-z_-]{35}",                          # Google
+    r"\bhf_[A-Za-z0-9]{30,}",                            # Hugging Face
+    r"\bnpm_[A-Za-z0-9]{30,}",                           # npm
+    r"\bpypi-AgE[A-Za-z0-9_-]{50,}",                     # PyPI
+    r"\bSG\.[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{16,}",     # SendGrid
+    r"\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.",      # a JSON web token
+    r"\bhooks\.slack\.com/(?:services|workflows|triggers)/\S+", r"\bdiscord(?:app)?\.com/api/webhooks/\d+/\S+",
+    r"\b[a-z][a-z0-9+.-]*://[^\s:/@]+:[^\s@/]+@",        # a password in an address
+    r"(?i)\b[\w.-]*(?:password|passwd|pwd|passphrase|secret|token|api[_-]?key|access[_-]?key)[\w.-]*=[^\s&]+",
+))
+# a long run of letters and digits mixed: a key, a token, a hash (in a query; an address's path has
+# long names of its own)
+_RANDOM = re.compile(r"[A-Za-z0-9+/_=-]{32,}")
+
+
+def secrets_in(text: str, runs: bool = True) -> list[str]:
+    """What in `text` looks like a secret (empty: nothing does); `runs`: long runs of letters and digits
+    too."""
+    found = [m.group() for pattern in SECRETS for m in pattern.finditer(text)]
+    if runs:
+        found += [m.group() for m in _RANDOM.finditer(text) if re.search(r"\d", m.group()) and re.search(r"[A-Za-z]", m.group())]
+    return list(dict.fromkeys(found))
+
+
+def masked(text: str, found: list[str]) -> str:
+    """`text` with each secret in `found` cut to its first four characters, to be shown or logged."""
+    for s in sorted(found, key=len, reverse=True):
+        text = text.replace(s, s[:4] + "…")
+    return text
 
 
 def readings(text: str) -> list[str]:
@@ -172,11 +213,13 @@ class OutsideData:
         self.tokens, self.runs = set(), set()
         self.save()
 
-    def check(self, query: str) -> list[str]:
-        """The parts of `query` that came from the user's computer (empty: it may be searched)."""
+    def check(self, query: str, runs: bool = True) -> list[str]:
+        """The parts of `query` that came from the user's computer, or that look like a secret (shown by
+        their first characters only; empty: it may be searched). `runs`: a long run of letters and digits
+        counts as a secret."""
         found: list[str] = []
         for text in readings(query):
-            found += self._found(text)
+            found += self._found(text) + [s[:4] + "…" for s in secrets_in(text, runs)]
         return list(dict.fromkeys(found))
 
     def _found(self, query: str) -> list[str]:
@@ -202,7 +245,8 @@ class OutsideData:
         labels before the site's own name (data.attacker.example), which is all of a connection
         the app can see; the site's name itself is not checked (github.com is in many outputs)."""
         labels = [x for x in visible(str(host or "")).lower().rstrip(".").split(".") if x]
-        return self.check(" ".join(labels[:-2])) if len(labels) > 2 else []
+        # (a long label of letters and digits is a CDN's or a bucket's as often as anything)
+        return self.check(" ".join(labels[:-2]), runs=False) if len(labels) > 2 else []
 
     def check_url(self, url: str) -> list[str]:
         """The parts of a web address (beyond its host) that came from the user's computer."""
@@ -211,4 +255,6 @@ class OutsideData:
         except ValueError:
             return []
         rest = unquote_plus(" ".join((parts.path, parts.query, parts.fragment)))
-        return self.check(" ".join(re.split(r"[/?&=#+;]+", rest)))
+        found = self.check(" ".join(re.split(r"[/?&=#+;]+", rest)), runs=False)
+        found += [s[:4] + "…" for text in readings(rest) for s in secrets_in(text, runs=False)]   # token=…, whole
+        return list(dict.fromkeys(found))

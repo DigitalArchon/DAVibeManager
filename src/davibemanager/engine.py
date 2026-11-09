@@ -57,7 +57,7 @@ from .netpolicy import shown as shown_address
 from .safety import images as images_mod
 from .safety.hidden import visible
 from .safety.inject import suspicious
-from .safety.outside import OutsideData
+from .safety.outside import OutsideData, masked, secrets_in
 from .safety.redact import redact
 from .safety.truncate import head_tail
 from .sync.service import SyncService
@@ -2433,7 +2433,7 @@ class Engine:
 
     async def builder_search(self, args: dict) -> str:
         """A web search for the assistant, run here with the key from the keyring. Refused, in code,
-        if the query holds anything that came from this computer."""
+        if the query holds anything that came from this computer, or what looks like a secret."""
         s = self.cfg.settings
         if not s.web_search:
             raise UserError("Web search is switched off in Settings. Use what you know, or read a page you know the address of.")
@@ -2447,6 +2447,15 @@ class Engine:
         # whole and label by label (a host name of this computer's network in one)
         given = args.get("sites")
         sites = websearch.clean_sites([visible(str(x)) for x in given] if isinstance(given, list) else given)
+        # a key, a token or a password, whoever put it there (the user may paste one): never sent, nor logged
+        secret = secrets_in(" ".join([query, *sites]))
+        if secret:
+            shown = masked(query, secret)
+            self.log("search_refused", query=shown, found=[x[:4] + "…" for x in secret])
+            self._network_event({"kind": "search", "query": shown, "refused": "it holds what looks like a secret"})
+            return ("Not searched: the query holds what looks like a secret (" + ", ".join(repr(x[:4] + "…") for x in secret[:5])
+                    + "): an API key, a token, a password or a long random string. Searches leave in the clear: never "
+                    "put one in. Search again with the software, the feature or the public error message.")
         leaked = self._outside().check(" ".join([query, *sites, *(site.replace(".", " ") for site in sites)]))
         if leaked:
             self.log("search_refused", query=query, found=leaked)
