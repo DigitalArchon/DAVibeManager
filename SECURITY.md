@@ -21,6 +21,11 @@ Anything that breaks one of DA Vibe Manager's promises, for example:
 - a way out of the sandbox: to this computer, your home network, or past the gateway's
   HTTPS-only, public-only proxy;
 - the API key reaching the sandbox, or being used for anything but the assistant's messages;
+- a secret (an API key, the backups' password, a password written into an address) written in the
+  clear to disk, a log or a message, or the window's token reaching anyone else logged in to the
+  computer;
+- anything sent to a TEE or private model whose attestation doesn't hold, or a TEE reply its check
+  passes that isn't its attested enclave's;
 - output reaching the AI without being shown to you first (when that's the setting), or secrets
   surviving redaction;
 - something from your computer getting into a web search the app runs for the assistant;
