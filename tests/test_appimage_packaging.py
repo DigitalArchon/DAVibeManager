@@ -142,3 +142,23 @@ def _lookup(*candidates):
     assert found, "the lookup is not where this test looks for it"
     return subprocess.run(["bash", "-c", found.group(0) + 'host_ca_bundle "$@"', "bash", *candidates],
                           capture_output=True, text=True, timeout=30)
+
+
+def test_apprun_is_valid_shell_and_runs_the_bundled_python_isolated():
+    assert subprocess.run(["sh", "-n", str(PACKAGING / "AppRun")]).returncode == 0
+    assert re.search(r'exec "\$HERE/usr/python/bin/python3" -I ', APPRUN)
+
+
+def test_apprun_takes_the_hosts_bundle_from_any_of_the_five(tmp_path):
+    """AppRun up to its exec, as if the host had only one bundle (each of the others pointed elsewhere)."""
+    head = APPRUN[:APPRUN.index('exec "$HERE/usr/python/bin/python3"')]
+    paths = [p for p in re.findall(r"(/etc/[\w./-]+)", APPRUN) if p.endswith((".crt", ".pem"))]
+    for keep in paths:
+        bundle = tmp_path / keep.strip("/").replace("/", "_")
+        bundle.write_text("certificates")
+        text = head
+        for path in paths:
+            text = text.replace(path, str(bundle) if path == keep else "/nonexistent" + path)
+        out = subprocess.run(["sh", "-c", text + 'echo "$SSL_CERT_FILE|$REQUESTS_CA_BUNDLE"\n', str(tmp_path / "AppRun")],
+                             env={"PATH": os.environ.get("PATH", "")}, capture_output=True, text=True, check=True).stdout
+        assert out.strip() == f"{bundle}|{bundle}", keep

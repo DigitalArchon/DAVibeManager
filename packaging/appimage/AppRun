@@ -6,8 +6,11 @@ HERE="$(dirname "$(readlink -f "$0")")"
 # the eMudhra root, Oct 2026) stand for httpx and the openai client (SSL_CERT_FILE) and for
 # requests, which tinfoil's attestation uses (REQUESTS_CA_BUNDLE); the bundled certifi is the
 # fallback. The bundled Python's own ssl module looks in /etc/ssl already.
+# Where Debian and its kin, Fedora and RHEL, openSUSE and the rest keep it (DA Assistant's AppRun looks in
+# the same five; packaging/build-appimage.sh too, for the builder's apt).
 if [ -z "${SSL_CERT_FILE:-}" ]; then
-    for bundle in /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/certs/ca-bundle.crt /etc/ssl/cert.pem; do
+    for bundle in /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/certs/ca-bundle.crt /etc/ssl/ca-bundle.pem \
+                  /etc/pki/tls/cert.pem /etc/ssl/cert.pem; do
         if [ -r "$bundle" ]; then
             export SSL_CERT_FILE="$bundle"
             break
