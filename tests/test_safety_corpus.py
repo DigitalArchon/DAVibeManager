@@ -286,3 +286,12 @@ def test_a_photo_stays_upright():
     out, ext = images.clean(_encoded(im, "JPEG", exif=exif.tobytes()))
     with Image.open(io.BytesIO(out)) as cleaned:
         assert ext == "jpg" and cleaned.size == (400, 300) and not cleaned.getexif()
+
+
+def test_a_16_bit_greyscale_picture_keeps_its_greys():
+    # a scan's, a microscope's or a camera's export: convert("RGB") clips 16-bit values at 255
+    gradient = Image.new("I;16", (256, 4))
+    gradient.putdata([x * 257 for x in range(256)] * 4)
+    with Image.open(io.BytesIO(images.clean(_encoded(gradient, "PNG")).data)) as out:
+        greys = {out.convert("L").getpixel((x, 0)) for x in range(256)}
+    assert len(greys) > 200 and min(greys) == 0 and max(greys) == 255

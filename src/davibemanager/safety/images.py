@@ -24,6 +24,8 @@ Image.MAX_IMAGE_PIXELS = MAX_PIXELS          # refuse decompression bombs
 
 # pictures the user attaches may come in these too: they become PNGs (first frame only)
 CONVERTED = ("WEBP", "GIF", "BMP", "TIFF")
+# greyscale deeper than 8 bits (a scan, a microscope's or a camera's export, a 16-bit PNG)
+SIXTEEN_BIT = ("I;16", "I;16B", "I;16L", "I;16N", "I")
 
 
 class Cleaned(NamedTuple):
@@ -39,6 +41,16 @@ def is_image(raw: bytes) -> bool:
             return bool(im.format)
     except Exception:  # noqa: BLE001 - whatever it is, not a picture Pillow reads
         return False
+
+
+def _eight_bit(im: Image.Image) -> Image.Image:
+    """A 16-bit (or 32-bit integer) greyscale picture as 8-bit grey, every shade kept: convert("RGB")
+    clips such values at 255 rather than scaling them, so it came out black and white. (From DA
+    Assistant's imaging.py.)"""
+    wide = im if im.mode == "I" else im.convert("I")
+    _low, high = wide.getextrema()
+    scale = 1 / 256 if high > 255 else 1
+    return wide.point(lambda value: value * scale).convert("L")
 
 
 def clean(raw: bytes, convert: bool = False) -> Cleaned:
@@ -60,7 +72,10 @@ def clean(raw: bytes, convert: bool = False) -> Cleaned:
                 raise ValueError(f"image is {im.size[0]}x{im.size[1]}, over {MAX_PIXELS // 1_000_000} million pixels")
             alpha = fmt != "JPEG" and (im.mode in ("RGBA", "LA", "PA") or "transparency" in im.info)
             # upright, as it's seen: the orientation a phone writes in its EXIF goes with the rest of that
-            pixels = ImageOps.exif_transpose(im).convert("RGBA" if alpha else "RGB")
+            upright = ImageOps.exif_transpose(im)
+            if upright.mode in SIXTEEN_BIT:
+                upright = _eight_bit(upright)
+            pixels = upright.convert("RGBA" if alpha else "RGB")
             fmt = "JPEG" if fmt == "JPEG" else "PNG"
     except UnidentifiedImageError as e:
         raise ValueError(f"unsupported image format: not {', '.join(formats[:-1])} or {formats[-1]}") from e
