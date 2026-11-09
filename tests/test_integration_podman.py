@@ -155,8 +155,10 @@ async def test_the_assistant_in_its_sandbox_asks_and_gets_only_what_the_user_sen
         assert not any(f"{v}=" in env for v in ("DISPLAY", "WAYLAND_DISPLAY", "DBUS_SESSION_BUS_ADDRESS", "XDG_RUNTIME_DIR",
                                                 "SSH_AUTH_SOCK"))
         procs = set((await inside("ps -eo comm=")).split())
-        # only its own: its init, the gateway's relays, Claude Code, its shells; none of this computer's
-        assert procs <= {"podman-init", "dvm-entry", "socat", "sh", "bash", "ps", "sleep", "claude", "node"}, procs
+        # only its own: its init, the gateway's relays, Claude Code, its shells, and the time limit every
+        # command of the app's runs under (podman.bounded: this `ps` too); none of this computer's
+        assert procs <= {"podman-init", "dvm-entry", "socat", "sh", "bash", "ps", "sleep", "claude", "node",
+                         "timeout"}, procs
         # this computer's own sockets (the app's, X11, D-Bus) are in another network namespace
         socks = await inside(f"python3 -c \"import socket\nfor n in ['\\0davibemanager-{os.getuid()}', '\\0/tmp/.X11-unix/X0']:\n"
                              f"    s = socket.socket(socket.AF_UNIX)\n    try: s.connect(n); print('REACHED', n)\n"
