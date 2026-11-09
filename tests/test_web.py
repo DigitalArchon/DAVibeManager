@@ -96,3 +96,19 @@ const test = ([types, where]) => dropping(types, where === "field" ? field : pag
     cases = [[["Files"], "page"], [["Files", "text/uri-list"], "field"], [["text/uri-list", "text/plain"], "page"],
              [["text/plain"], "page"], [["text/plain"], "field"], [[], "page"], [None, "page"]]
     assert run(code, cases) == ["files", "files", "cancel", "cancel", "default", "cancel", "cancel"]
+
+
+def test_a_box_blacked_out_is_snapped_outwards_to_whole_pixels():
+    """A fractional box is drawn anti-aliased: its edge pixels only partly black, with a trace of what was
+    under them (DA Toolkit's editor, ported)."""
+    code = script("snapBox") + "\nconst test = ([b, w, h]) => snapBox(b, w, h);"
+    cases = [[{"x": 10.6, "y": 5.2, "w": 20.1, "h": 3.3}, 100, 100], [{"x": 95.5, "y": 0, "w": 10, "h": 10}, 100, 50]]
+    assert run(code, cases) == [{"x": 10, "y": 5, "w": 21, "h": 4}, {"x": 95, "y": 0, "w": 5, "h": 10}]
+
+
+def test_every_picture_goes_through_the_editor_before_it_is_attached():
+    text = APP_JS.read_text(encoding="utf-8")
+    flow = re.search(r"^async function addFiles\(list\) \{.*?^}$", text, re.M | re.S).group(0)
+    assert 'file.type?.startsWith("image/")' in flow and "await redactPicture(file)" in flow
+    editor = re.search(r"^function redactPicture\(file\) \{.*?^}$", text, re.M | re.S).group(0)
+    assert 'ctx.fillStyle = "#000"' in editor and "if (!rects.length) { result = file; return; }" in editor

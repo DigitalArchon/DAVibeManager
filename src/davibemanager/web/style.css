@@ -378,4 +378,9 @@ details.change pre.patch { max-height: 40vh; overflow: auto; }
   white-space: nowrap !important; vertical-align: baseline !important; cursor: help;
   -webkit-user-select: none !important; user-select: none !important; }
 .insecure-link::after { content: "⚠ not secure"; }
+/* the black-out editor a picture is shown in before it is attached (app.js redactPicture) */
+.redact { display: flex; flex-direction: column; gap: 8px; }
+.redact-wrap { overflow: auto; max-height: 64vh; background: var(--bg); border-radius: 6px; }
+.redact-canvas { display: block; margin: 0 auto; cursor: crosshair; user-select: none; }
+.redact-canvas.fit { max-width: 100%; max-height: 62vh; }
 

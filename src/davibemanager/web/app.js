@@ -2460,9 +2460,109 @@ function renderFiles() {
   if (S.state) renderStatus();
 }
 
+// Every picture is shown before it is attached, to black out what shouldn't reach the AI: drag rectangles over
+// it, then Attach (DA Toolkit's redactImage, Nov 2026). The black is painted into the picture's own pixels in
+// this window, so what was under it never leaves it; a picture with nothing blacked out goes as it was. The app
+// then makes it again from its pixels alone (safety/images.py), so no location, camera or dates go with it.
+// Resolves the picture to attach, or null for Cancel; one this page can't show goes as it was, to the app.
+const REDACT_MAX = 4000;          // the editor's working size, on the long side
+function redactPicture(file) {
+  return new Promise((resolve) => {
+    const url = URL.createObjectURL(file);
+    const img = new Image();
+    img.onerror = () => { URL.revokeObjectURL(url); resolve(file); };
+    img.onload = () => {
+      const scale = Math.min(1, REDACT_MAX / Math.max(img.naturalWidth, img.naturalHeight));
+      const canvas = h("canvas", { class: "redact-canvas" });
+      canvas.width = Math.round(img.naturalWidth * scale);
+      canvas.height = Math.round(img.naturalHeight * scale);
+      const ctx = canvas.getContext("2d");
+      const rects = [];
+      let drag = null, result = null;
+      const count = h("span", { class: "muted small" });
+      const draw = () => {
+        ctx.globalAlpha = 1;
+        ctx.globalCompositeOperation = "source-over";
+        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+        ctx.fillStyle = "#000";                  // opaque black painted into the one bitmap: no layers
+        for (const b of rects) ctx.fillRect(b.x, b.y, b.w, b.h);
+        if (drag) {
+          ctx.fillRect(drag.x, drag.y, drag.w, drag.h);
+          ctx.strokeStyle = "#e5534b";
+          ctx.lineWidth = Math.max(2, canvas.width / 500);
+          ctx.strokeRect(drag.x, drag.y, drag.w, drag.h);
+        }
+        count.textContent = rects.length ? `${rects.length} area${rects.length === 1 ? "" : "s"} blacked out` : "Nothing blacked out yet";
+      };
+      const pt = (e) => {
+        const b = canvas.getBoundingClientRect();
+        return { x: Math.max(0, Math.min(canvas.width, (e.clientX - b.left) * canvas.width / b.width)),
+          y: Math.max(0, Math.min(canvas.height, (e.clientY - b.top) * canvas.height / b.height)) };
+      };
+      const move = (e) => {
+        if (!drag) return;
+        const p = pt(e);
+        Object.assign(drag, { x: Math.min(drag.x0, p.x), y: Math.min(drag.y0, p.y), w: Math.abs(p.x - drag.x0), h: Math.abs(p.y - drag.y0) });
+        draw();
+      };
+      const up = () => {
+        if (drag && drag.w > 2 && drag.h > 2) rects.push(snapBox(drag, canvas.width, canvas.height));
+        drag = null;
+        draw();
+      };
+      canvas.addEventListener("mousedown", (e) => { e.preventDefault(); const p = pt(e); drag = { x0: p.x, y0: p.y, x: p.x, y: p.y, w: 0, h: 0 }; });
+      window.addEventListener("mousemove", move);
+      window.addEventListener("mouseup", up);
+      const zoom = h("button", { type: "button", class: "small", onclick: () => {
+        canvas.classList.toggle("fit");
+        zoom.textContent = canvas.classList.contains("fit") ? "Actual size" : "Fit to window";
+      } }, "Actual size");
+      canvas.classList.add("fit");
+      const m = modal({ title: `${file.name || "The picture"}: black out anything sensitive`,
+        body: h("div", { class: "redact" },
+          h("div", { class: "row", style: "align-items:center" }, h("div", { class: "muted small", style: "flex:1" },
+            "Drag over anything that shouldn't reach the AI (names, addresses, keys). What you black out is replaced with black pixels before the picture leaves this window. ", count), zoom),
+          h("div", { class: "redact-wrap" }, canvas)),
+        buttons: [
+          { label: "Undo", onClick: () => { rects.pop(); draw(); return true; } },
+          { label: "Clear", onClick: () => { rects.length = 0; draw(); return true; } },
+          { label: "Cancel" },
+          { label: "Attach", kind: "primary", onClick: async () => {
+            drag = null;
+            draw();
+            if (!rects.length) { result = file; return; }
+            const type = file.type === "image/jpeg" ? "image/jpeg" : "image/png";
+            const blob = await new Promise((done) => canvas.toBlob(done, type, 0.92));
+            const name = (file.name || "picture").replace(/\.[^.]*$/, "") + (type === "image/jpeg" ? ".jpg" : ".png");
+            result = blob ? new File([blob], name, { type }) : null;
+          } }],
+        onClose: () => {
+          window.removeEventListener("mousemove", move);
+          window.removeEventListener("mouseup", up);
+          URL.revokeObjectURL(url);
+          resolve(result);
+        } });
+      m.box.classList.add("wide");
+      draw();
+    };
+    img.src = url;
+  });
+}
+
+// A box dragged out, snapped outwards to whole pixels: a fractional one would be anti-aliased, its edge pixels
+// only partly black, with a trace of what was under them.
+function snapBox(b, width, height) {
+  const x = Math.max(0, Math.floor(b.x)), y = Math.max(0, Math.floor(b.y));
+  return { x, y, w: Math.min(width, Math.ceil(b.x + b.w)) - x, h: Math.min(height, Math.ceil(b.y + b.h)) - y };
+}
+
 async function addFiles(list) {
-  for (const file of list) {
+  for (let file of list) {
     if (S.files.length >= 10) { toast("At most 10 files with one message.", "error"); break; }
+    if (file.type?.startsWith("image/")) {
+      file = await redactPicture(file);        // shown first, to black out what shouldn't go
+      if (!file) continue;                      // Cancel: not attached
+    }
     const f = { name: file.name || "pasted-picture.png", size: file.size, uploading: true,
       url: file.type.startsWith("image/") ? URL.createObjectURL(file) : null };
     S.files.push(f);
