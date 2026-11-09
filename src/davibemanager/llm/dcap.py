@@ -1,7 +1,8 @@
 """Intel TDX quote verification (DCAP), for the TEE/ models' attestation.
 
-Ported from SealedLore (its providers/dcap.py, Sept 2026), itself ported from the author's
-AI-Assistant app (assistant/dcap.py), with httpx for requests; the checks are the same.
+The same checks in each of the author's apps that attest TEE models (DA Assistant, DA Vibe
+Manager, DA Private Coder, DA Toolkit, SealedLore), kept alike since Nov 2026; first written
+for the AI-Assistant app (assistant/dcap.py), with httpx for requests here.
 
 A TEE/ model's attestation carries an Intel TDX quote: a report of the trust domain the
 model runs in, signed by Intel's quoting enclave (QE) on that machine. llm/tee.py
@@ -11,10 +12,13 @@ does, from the quote's bytes and Intel's published collateral:
 
   1. The PCK certificate chain carried in the quote (PCK leaf -> PCK Platform or
      Processor CA) verifies up to Intel's SGX Root CA, which is pinned below rather than
-     taken from the quote. Every certificate must be within its validity period.
+     taken from the quote. Every certificate must be within its validity period, and
+     every one that signed another must be a CA allowed to: basicConstraints CA, within
+     its path length, and keyCertSign in its keyUsage where it has one.
   2. The QE report is signed by that PCK key, and its report data is
      sha256(attestation key || QE authentication data): the QE vouches for the key that
-     signed the quote.
+     signed the quote. And the QE is Intel's TDX QE (INTEL_TD_QE), on every quote,
+     whether or not Intel's QE identity can be fetched.
   3. The quote - header and TD report, report data (our nonce) included - is signed by
      that attestation key.
   4. Neither the PCK certificate nor its CA is revoked (Intel's PCK and root CRLs,
@@ -22,10 +26,12 @@ does, from the quote's bytes and Intel's published collateral:
   5. The TCB: Intel's signed TCB info for the platform's FMSPC gives a status for its
      microcode and firmware (from the PCK certificate) and its TDX module (from the TD
      report); Intel's signed QE identity checks the quoting enclave and gives it a
-     status too. Both are signed by Intel's TCB signing key, chained to the same root.
+     status too. Both must be signed by Intel's TCB signing certificate, issued by the
+     root itself - not by just any certificate that chains there.
   6. The TD is not a debug TD, whose memory the host can read.
 
-A failure of 1-4 or 6, or a TCB that is Revoked or older than any Intel lists, is a quote
+A failure of 1-4 or 6, or a TCB that is Revoked (the platform's, the module's or the QE's,
+whatever status sits beside it) or older than any Intel lists, is a quote
 that must not be trusted: DcapError, and nothing is sent. Collateral that cannot be
 fetched (5, and the CRLs: Intel's service unreachable or answering with an error) is
 reported as that, not as a pass: the caller shows the attestation as partial. So is any
@@ -38,8 +44,9 @@ Checked live against TEE/glm-5.3-flash's quote (Sept 2026): version 4, ECDSA-256
 attestation key, TDX; PCK Platform CA; FMSPC 20a06f000000; TDX module TDX_03; every
 status UpToDate.
 
-Collateral is cached for an hour: it is the same for every quote from a platform, and
-Intel reissues it monthly.
+Collateral is cached for an hour, on a clock that runs on while the machine sleeps
+(since_boot): it is the same for every quote from a platform, and Intel reissues it
+monthly.
 """
 
 import hashlib
@@ -306,11 +313,41 @@ def intel_root() -> Any:
     return root
 
 
+def _may_issue(issuer: Any, below: int) -> None:
+    """Raise DcapError unless `issuer` may sign certificates with `below` CA certificates
+    between it and the leaf: its basicConstraints say it is a CA, within its path length,
+    and its keyUsage, where it has one, includes certificate signing.
+
+    Without this, any certificate Intel's root vouches for - the TCB signing one, or a PCK
+    certificate whose key a compromised platform gave up - could sign certificates of its
+    own and have them pass as Intel's. (From DA Assistant's copy of this module, Nov 2026.)"""
+    x509 = _crypto()[0]
+    name = issuer.subject.rfc4514_string()
+    try:
+        constraints = issuer.extensions.get_extension_for_class(x509.BasicConstraints).value
+    except x509.ExtensionNotFound:
+        constraints = None
+    if constraints is None or not constraints.ca:
+        raise DcapError(f"{name} signed a certificate, and is not a certificate authority")
+    if constraints.path_length is not None and below > constraints.path_length:
+        raise DcapError(
+            f"{name} may have {constraints.path_length} certificate authorities below it, "
+            f"and the chain puts {below} there"
+        )
+    try:
+        usage = issuer.extensions.get_extension_for_class(x509.KeyUsage).value
+    except x509.ExtensionNotFound:
+        return
+    if not usage.key_cert_sign:
+        raise DcapError(f"{name} signed a certificate with a key not meant for that")
+
+
 def verify_chain(certs: list[Any], root: Any, now: datetime) -> None:
-    """Each certificate signed by the next, the last by `root`, all of them current."""
+    """Each certificate signed by the next, the last by `root`, all of them current, and
+    every one that signed another a certificate authority allowed to (_may_issue)."""
     _x509, InvalidSignature, _hashes, ec, _encode = _crypto()
     chain = list(certs) + [root]
-    for cert, issuer in zip(chain, chain[1:], strict=False):
+    for below, (cert, issuer) in enumerate(zip(chain, chain[1:], strict=False)):
         subject = cert.subject.rfc4514_string()
         if cert.issuer != issuer.subject:
             raise DcapError(f"{subject} was not issued by {issuer.subject.rfc4514_string()}")
@@ -320,6 +357,7 @@ def verify_chain(certs: list[Any], root: Any, now: datetime) -> None:
             )
         except InvalidSignature:
             raise DcapError(f"{subject}'s signature does not verify") from None
+        _may_issue(issuer, below)
     for cert in chain:
         if not _utc(cert, "not_valid_before") <= now <= _utc(cert, "not_valid_after"):
             raise DcapError(f"{cert.subject.rfc4514_string()} is outside its validity period")
@@ -329,6 +367,26 @@ def _common_name(cert: Any) -> str:
     x509 = _crypto()[0]
     names = cert.subject.get_attributes_for_oid(x509.NameOID.COMMON_NAME)
     return names[0].value if names else ""
+
+
+_BOOTTIME = getattr(time, "CLOCK_BOOTTIME", None)
+
+
+def since_boot() -> float:
+    """Seconds on a clock that keeps counting while the machine is suspended, for telling
+    when something fetched or proved has grown old: Intel's collateral here, NVIDIA's keys
+    (nras.py), an attestation (the TEE checks, Private Mode's enclave).
+
+    time.monotonic stops while the machine sleeps, so a laptop that slept for hours would
+    take an attestation made before it for a few minutes old. Linux's CLOCK_BOOTTIME does
+    not stop; where there is none, monotonic is what there is. (From DA Assistant's copy of
+    this module, Nov 2026.)"""
+    if _BOOTTIME is not None:
+        try:
+            return time.clock_gettime(_BOOTTIME)
+        except OSError:
+            pass
+    return time.monotonic()
 
 
 # ---- collateral ---------------------------------------------------------------------
@@ -344,7 +402,7 @@ def _fetch(
     key = (url, tuple(sorted((params or {}).items())))
     with _cache_lock:
         hit = _cache.get(key)
-        if hit is not None and time.monotonic() - hit[0] < COLLATERAL_TTL:
+        if hit is not None and since_boot() - hit[0] < COLLATERAL_TTL:
             return hit[1], hit[2]
     try:
         response = session.get(url, params=params, timeout=TIMEOUT_SECONDS)
@@ -355,7 +413,7 @@ def _fetch(
     content = response.content
     headers = dict(response.headers)
     with _cache_lock:
-        _cache[key] = (time.monotonic(), content, headers)
+        _cache[key] = (since_boot(), content, headers)
     return content, headers
 
 
@@ -651,7 +709,10 @@ def _verify(raw: bytes, session: httpx.Client, now: datetime) -> Result:
     result.module = module_status(tcb_info, quote) or ""
     result.qe = qe_status(identity, quote.qe_report)
     result.status = _worst(result.platform, result.module, result.qe)
-    if result.status == "Revoked":
+    # Asked of each, not of the worst: a status this app does not list ranks above Revoked
+    # there, so a revoked platform beside one Intel added later (TDX's TDRelaunchAdvised, say)
+    # passed as partial. (From DA Assistant's copy of this module, Nov 2026.)
+    if "Revoked" in (result.platform, result.module, result.qe):
         raise DcapError("Intel has revoked this platform's TCB")
     parts = [f"platform {result.platform}"]
     if result.module:

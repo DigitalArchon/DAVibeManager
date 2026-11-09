@@ -7,6 +7,7 @@ from __future__ import annotations
 import base64
 import json
 import struct
+import time
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -426,6 +427,154 @@ def test_the_real_quote_for_another_nonce_is_refused(real):
     )
     with pytest.raises(TeeRefused, match="didn't bind"):
         client.attest()  # our nonce is random: the captured quote holds another
+
+
+def test_a_revoked_tcb_is_refused_whatever_else_is_named(real, monkeypatch):
+    """Only the worst status was compared with Revoked, and one this app doesn't list ranks above it: a
+    platform Intel had revoked passed as partial beside TDX's TDRelaunchAdvised. (From DA Assistant.)"""
+    for platform, module, qe in (("Revoked", "TDRelaunchAdvised", "UpToDate"),
+                                 ("UpToDate", "Revoked", "SomethingNew"),
+                                 ("SomethingNew", "UpToDate", "Revoked")):
+        dcap._cache.clear()
+        monkeypatch.setattr(dcap, "platform_level", lambda *a, status=platform: {"tcbStatus": status})
+        monkeypatch.setattr(dcap, "module_status", lambda *a, status=module: status)
+        monkeypatch.setattr(dcap, "qe_status", lambda *a, status=qe: status)
+        with pytest.raises(dcap.DcapError, match="revoked this platform"):
+            intel(real)
+    monkeypatch.undo()
+    dcap._cache.clear()
+    monkeypatch.setattr(dcap, "module_status", lambda *a: "TDRelaunchAdvised")
+    assert intel(real).status == "TDRelaunchAdvised"           # partial, and named
+
+
+# --- Intel's chain: only certificate authorities may sign certificates ----------------------
+
+CHAIN_NOW = datetime(2026, 9, 26, tzinfo=UTC)
+
+
+def _key_usage(cert_sign: bool):
+    """keyUsage as Intel's certificates have it: a CA's key signs certificates and CRLs, any other's
+    signs data."""
+    from cryptography import x509
+    return x509.KeyUsage(digital_signature=not cert_sign, content_commitment=not cert_sign,
+                         key_encipherment=False, data_encipherment=False, key_agreement=False,
+                         key_cert_sign=cert_sign, crl_sign=cert_sign, encipher_only=False, decipher_only=False)
+
+
+def synthetic_cert(name, key, issuer=None, ca=None, path_length=None, cert_sign=None):
+    """A certificate named `name` for `key`, signed by `issuer` ((its certificate, its key)) or by itself;
+    with basicConstraints if `ca` is given, and keyUsage if `cert_sign` is."""
+    from cryptography import x509
+    from cryptography.hazmat.primitives import hashes
+    subject = x509.Name([x509.NameAttribute(x509.NameOID.COMMON_NAME, name)])
+    issuer_cert, issuer_key = issuer or (None, key)
+    builder = (x509.CertificateBuilder().subject_name(subject)
+               .issuer_name(issuer_cert.subject if issuer_cert else subject)
+               .public_key(key.public_key()).serial_number(x509.random_serial_number())
+               .not_valid_before(datetime(2018, 1, 1, tzinfo=UTC))
+               .not_valid_after(datetime(2049, 1, 1, tzinfo=UTC)))
+    if ca is not None:
+        builder = builder.add_extension(x509.BasicConstraints(ca=ca, path_length=path_length), critical=True)
+    if cert_sign is not None:
+        builder = builder.add_extension(_key_usage(cert_sign), critical=True)
+    return builder.sign(issuer_key, hashes.SHA256())
+
+
+@pytest.fixture(scope="module")
+def chain_keys():
+    """verify_chain held a certificate to its issuer's name, signature and dates, and no more: any
+    certificate Intel's root vouched for (the TCB signing one, a PCK certificate whose key a compromised
+    platform gave up) could issue certificates of its own that passed as Intel's. Synthetic chains, under
+    a root of their own; the real one is checked above. (From DA Assistant's copy, Nov 2026.)"""
+    from cryptography.hazmat.primitives.asymmetric import ec
+    return {name: ec.generate_private_key(ec.SECP256R1()) for name in ("root", "ca", "leaf")}
+
+
+def test_a_chain_of_authorities_allowed_to_sign_verifies(chain_keys):
+    k = chain_keys
+    root = synthetic_cert("Test Root CA", k["root"], ca=True, path_length=1, cert_sign=True)
+    ca = synthetic_cert("Test CA", k["ca"], (root, k["root"]), ca=True, path_length=0, cert_sign=True)
+    leaf = synthetic_cert("Test leaf", k["leaf"], (ca, k["ca"]), ca=False, cert_sign=False)
+    dcap.verify_chain([leaf, ca], root, CHAIN_NOW)
+
+
+def test_a_chain_through_a_certificate_that_is_no_ca_is_refused(chain_keys):
+    k = chain_keys
+    root = synthetic_cert("Test Root CA", k["root"], ca=True, path_length=1, cert_sign=True)
+    signing = synthetic_cert("Intel SGX TCB Signing", k["ca"], (root, k["root"]), ca=False, cert_sign=False)
+    leaf = synthetic_cert("Intel SGX PCK Certificate", k["leaf"], (signing, k["ca"]), ca=False, cert_sign=False)
+    with pytest.raises(dcap.DcapError, match="CN=Intel SGX TCB Signing signed a certificate, and is not a "
+                                             "certificate authority"):
+        dcap.verify_chain([leaf, signing], root, CHAIN_NOW)
+    bare = synthetic_cert("Bare", k["ca"], (root, k["root"]))           # nor one that doesn't say what it is
+    leaf = synthetic_cert("Test leaf", k["leaf"], (bare, k["ca"]), ca=False)
+    with pytest.raises(dcap.DcapError, match="Bare signed a certificate, and is not a certificate authority"):
+        dcap.verify_chain([leaf, bare], root, CHAIN_NOW)
+
+
+def test_an_authority_beyond_its_path_length_is_refused(chain_keys):
+    k = chain_keys
+    root = synthetic_cert("Test Root CA", k["root"], ca=True, path_length=0, cert_sign=True)
+    ca = synthetic_cert("Test CA", k["ca"], (root, k["root"]), ca=True, path_length=0, cert_sign=True)
+    leaf = synthetic_cert("Test leaf", k["leaf"], (ca, k["ca"]), ca=False, cert_sign=False)
+    with pytest.raises(dcap.DcapError, match="Test Root CA may have 0 certificate authorities below it, and the "
+                                             "chain puts 1 there"):
+        dcap.verify_chain([leaf, ca], root, CHAIN_NOW)
+
+
+def test_an_authority_whose_key_is_not_for_certificates_is_refused(chain_keys):
+    k = chain_keys
+    root = synthetic_cert("Test Root CA", k["root"], ca=True, path_length=1, cert_sign=True)
+    ca = synthetic_cert("Test CA", k["ca"], (root, k["root"]), ca=True, path_length=0, cert_sign=False)
+    leaf = synthetic_cert("Test leaf", k["leaf"], (ca, k["ca"]), ca=False, cert_sign=False)
+    with pytest.raises(dcap.DcapError, match="Test CA signed a certificate with a key not meant for that"):
+        dcap.verify_chain([leaf, ca], root, CHAIN_NOW)
+
+
+# --- clocks that count sleep -----------------------------------------------------------------
+
+@pytest.fixture
+def asleep(monkeypatch):
+    """The boot clock, which moves on while the computer is suspended, set by the test; the monotonic one,
+    which stands still across a suspend, left as it is (it moves milliseconds here). The enclaves'
+    attestations, Intel's collateral and NVIDIA's keys were aged by time.monotonic: a laptop that slept for
+    hours took them all for as fresh as when it went to sleep."""
+    if not hasattr(time, "CLOCK_BOOTTIME"):
+        pytest.skip("no CLOCK_BOOTTIME here")
+    clock = {"boot": 1000.0}
+    real = time.clock_gettime
+    monkeypatch.setattr(time, "clock_gettime", lambda which: clock["boot"] if which == time.CLOCK_BOOTTIME
+                        else real(which))
+    return clock
+
+
+def test_the_boot_clock_is_read_and_the_monotonic_one_only_without_it(asleep, monkeypatch):
+    assert dcap.since_boot() == 1000.0
+    monkeypatch.setattr(time, "monotonic", lambda: 50.0)
+    monkeypatch.setattr(dcap, "_BOOTTIME", None)
+    assert dcap.since_boot() == 50.0
+    monkeypatch.setattr(dcap, "_BOOTTIME", time.CLOCK_BOOTTIME)
+
+    def no_clock(which):
+        raise OSError("no such clock")
+    monkeypatch.setattr(time, "clock_gettime", no_clock)
+    assert dcap.since_boot() == 50.0
+
+
+def test_intels_collateral_is_fetched_again_after_a_sleep(asleep, monkeypatch):
+    monkeypatch.setattr(dcap, "_cache", {})
+    asked = []
+    client = httpx.Client(transport=httpx.MockTransport(
+        lambda r: asked.append(r) or httpx.Response(200, content=b"collateral")))
+    for _ in range(2):
+        assert dcap._fetch(client, dcap.ROOT_CRL_URL)[0] == b"collateral"
+    assert len(asked) == 1
+    asleep["boot"] += 2 * 3600
+    dcap._fetch(client, dcap.ROOT_CRL_URL)
+    assert len(asked) == 2
+
+
+
 
 
 def test_tee_models_are_named_so():
