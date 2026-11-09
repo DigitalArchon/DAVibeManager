@@ -7,13 +7,18 @@ Arch and CachyOS ship). With none, there is no tray and closing the window quits
 other app.
 
 A second launch (from the menu, or autostart) finds the first through an abstract Unix socket
-named for this user and asks it to show its window, then exits.
+named for this user and asks it to show its window, then exits. Anyone on this computer can take an
+abstract name, so each side asks the other's user (SO_PEERCRED): a launch hands over only to a copy
+of this user's, and a copy shows its window only for this user's launches. A name another user took
+makes no copy of this one's exit: it runs, unfound by later launches.
 """
 
 from __future__ import annotations
 
 import os
 import socket
+import struct
+import sys
 import threading
 from pathlib import Path
 from typing import Callable
@@ -23,6 +28,15 @@ ICON = Path(__file__).parent / "web" / "icon.svg"
 
 def _socket_name() -> bytes:
     return f"\0davibemanager-{os.getuid()}".encode()
+
+
+def peer_uid(sock: socket.socket) -> int | None:
+    """The user of the process at the other end of a Unix socket (SO_PEERCRED), or None."""
+    try:
+        creds = sock.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, struct.calcsize("3i"))
+    except OSError:
+        return None
+    return struct.unpack("3i", creds)[1]
 
 
 def claim_single_instance(on_show: Callable[[], None]) -> bool:
@@ -37,6 +51,11 @@ def claim_single_instance(on_show: Callable[[], None]) -> bool:
             with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as c:
                 c.settimeout(2)
                 c.connect(_socket_name())
+                if peer_uid(c) != os.getuid():
+                    # another user holds this user's name (anyone may take an abstract one): no copy of ours
+                    print("Another user's program holds DA Vibe Manager's name for this user; starting anyway.",
+                          file=sys.stderr)
+                    return True
                 c.sendall(b"show\n")
             return False
         except OSError:
@@ -50,6 +69,8 @@ def claim_single_instance(on_show: Callable[[], None]) -> bool:
             except OSError:
                 return
             with conn:
+                if peer_uid(conn) != os.getuid():
+                    continue                # only this user's own launches bring the window up
                 conn.settimeout(2)
                 try:
                     data = conn.recv(64)
