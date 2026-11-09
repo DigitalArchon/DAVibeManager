@@ -1,10 +1,13 @@
 # The AppImage build environment: Ubuntu 24.04 pinned by digest, packages from a dated archive
-# snapshot. The host's CA bundle is mounted at /hostca.crt only so apt can reach the snapshot
-# over HTTPS until ca-certificates is installed; packages are verified by apt's signatures.
+# snapshot. The host's CA bundle comes in as /hostca.crt, a copy build-appimage.sh puts in the build
+# context, only so apt can reach the snapshot over HTTPS until ca-certificates is installed, and is
+# removed again; packages are verified by apt's signatures. (The copy stays in a layer of this builder
+# image, which never leaves the machine.)
 ARG BASE_IMAGE
 FROM ${BASE_IMAGE}
 ARG APT_SNAPSHOT
 ENV DEBIAN_FRONTEND=noninteractive LC_ALL=C.UTF-8 TZ=UTC
+COPY hostca.crt /hostca.crt
 RUN rm -f /etc/apt/sources.list && printf '%s\n' \
       'Types: deb' \
       "URIs: https://snapshot.ubuntu.com/ubuntu/${APT_SNAPSHOT}/" \
@@ -17,5 +20,5 @@ RUN rm -f /etc/apt/sources.list && printf '%s\n' \
       ca-certificates curl gcc libc6-dev pkg-config \
       libgirepository-2.0-dev libcairo2-dev libffi-dev gir1.2-freedesktop \
       squashfs-tools desktop-file-utils \
- && rm /etc/apt/apt.conf.d/99hostca \
+ && rm /etc/apt/apt.conf.d/99hostca /hostca.crt \
  && rm -rf /var/lib/apt/lists/*
