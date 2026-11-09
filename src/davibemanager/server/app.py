@@ -19,6 +19,7 @@ from fastapi import Depends, FastAPI, HTTPException, Request, WebSocket, WebSock
 from fastapi.responses import FileResponse, JSONResponse
 
 from fastapi.staticfiles import StaticFiles
+from starlette.datastructures import Headers
 
 from .. import backup as backup_mod
 from .. import delivery as delivery_mod
@@ -28,6 +29,47 @@ from ..hostenv import host_env
 from ..workspace.podman import PodmanError
 
 WEB_DIR = Path(__file__).resolve().parents[1] / "web"
+# the most a request's body may hold, said before it is read; the uploads (STREAMED) are read as they come
+# and limited as they are: a file attached (MAX_ATTACHMENT), a backup to restore, a shared app
+MAX_BODY = 16 << 20
+STREAMED = frozenset({"/api/attachments", "/api/restore/upload", "/api/share/upload"})
+
+
+class WindowGate:
+    """ASGI middleware in front of the window's app (DA Toolkit's CompanionGate, ff33bf1, Nov 2026).
+    FastAPI reads and parses a JSON body before it runs dependencies, where the token was checked, and
+    nothing limited its size: any process on this computer (another user's too) could make the app buffer
+    and parse any amount without the token, holding up the event loop the window, the gateway and the
+    assistant share. An /api/ request is refused here on its headers alone: no valid token, or, but for
+    the uploads, no stated length or one over MAX_BODY. The connection is closed rather than read on."""
+
+    def __init__(self, app, check: Callable[[str | None], bool]):
+        self.app = app
+        self.check = check
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] == "http" and scope["path"].startswith("/api/"):
+            refusal = self._refusal(scope["path"], Headers(scope=scope))
+            if refusal:
+                status, why = refusal
+                await JSONResponse({"error": why}, status, headers={"connection": "close"})(scope, receive, send)
+                return
+        await self.app(scope, receive, send)
+
+    def _refusal(self, path: str, headers: Headers) -> tuple[int, str] | None:
+        if not self.check(headers.get("x-token")):
+            return 403, "bad token"
+        if path in STREAMED:
+            return None
+        if "transfer-encoding" in headers:   # chunked: no length to check before reading
+            return 411, "a Content-Length is required"
+        try:
+            length = int(headers.get("content-length") or 0)
+        except ValueError:
+            return 400, "bad Content-Length"
+        if length > MAX_BODY:
+            return 413, "request too large"
+        return None
 
 
 def upload_dir() -> Path:
@@ -74,7 +116,10 @@ def create_app(token: str, make_engine: Callable[[Callable[[dict], None]], Engin
     app = FastAPI(lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
 
     def check(t: str | None) -> bool:
-        return t is not None and hmac.compare_digest(t, token)
+        # as bytes: compare_digest raises on a str with anything but ASCII in it (a 500, not a 403)
+        return t is not None and hmac.compare_digest(t.encode("utf-8", "surrogateescape"), token.encode())
+
+    app.add_middleware(WindowGate, check=check)
 
     def auth(request: Request) -> Engine:
         if not check(request.headers.get("x-token")):

@@ -124,3 +124,95 @@ def test_an_event_is_sent_as_it_was_when_it_happened(tmp_path):
         client.portal.call(as_the_engine_does)
         assert ws.receive_json() == {"type": "state", "state": {"chat": []}}
         assert ws.receive_json()["type"] == "chat"
+
+
+async def _gate_call(headers, path="/api/send"):
+    """WindowGate on one POST: (status, response headers, app reached, body read)."""
+    from davibemanager.server.app import WindowGate
+
+    seen = {"app": False, "read": False, "start": None}
+
+    async def inner(scope, receive, send):
+        seen["app"] = True
+
+    async def receive():
+        seen["read"] = True
+        return {"type": "http.request", "body": b"", "more_body": False}
+
+    async def send(msg):
+        if msg["type"] == "http.response.start":
+            seen["start"] = msg
+    scope = {"type": "http", "method": "POST", "path": path, "query_string": b"",
+             "headers": [(k.encode(), v.encode() if isinstance(v, str) else v) for k, v in headers.items()]}
+    await WindowGate(inner, lambda t: t == "secret")(scope, receive, send)
+    start = seen["start"]
+    return (start["status"] if start else None, dict(start["headers"]) if start else {}, seen["app"], seen["read"])
+
+
+async def test_the_gate_refuses_on_headers_before_any_body_is_read():
+    """FastAPI read and parsed a JSON body before the token was checked, with no limit on its size
+    (DA Toolkit's CompanionGate, ported)."""
+    from davibemanager.server.app import MAX_BODY
+
+    big = str(MAX_BODY + 1)
+    for headers, status in (({"content-length": big}, 403),                              # no token
+                            ({"x-token": "wrong", "content-length": "10"}, 403),
+                            ({"x-token": "secret", "content-length": big}, 413),
+                            ({"x-token": "secret", "transfer-encoding": "chunked"}, 411),
+                            ({"x-token": "secret", "content-length": "lots"}, 400)):
+        got, resp_headers, reached, read = await _gate_call(headers)
+        assert (got, reached, read) == (status, False, False), headers
+        assert resp_headers[b"connection"] == b"close"                 # not kept open for the rest
+    assert (await _gate_call({"x-token": "secret", "content-length": "100"}))[2]
+    # an upload is read as it comes and limited as it is (each route's own limit): only the token, here
+    for path in ("/api/attachments", "/api/restore/upload", "/api/share/upload"):
+        assert (await _gate_call({"x-token": "secret", "transfer-encoding": "chunked"}, path))[2]
+        assert (await _gate_call({"transfer-encoding": "chunked"}, path))[0] == 403
+
+
+async def test_a_token_with_letters_outside_ascii_is_refused_not_a_server_error(tmp_path):
+    def make(emit):
+        e = Engine(Config(), emit, tmp_path, save_config=lambda c: None)
+        e.start_workspace = lambda: None
+        return e
+    app = create_app("secret", make)
+    async with app.router.lifespan_context(app):
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://127.0.0.1") as c:
+            for token in (b"s\xc3\xa9cret", b"\xff\xfe"):
+                assert (await c.get("/api/state", headers={"x-token": token})).status_code == 403
+            assert (await c.get("/api/state", headers={"x-token": "secret"})).status_code == 200
+
+
+async def test_an_unauthenticated_upload_is_cut_off_over_the_socket(tmp_path):
+    """Anyone on this computer, without the token, announcing a huge body gets a 403 at once and the
+    connection closes: the server never reads or buffers it."""
+    import asyncio
+    import socket
+
+    import uvicorn
+
+    def make(emit):
+        e = Engine(Config(), emit, tmp_path, save_config=lambda c: None)
+        e.start_workspace = lambda: None
+        return e
+    app = create_app("secret", make)
+    sock = socket.socket()
+    sock.bind(("127.0.0.1", 0))
+    port = sock.getsockname()[1]
+    server = uvicorn.Server(uvicorn.Config(app, log_level="warning", loop="asyncio"))
+    task = asyncio.create_task(server.serve(sockets=[sock]))
+    try:
+        for _ in range(200):
+            if server.started:
+                break
+            await asyncio.sleep(0.01)
+        reader, writer = await asyncio.open_connection("127.0.0.1", port)
+        writer.write(b"POST /api/send HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\n"
+                     b"Content-Length: 2000000000\r\n\r\n" + b"[" * 65536)
+        await writer.drain()
+        reply = await asyncio.wait_for(reader.read(), 5)            # read() to EOF: the server hangs up
+        assert reply.startswith(b"HTTP/1.1 403")
+        writer.close()
+    finally:
+        server.should_exit = True
+        await asyncio.wait_for(task, 10)
