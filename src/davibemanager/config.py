@@ -104,9 +104,11 @@ class Settings:
     builder_small_model: str = DEFAULT_FAST_MODEL
     # describes images for a model that can't see them (any but Anthropic's); empty = none
     builder_vision_model: str = DEFAULT_FAST_MODEL
-    # how hard a private model reasons before it answers: "low", "medium" or "high". GLM 5.3 at its
-    # default reasons for minutes a step, and with thinking off it reasons even more (into its answer)
-    builder_reasoning: str = "low"
+    # how hard a model other than Claude reasons before it answers: "low", "medium" or "high", each
+    # model sent the nearest it takes (llm/params.py: GLM 5.3 takes no medium, and reasons at its
+    # default, max, when sent one). None is called recommended: for building, it's up to the user.
+    # Never "none": with thinking off GLM reasons even more (into its answer)
+    builder_reasoning: str = "high"
     # which of NanoGPT's hosts runs a model, by model id (llm/routes.py): {"priority": "speed" |
     # "latency" | "throughput" | "price" | "host", "fp8": bool, "host": id}. None for a model means
     # NanoGPT's own choice (on a subscription, included). Any route is paid per use

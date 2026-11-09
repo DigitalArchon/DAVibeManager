@@ -31,6 +31,7 @@ import httpx
 from .llm import anthropic_bridge as bridge
 from .llm import routes
 from .llm.client import is_private_mode
+from .llm.params import effort_unsupported, efforts_named, nearest_effort, with_effort
 from . import netpolicy
 from .netpolicy import InsecureURL, check_url, is_global_ip, is_secure, own_networks
 
@@ -255,7 +256,9 @@ class Upstream:
     vision_model: str = ""
     # whether a translated model reads images itself (then it gets them, not descriptions)
     sees: Callable[[str], Awaitable[bool]] | None = None
-    reasoning: str = "low"           # reasoning effort for translated models (never "none": see config)
+    reasoning: str = "high"          # reasoning effort for translated models (never "none": see config)
+    # the efforts a translated model takes (None: not known, sent as asked); the nearest goes (llm/params.py)
+    efforts: Callable[[str], Awaitable[tuple[str, ...] | None]] | None = None
     # which of NanoGPT's hosts runs a translated model: model id -> its route, or None for
     # NanoGPT's own choice (llm/routes.py)
     route: Callable[[str], dict | None] = lambda model: None
@@ -325,6 +328,8 @@ class Gateway:
     _uvicorn_task: asyncio.Task | None = None
     _own_http: bool = False
     _images: bridge.ImageDescriber | None = None
+    # what models said when they refused an effort: model -> the efforts it takes (() for none at all)
+    _efforts: dict = field(default_factory=dict)
 
     @property
     def model_socket(self) -> Path:
@@ -521,10 +526,12 @@ class Gateway:
             return err(Refused(404, f"{path} isn't available for {model}.", "not_found_error"))
         if self._images is None or self._images.model != up.vision_model:
             self._images = bridge.ImageDescriber(up.describe, up.vision_model)
+        wanted = up.reasoning or "high"
         try:
             native = bool(up.sees and await up.sees(model))
             messages, tools, params = await bridge.to_openai(data, self._images, native=native)
-            params["reasoning_effort"] = up.reasoning or "low"
+            effort = await self._effort(up, model, wanted)
+            params = with_effort(params, effort)
             route = None if private else up.route(model)
             params.update(routes.body(route))      # which of NanoGPT's hosts runs it, if the user chose
             if up.guard is not None:
@@ -535,10 +542,11 @@ class Gateway:
         except Exception as e:  # noqa: BLE001 - the reason goes to the CLI and the log
             return err(Refused(502, f"Couldn't prepare the request for {model}: {e}", "api_error", retry=_may_pass(e)))
         estimate = bridge.estimate_tokens(data)
-        rec.update(status=200, **({"route": routes.describe(route)} if route else {}), **({"sees": True} if native else {}))
+        rec.update(status=200, effort=effort, **({"effort_asked": wanted} if effort != wanted else {}),
+                   **({"route": routes.describe(route)} if route else {}), **({"sees": True} if native else {}))
         try:
             # the provider's answer first: a request it refuses is told by its status, not as a reply cut short
-            events = await answered(client.stream(model, messages, tools, params))
+            events = await answered(self._stream(client, model, messages, tools, params, rec))
         except Exception as e:  # noqa: BLE001
             return err(upstream_refusal(model, e, up.provider))
         if not data.get("stream"):
@@ -568,6 +576,55 @@ class Gateway:
                     stats["usage"] = openai_usage(stats["usage"])
                 self.on_event(_route_held({**rec, **stats, "bytes_in": n, "seconds": round(time.monotonic() - started, 2)}))
         return StreamingResponse(body(), media_type="text/event-stream")
+
+    async def _effort(self, up: Upstream, model: str, asked: str) -> str:
+        """The effort `model` is sent for `asked`: the nearest it takes, as it said when it refused one,
+        else as listed ("": none, a model that takes none)."""
+        takes = self._efforts.get(model)
+        if takes is None and up.efforts is not None:
+            try:
+                takes = await up.efforts(model)
+            except Exception:  # noqa: BLE001 - not known: sent as asked
+                takes = None
+        return "" if takes == () else nearest_effort(asked, takes)
+
+    def _learned(self, model: str, error: BaseException, sent: str | None) -> str | None:
+        """When `model` refused the effort it was sent and said which it takes (or that it takes none):
+        remember them, and the one to send instead ("": none; None: not that kind of refusal)."""
+        if not sent:
+            return None
+        takes = efforts_named(str(error), sent)
+        if takes:
+            self._efforts[model] = takes
+            return nearest_effort(sent, takes)
+        if effort_unsupported(str(error)):
+            self._efforts[model] = ()
+            return ""
+        return None
+
+    def _stream(self, client, model: str, messages: list[dict], tools, params: dict, rec: dict):
+        """The model's events. Refused before it answers, it is asked again once with an effort it takes,
+        if it named those (rec["effort"] says which went)."""
+        async def events():
+            msgs, prm = messages, params
+            for attempt in range(2):
+                sent = prm.get("reasoning_effort")
+                begun = False
+                try:
+                    async for event in client.stream(model, msgs, tools, prm):
+                        begun = True
+                        yield event
+                    return
+                except Exception as e:
+                    if begun or attempt == 1:
+                        raise
+                    instead = self._learned(model, e, sent)
+                    if instead is None or instead == sent:
+                        raise
+                    rec.setdefault("effort_asked", sent)
+                    rec["effort"] = instead
+                    prm = with_effort(prm, instead)
+        return events()
 
     def _client(self) -> httpx.AsyncClient:
         if self.http is None:

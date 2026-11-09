@@ -2161,7 +2161,7 @@ function settingsPanel() {
       customBox,
       !/^(anthropic\/|claude)/i.test(s.builder_model) ? h("div", { class: "row small" }, "How hard it thinks:",
         h("select", { onchange: (e) => save({ builder_reasoning: e.target.value }) },
-          ["low", "medium", "high"].map((v) => h("option", { value: v, selected: s.builder_reasoning === v }, { low: "Low (fast; recommended)", medium: "Medium", high: "High (slow)" }[v])))) : null,
+          ["low", "medium", "high"].map((v) => h("option", { value: v, selected: s.builder_reasoning === v }, { low: "Low (fastest)", medium: "Medium", high: "High (slower)" }[v])))) : null,
       nano?.base_url && /nano-gpt\.com/i.test(nano.base_url) && routable(s.builder_model) ? routeRow(s.builder_model) : null,
       nano?.base_url && /nano-gpt\.com/i.test(nano.base_url) && s.builder_small_model && s.builder_small_model !== s.builder_model && routable(s.builder_small_model)
         ? routeRow(s.builder_small_model) : null,

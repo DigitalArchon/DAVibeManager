@@ -178,13 +178,13 @@ async def test_requests_for_a_private_model_are_sealed_never_forwarded(private_g
     assert log[-1]["usage"] == {"input": 120, "output": 7, "cache_read": 0, "cache_write": 0}   # what the chat's cost counts
 
 
-async def test_private_models_are_asked_for_low_reasoning_never_none(private_gw):
+async def test_private_models_are_asked_for_the_chosen_reasoning_never_none(private_gw):
     g, fake, _, _ = private_gw
     async with httpx.AsyncClient(transport=httpx.AsyncHTTPTransport(uds=str(g.model_socket)), base_url="http://gw") as c:
         await c.post("/v1/messages", headers={"authorization": f"Bearer {g.token}"},
                      json={"model": "private/glm-5-3", "stream": True, "thinking": {"type": "disabled"},
                            "messages": [{"role": "user", "content": "hi"}]})
-    assert fake.calls[-1][3]["reasoning_effort"] == "low"     # for GLM, "none" means reasoning without limit
+    assert fake.calls[-1][3]["reasoning_effort"] == "high"    # for GLM, "none" means reasoning without limit
 
 
 async def test_progress_is_reported_while_the_model_reasons():
@@ -215,7 +215,7 @@ async def test_every_non_anthropic_model_is_translated_and_a_tee_model_checked_f
             msg = {"stream": True, "messages": [{"role": "user", "content": "hi"}]}
             r = await c.post("/v1/messages", headers=h, json={"model": "z-ai/glm-5.3", **msg})
             said = "".join(d["delta"].get("text", "") for n, d in parse(r.content) if n == "content_block_delta")
-            assert said == "Hi from GLM" and fake.calls[-1][3]["reasoning_effort"] == "low"
+            assert said == "Hi from GLM" and fake.calls[-1][3]["reasoning_effort"] == "high"
             r = await c.post("/v1/messages", headers=h, json={"model": "TEE/glm-5.3", **msg})
             assert r.status_code == 502 and "attestation refused" in r.text
             await c.post("/v1/messages", headers=h, json={"model": "anthropic/claude-opus-5.5", **msg})
@@ -449,6 +449,7 @@ async def test_a_reply_abandoned_midway_closes_the_models_stream():
 
 from contextlib import asynccontextmanager  # noqa: E402
 
+from davibemanager.llm import params as params_mod  # noqa: E402
 from davibemanager.llm.private_mode import PrivateModeError  # noqa: E402
 
 BASE = "https://nano-gpt.com/api/v1"
@@ -529,3 +530,99 @@ async def test_a_model_that_stops_partway_says_so_in_the_stream_by_its_name(tmp_
     error = [d for n, d in evs if n == "error"][0]["error"]
     assert error["message"] == "private/kimi-k3: the model stopped: context length exceeded"
     assert log[-1]["status"] == 502 and "context length exceeded" in log[-1]["error"]
+
+
+def test_the_nearest_effort_a_model_takes():
+    glm = ["low", "high", "max"]
+    assert [params_mod.nearest_effort(e, glm) for e in ("low", "medium", "high", "xhigh", "max")] == \
+        ["low", "high", "high", "max", "max"]
+    every = ["low", "medium", "high", "xhigh", "max"]
+    assert [params_mod.nearest_effort(e, every) for e in every] == every
+    assert params_mod.nearest_effort("max", ["minimal", "low", "medium", "high"]) == "high"
+    assert params_mod.nearest_effort("low", ["none", "high"]) == "high"           # never none: GLM reasons without limit
+    assert params_mod.nearest_effort("medium", None) == "medium"
+    kimi = ('Private Mode request failed (HTTP 400): {"error":{"message":"Kimi K3 supports thinking_effort values: '
+            'low, high, max (parameter=thinking_effort, value=medium)"}}')
+    deepseek = "DeepSeek V4.1 reasoning_effort must be low, high, xhigh, max, or an integer within [1, 100]"
+    assert params_mod.efforts_named(kimi, "medium") == ("low", "high", "max")
+    assert params_mod.efforts_named(deepseek, "medium") == ("low", "high", "xhigh", "max")
+    assert params_mod.efforts_named("HTTP 400: max_tokens is too high", "low") == ()
+    assert params_mod.efforts_named("reasoning effort is too high for this model", "max") == ()
+    assert params_mod.effort_unsupported("Unsupported parameter: 'reasoning_effort' is not supported with this model.")
+    assert not params_mod.effort_unsupported("reasoning_effort must be low, high, xhigh, max")
+
+
+async def test_each_model_is_sent_the_nearest_effort_it_takes(tmp_path):
+    """Measured live: private Kimi K3 refuses medium (HTTP 400, every request), and GLM 5.3 takes it and
+    reasons at its default, max. So medium goes as high, to a model that takes no medium."""
+    fake = FakePrivate()
+    takes = {"private/kimi-k3": params_mod.PRIVATE_EFFORTS, "z-ai/glm-5.3": ("low", "high", "max")}
+
+    async def efforts(model):
+        return takes.get(model)
+    models = ("z-ai/glm-5.3", "private/kimi-k3", "someone/unlisted")    # (a private main model: nothing in the clear)
+    async with translating(tmp_path, fake, models, reasoning="medium", efforts=efforts) as (g, log):
+        for model in models:
+            await _post(g, {**ASK, "model": model})
+    assert [c[0] for c in fake.calls] == list(models)
+    assert [c[3]["reasoning_effort"] for c in fake.calls] == ["high", "high", "medium"]
+    assert [(r["effort"], r.get("effort_asked")) for r in log] == [("high", "medium"), ("high", "medium"), ("medium", None)]
+
+
+class Picky(FakePrivate):
+    """Refuses any effort but those it names (as private DeepSeek V4.1 Flash does medium), or (`none`) any at all."""
+
+    def __init__(self, none=False):
+        super().__init__()
+        self.none = none
+
+    def stream(self, model, messages, tools=None, params=None):
+        effort = (params or {}).get("reasoning_effort")
+        if (self.none and effort) or (not self.none and effort not in ("low", "high", "xhigh", "max")):
+            self.calls.append((model, messages, tools, params))
+            said = "Unsupported parameter: 'reasoning_effort' is not supported with this model." if self.none \
+                else "DeepSeek V4.1 reasoning_effort must be low, high, xhigh, max, or an integer within [1, 100]"
+
+            async def refuse():
+                raise nanogpt_refused(400, said)
+                yield
+            return refuse()
+        return super().stream(model, messages, tools, params)
+
+
+async def test_a_model_that_refuses_an_effort_is_asked_again_with_one_it_names_and_from_then_on(tmp_path):
+    fake = Picky()
+    async with translating(tmp_path, fake, ("someone/deepseek",), reasoning="medium") as (g, log):
+        r = await _post(g, {**ASK, "model": "someone/deepseek"})
+        assert r.status_code == 200 and "".join(d["delta"].get("text", "") for n, d in parse(r.content)
+                                                if n == "content_block_delta") == "Hi from GLM"
+        await _post(g, {**ASK, "model": "someone/deepseek"})
+    assert [c[3]["reasoning_effort"] for c in fake.calls] == ["medium", "high", "high"]     # learned: refused once
+    assert (log[-1]["effort"], log[-1]["effort_asked"]) == ("high", "medium")
+
+
+async def test_a_model_that_takes_no_effort_is_asked_again_without_one_and_from_then_on(tmp_path):
+    fake = Picky(none=True)
+    async with translating(tmp_path, fake, ("someone/plain",)) as (g, log):
+        for _ in range(2):
+            assert (await _post(g, {**ASK, "model": "someone/plain"})).status_code == 200
+    assert len(fake.calls) == 3 and "reasoning_effort" not in fake.calls[-1][3]
+
+
+async def test_a_private_model_takes_the_private_efforts_not_its_tee_twins(tmp_path):
+    """NanoGPT lists medium for TEE/deepseek-v4.1-flash; the private build refuses it. Second opinions and
+    descriptions of pictures (Models.params) are held to the same."""
+    listing = {"data": [{"id": "TEE/deepseek-v4.1-flash", "capabilities": {"vision": True, "reasoning": True},
+                         "reasoning_efforts": ["none", "low", "medium", "high", "max"]},
+                        {"id": "z-ai/glm-5.3", "capabilities": {"reasoning": True}, "reasoning_efforts": ["low", "high", "max"]}]}
+    prov = Provider("NanoGPT", BASE)
+    cfg = Config(providers=[prov])
+    cfg.settings.generation = {"reasoning_effort": "medium"}
+    m = Models(cfg, save_config=lambda c: None, emit=lambda *a, **k: None, log=lambda *a, **k: None)
+    m.key = lambda p: "sk"
+    m.caps_http = httpx.AsyncClient(transport=httpx.MockTransport(lambda r: httpx.Response(200, json=listing)))
+    assert await m.efforts(prov, "private/deepseek-v4-1-flash") == ("low", "high", "max")
+    assert await m.efforts(prov, "z-ai/glm-5.3") == ("low", "high", "max")
+    assert await m.efforts(prov, "someone/unlisted") is None
+    assert m.params(prov, "private/deepseek-v4-1-flash")["reasoning_effort"] == "high"
+    assert m.params(prov, "TEE/deepseek-v4.1-flash")["reasoning_effort"] == "medium"

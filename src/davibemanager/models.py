@@ -211,6 +211,17 @@ class Models:
             await self.load_caps(prov)
         return bool((capabilities.lookup(self._caps.get(prov.name, {}), model) or {}).get("vision"))
 
+    async def efforts(self, prov: Provider, model: str) -> tuple[str, ...] | None:
+        """The reasoning efforts `model` takes: for a private model those every private model takes
+        (NanoGPT's listing of its TEE twin doesn't hold for it); else what the provider lists, its list
+        loaded first if it hasn't been. None when that isn't known: the effort is sent as it is."""
+        if is_private_mode(model):
+            return params_mod.PRIVATE_EFFORTS
+        if self.known_caps(prov) is None:
+            await self.load_caps(prov)
+        listed = (capabilities.lookup(self.known_caps(prov) or {}, model) or {}).get("efforts")
+        return tuple(listed) if listed else None
+
     def known_caps(self, prov: Provider) -> dict[str, dict] | None:
         """The provider's model list with capabilities and prices, once loaded (None: not yet)."""
         return self._caps.get(prov.name)
@@ -245,6 +256,8 @@ class Models:
 
     def params(self, prov: Provider, model: str) -> dict:
         caps = capabilities.lookup(self._caps.get(prov.name, {}), model)
+        if caps and is_private_mode(model):
+            caps = {**caps, "efforts": list(params_mod.PRIVATE_EFFORTS)}    # not its TEE twin's
         out = params_mod.for_model(self.cfg.settings.generation or {}, caps)
         out.update(routes_mod.body(self.route(prov, model)))
         for key in self._unsupported.get((prov.name, model), ()):
