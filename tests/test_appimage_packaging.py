@@ -89,6 +89,53 @@ def test_the_base_image_and_downloads_are_pinned():
         assert f'fetch "${name}_URL" "${name}_SHA256"' in BUILD
 
 
+# --- nothing of the build machine in the image
+
+def test_nothing_of_the_build_machine_gets_in():
+    for needed in ("-root-owned -no-xattrs", "--invalidation-mode unchecked-hash", "PYTHONHASHSEED=0",
+                   '-ffile-prefix-map=$W/=', "direct_url.json -delete", 'grep -rlaF "$W/AppDir" "$W/AppDir"'):
+        assert needed in BUILD, needed
+
+
+def test_bytecode_names_its_source_as_it_is_inside_the_image(tmp_path):
+    """compileall as build.sh runs it, on a folder laid out as the AppDir: each .pyc unchecked-hash, naming
+    /usr/python/lib/..., not the folder the build ran in (every one of 4,938 named /work/AppDir/... in
+    0.1.0b10)."""
+    command = next(line for line in commands(BUILD) if "-m compileall" in line)
+    # -B: its interpreter would otherwise write its own imports' bytecode first, dated, and compileall
+    # would leave those as they are
+    assert '"$PY" -B -m compileall' in command
+    folder = tmp_path / "AppDir" / "usr" / "python" / "lib" / "python3.12"
+    folder.mkdir(parents=True)
+    (folder / "mod.py").write_text("def f():\n    return 1\n")
+    subprocess.run(["bash", "-c", command], check=True,
+                   env={"PATH": os.environ.get("PATH", ""), "PY": sys.executable, "W": str(tmp_path)})
+    names = []
+    for pyc in tmp_path.rglob("*.pyc"):
+        data = pyc.read_bytes()
+        assert int.from_bytes(data[4:8], "little") == 1, pyc          # unchecked-hash
+        code = marshal.loads(data[16:])
+        names += [code.co_filename, code.co_consts[0].co_filename]
+    assert sorted(set(names)) == ["/usr/python/lib/python3.12/mod.py"]
+
+
+def test_console_scripts_that_name_the_build_python_are_left_out(tmp_path):
+    start = BUILD.index('for script in "$W"/AppDir/usr/python/bin/*; do')
+    loop = BUILD[start:BUILD.index("\ndone\n", start) + 6]
+    bin_dir = tmp_path / "AppDir" / "usr" / "python" / "bin"
+    bin_dir.mkdir(parents=True)
+    scripts = {"davibemanager": f"#!{tmp_path}/AppDir/usr/python/bin/python3\nfrom davibemanager.app import main\n",
+               "pydoc3.12": "#!/bin/sh\n'''exec' \"$(dirname -- \"$0\")/python3.12\"\n",
+               "python3.12": "\x7fELF\x02\x01\x01\0" + "\0" * 64}
+    for name, text in scripts.items():
+        (bin_dir / name).write_text(text, encoding="latin-1")
+    (bin_dir / "python3").symlink_to("python3.12")
+    subprocess.run(["bash", "-c", f"set -euo pipefail\n{loop}"], check=True,
+                   env={"PATH": os.environ.get("PATH", ""), "W": str(tmp_path)})
+    assert sorted(p.name for p in bin_dir.iterdir()) == ["pydoc3.12", "python3", "python3.12"]
+    assert 'exec "$HERE/usr/python/bin/python3" -I -m davibemanager' in APPRUN    # not the script that went
+
+
 def _lookup(*candidates):
     """host_ca_bundle, as the wrapper defines it, given `candidates`."""
     found = re.search(r"^host_ca_bundle\(\) \{\n.*?^\}\n", WRAPPER, re.S | re.M)
