@@ -32,7 +32,9 @@ command for your distribution, shown in full, run as administrator once you ente
 in your desktop's prompt (the app never sees it). You can also copy the command into a terminal.
 
 Paste your NanoGPT API key on the first screen and that's it: the key goes to your system's
-keyring (GNOME Keyring or KWallet), never into a file or the sandbox. The first start prepares
+keyring (GNOME Keyring or KWallet), never into a file or the sandbox. Without a secure keyring the
+app keeps no key at all, rather than one in a plain file, and says what to install; a key pasted
+with a space or a line break in it is refused, without being repeated back. The first start prepares
 the sandbox, which takes a few minutes. In Settings you can choose to have it start with your
 computer. With 4 GB of memory, set the sandbox to 2 GB and 2 CPUs (Settings → The sandbox).
 
@@ -40,7 +42,10 @@ The window opens at the size you last left it (and never larger than your screen
 buttons (**Try it first**, **Install**) stay in view while any of its card is. The window uses your
 system's WebKitGTK. Without it, or with no graphical display, DA Vibe Manager
 opens in your web browser instead and says what to install. You can also choose the browser for
-good under **Settings → This app** (it applies from the next start).
+good under **Settings → This app** (it applies from the next start). The browser is opened on a
+link that works once, for a couple of minutes, and only for you: what a browser is opened with can be
+seen by anyone else logged in to the computer, so the window's key is never in it. If you close the
+tab, open DA Vibe Manager again from its menu entry for a new one.
 
 ## Chats
 
@@ -60,8 +65,14 @@ Each chat starts with a choice, and keeps to it:
   computer** in My apps starts one.
 
 You can attach files and pictures to a message (📎, or drop them on the window): detailed
-instructions, or a picture of how something should look. Pictures go without their hidden details
-(where and when they were taken). While it builds, you can keep talking with it.
+instructions, or a picture of how something should look. A picture opens first so you can black out
+anything that shouldn't reach the AI (a name, an address, a key): drag over it, then **Attach**. The
+black replaces those pixels before the picture leaves the window. Pictures go without their hidden
+details (where and when they were taken). While it builds, you can keep talking with it.
+
+A link in a reply that isn't secure (plain `http://`, to anywhere but this computer or your own
+network) is marked **⚠ not secure**, and opening it asks first, naming the whole address: the page
+isn't encrypted, so anyone between you and the site can read it or change it on its way.
 
 Here's how a build goes:
 
@@ -144,6 +155,40 @@ since all of it would go along. Start a new chat for that. NanoGPT still sees ho
 Private GLM 5.3 can't see images, so private DeepSeek V4.1 Flash describes its screenshots for it,
 sealed the same way (about a tenth of a cent a picture). If you chose Private GLM 5.3 before
 0.1.0b9, nothing describes them yet: Settings says so, with a button to set it up.
+
+A TEE model (NanoGPT's `TEE/` ones) runs in a trusted execution environment, but isn't sealed: what
+goes to it passes NanoGPT's gateway in the clear. Before anything is sent to one, the app checks its
+enclave's attestation, and checks it again every 15 minutes (on a clock that counts while the computer
+sleeps):
+
+- the Intel TDX quote, read from its own signed bytes, must bind the enclave's signing key to a fresh
+  number of the app's;
+- the quote must verify up to Intel's root, through certificates allowed to sign others, and be
+  neither revoked nor a debug enclave, and Intel rates the machine's firmware;
+- NVIDIA's signed verdict on the GPUs must be for that number, and pass.
+
+Anything forged, revoked or made for another number is refused, and nothing is sent. What couldn't be
+checked (no GPU evidence offered, Intel's or NVIDIA's service out of reach, a rating below up to date)
+makes the attestation partial, and the app says so, once a model. Most of NanoGPT's TEE models are
+RedPill's gateway, which passes each request on to the model's host: its attestation is partial
+("the model's own enclave unchecked"), since it shows the gateway's enclave, not the model's.
+
+After each reply has reached the assistant, the app fetches the record NanoGPT keeps of it, signed by
+the attested key, and checks it is for the exact text that came back; where the gateway kept a signed
+receipt, that too, saying the model the reply came from was verified. **☰ → Sandbox activity** marks
+each such request: **TEE verified**; **TEE signed, text not compared** (NanoGPT rebuilds that model's
+replies); **TEE ⚠ reply not verified** (no record of it could be read, so nothing shows it came from
+the attested enclave); or **TEE ⚠ check failed**: the reply doesn't match its record. Then the app
+says so, and attests the model again before anything more goes to it. The check never holds up or
+changes what the assistant gets.
+
+What this doesn't prove: which software the enclave runs. No measurement of it is compared with a
+published one, so what the attestation shows is genuine, current hardware holding a live key, bound
+to the app's number, not what runs there. Nor what was sent: the record holds the request as NanoGPT
+forwarded it. And through NanoGPT, the receipt's keys aren't in the quote ("receipt keys not in the
+quote", the attestation says): the quote binds the key that signs each reply's record, while the
+receipt's own key is only published beside it, so the receipt's word that the model was verified rests
+on NanoGPT's relay. For a chat nobody else can read, use a private model.
 
 ## Which host runs the model
 
@@ -334,7 +379,8 @@ minutes: stop and say so (the default), use **Ubuntu's live archive**, or use **
 of the Ubuntu archive, for example one on your network (https, or http on your local network
 only). Either way apt checks every package against Ubuntu's signing key, but the versions are the
 current ones rather than the pinned ones; the Activity panel says when the sandbox was built that
-way.
+way. A user name and password written into the mirror's address go to your keyring, not the settings
+file, and are left out wherever the address is shown or logged.
 
 ### Removing it
 
@@ -422,6 +468,10 @@ itself.**
 - **Add-ons stay out of harm's way.** An add-on is never installed where things run by
   themselves (at login, in every shell, on D-Bus), on your PATH, where keys, passwords or browser
   profiles are, or into Podman's own settings.
+- **Its window is yours alone.** The window talks to the app through a server on this computer that
+  answers only requests carrying a key made for this start, and refuses the rest before reading
+  them. The key is never on a command line (where anyone else logged in could read it), and the
+  folders the app runs and listens in are yours alone: one someone else made first is never used.
 - **Your computers talk only to each other.** Sync goes straight between your computers through
   Tor, end to end, with no server in between. Each one's address lets in only the others in your
   group (Tor's client authorization), and each proves which computer it is before anything is
