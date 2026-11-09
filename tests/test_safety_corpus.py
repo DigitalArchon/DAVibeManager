@@ -295,3 +295,18 @@ def test_a_16_bit_greyscale_picture_keeps_its_greys():
     with Image.open(io.BytesIO(images.clean(_encoded(gradient, "PNG")).data)) as out:
         greys = {out.convert("L").getpixel((x, 0)) for x in range(256)}
     assert len(greys) > 200 and min(greys) == 0 and max(greys) == 255
+
+
+def test_a_multi_picture_jpeg_is_the_jpeg_it_starts_with():
+    # a phone's or a 3D camera's: Pillow's JPEG reader names it MPO
+    first, second = Image.new("RGB", (8, 8), (255, 0, 0)), Image.new("RGB", (8, 8), (0, 0, 255))
+    data, ext = images.clean(_encoded(first, "MPO", save_all=True, append_images=[second]))
+    with Image.open(io.BytesIO(data)) as out:
+        assert ext == "jpg" and out.format == "JPEG" and out.getpixel((0, 0))[0] > 200
+
+
+@pytest.mark.parametrize("head", [b"\x00\x00\x00\x18ftypheic\x00\x00\x00\x00mif1heic", b"\x00\x00\x00\x1cftypavif",
+                                  b"\x00\x00\x00\x0cJXL \r\n\x87\n"])
+def test_a_picture_pillow_cant_read_is_still_known_as_one(head):
+    # an iPhone's HEIC: never attached as a plain file, with where and when it was taken
+    assert images.is_image(head + b"\x00" * 64) and not images.is_image(b"plain text, not a picture")

@@ -34,8 +34,17 @@ class Cleaned(NamedTuple):
     ext: str
 
 
+# pictures Pillow can't read at all, by their first bytes: HEIF and AVIF (an iPhone's photos), JPEG XL
+_HEIF_BRANDS = (b"heic", b"heix", b"heim", b"heis", b"hevc", b"hevx", b"hevm", b"hevs", b"mif1", b"mif2", b"msf1",
+                b"avif", b"avis")
+_JXL = (b"\xff\x0a", b"\x00\x00\x00\x0cJXL \r\n\x87\n")
+
+
 def is_image(raw: bytes) -> bool:
-    """Whether this is a picture of any kind Pillow knows (whether or not it can be cleaned)."""
+    """Whether this is a picture of any kind Pillow knows (whether or not it can be cleaned), or one of
+    those it doesn't (HEIF, AVIF, JPEG XL): one that can't be cleaned of where and when it was taken."""
+    if raw[4:8] == b"ftyp" and raw[8:12] in _HEIF_BRANDS or raw.startswith(_JXL):
+        return True
     try:
         with Image.open(BytesIO(raw)) as im:
             return bool(im.format)
@@ -61,10 +70,11 @@ def clean(raw: bytes, convert: bool = False) -> Cleaned:
     formats = ("PNG", "JPEG", *(CONVERTED if convert else ()))
     try:
         with Image.open(BytesIO(raw), formats=formats) as im:
-            fmt = im.format
+            # a multi-picture JPEG (a phone's or a 3D camera's) is read by JPEG's reader: its first picture
+            fmt = "JPEG" if im.format == "MPO" else im.format
             if fmt not in formats:
                 raise ValueError(f"unsupported image format {fmt}")
-            im.seek(0)                                   # first frame only (APNG, GIF)
+            im.seek(0)                                   # first frame only (APNG, GIF, MPO)
             if max(im.size) > MAX_SIDE:
                 raise ValueError(f"image is {im.size[0]}x{im.size[1]}, over {MAX_SIDE}px")
             # Pillow itself refuses only past twice MAX_IMAGE_PIXELS (it warns in between)
