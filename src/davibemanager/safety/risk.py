@@ -17,13 +17,21 @@ _I = re.IGNORECASE
 # after an opening quote (only ever seen where the command hands the quoted text to a shell,
 # _REPARSES: elsewhere quoted text is blanked first); after `do`, `then` or `else`; after
 # `ssh [options] host`, or find's -exec. Then any prefixes that run the next word as the
-# command (sudo and its options, env, nohup, timeout 5, xargs...), and the command may be
-# named by its path (/bin/rm) or escaped (\rm).
+# command (sudo, pkexec or run0 and their options, env, a variable set for it, nohup, timeout 5,
+# systemd-run, xargs...), and the command may be named by its path (/bin/rm) or escaped (\rm).
 _SSH_HOST = r"\bssh\s+(?:-[46AaCfGgKkMNnqsTtVvXxYy]+\s+|-[BbcDEeFIiJLlmOoPpQRSWw]\s*\S+\s+)*[^\s-]\S*\s+"
-_PREFIX = (r"(?:(?:sudo|doas)\s+(?:-\S+(?:\s+(?!-)\S+)?\s+)*|(?:nohup|exec|command|builtin|time|nice|ionice|stdbuf)\s+(?:-\S+\s+)*"
-           r"|env\s+(?:-\S+\s+|\w+=\S*\s+)*|timeout\s+(?:-\S+\s+)*\S+\s+|xargs\s+(?:-\S+\s+)*)")
+# options, each perhaps with its argument (sudo -u root, nice -n 19, xargs -a list, timeout -s KILL,
+# systemd-run -p MemoryMax=1G --scope), which is never a prefix's own word nor a variable set for
+# the command (A=1 before the command, not before another option): a command has one reading, read
+# in linear time (`xargs -0 xargs -0 ...` isn't tried every way)
+_RUNS_NEXT = r"(?:sudo|doas|pkexec|run0|nohup|exec|time|nice|ionice|stdbuf|systemd-run|xargs|command|builtin|env|timeout)"
+_OPTS = r"(?:-\S+(?:\s+(?!-)(?!" + _RUNS_NEXT + r"\s)(?![A-Za-z_]\w*=\S*\s++(?!-))\S+)?\s+)*"
+_AS_ROOT = r"(?:sudo|doas|pkexec|run0)\s+" + _OPTS
+_PREFIX = (r"(?:" + _AS_ROOT + r"|(?:nohup|exec|time|nice|ionice|stdbuf|systemd-run|xargs)\s+" + _OPTS
+           + r"|command\s+(?:-p\s+)?|builtin\s+|env\s+" + _OPTS + r"(?:\w+=\S*\s+)*+|timeout\s+" + _OPTS + r"\S+\s+"
+           r"|(?:[A-Za-z_]\w*=\S*\s+)++)")
 CMD = (r"(?:^|[;&|(`{]\s*|[\"'](?=\S)|\$\(\s*|\b(?:do|then|else)\s+|" + _SSH_HOST + r"|\s-(?:exec|execdir|ok|okdir)\s+"
-       r"|\b(?:sudo|doas)\s+(?:-\S+(?:\s+(?!-)\S+)?\s+)*)" + _PREFIX + r"*(?:\\|(?:[^\s/]*+/)*+)")
+       r"|\b" + _AS_ROOT + r")" + _PREFIX + r"{0,16}(?:\\|(?:[^\s/]*+/)*+)")
 
 # Each entry: (pattern, reason). Patterns are matched against the whole command text.
 DISRUPTIVE: list[tuple[re.Pattern, str]] = [
@@ -39,7 +47,7 @@ DISRUPTIVE: list[tuple[re.Pattern, str]] = [
     # repository's work, settings, a session, every process
     (re.compile(r"\bfind\b[^;&|\n]*\s-(?:delete\b|(?:exec|execdir|ok|okdir)\s+(?:\S*/)?(?:rm|shred|unlink)\b)"),
      "find deleting what it finds"),
-    (re.compile(r"\bxargs\s+(-\S+\s+)*(\S*/)?(rm|shred|unlink)\b"), "deleting a list of files"),
+    (re.compile(r"\bxargs\s+" + _OPTS + r"(?:\S*/)?(?:rm|shred|unlink)\b"), "deleting a list of files"),
     (re.compile(r"\brsync\b[^;&|\n]*\s--(?:delete|remove-source-files)"), "rsync deleting files"),
     (re.compile(r"\bgit\b[^;&|\n]*\s(?:reset\s+--hard|clean\s+-[a-z]*f)"), "a repository's changes discarded"),
     (re.compile(r"\bdconf\s+reset\s+-f\b"), "desktop settings reset"),
@@ -50,6 +58,9 @@ DISRUPTIVE: list[tuple[re.Pattern, str]] = [
     (re.compile(r">\s*/dev/(sd|nvme|vd|hd|mmcblk)"), "write to block device"),
     (re.compile(CMD + r"(shutdown|reboot|poweroff|halt)\b", re.M), "shutdown/reboot"),
     (re.compile(CMD + r"(telinit|init)\s+[06]\b", re.M), "runlevel change"),
+    # the same asked of systemd over D-Bus (logind's Reboot, PowerOff...)
+    (re.compile(r"\b(?:busctl|dbus-send|gdbus|qdbus)\b[^;&|\n]*[\s.](?:Reboot|PowerOff|Halt|KExec|SoftReboot)\w*\b"),
+     "shutdown/reboot"),
     (re.compile(r"\bsystemctl\s+(\S+\s+)*(stop|restart|disable|mask|kill|isolate|reboot|poweroff|halt)\b"), "service stop/restart"),
     (re.compile(r"\bservice\s+\S+\s+(stop|restart)\b"), "service stop/restart"),
     (re.compile(r"\b(kill\s+-9|killall|pkill)\b"), "process kill"),
@@ -65,11 +76,11 @@ DISRUPTIVE: list[tuple[re.Pattern, str]] = [
     (re.compile(r"\bdocker\s+(system\s+prune|volume\s+(rm|prune)|rm\s+-f)\b"), "docker destructive"),
     (re.compile(r"\bkubectl\s+delete\b"), "kubernetes delete"),
     # code fetched from the network or decoded at runtime and executed: unreviewable
-    (re.compile(r"\b(curl|wget|fetch|Invoke-WebRequest|iwr)\b[^|;]*\|\s*" + _PREFIX + r"*(\S*/)?(ba|z|k|da|)sh\b", _I),
+    (re.compile(r"\b(curl|wget|fetch|Invoke-WebRequest|iwr)\b[^|;]*\|\s*" + _PREFIX + r"{0,16}(\S*/)?(ba|z|k|da|)sh\b", _I),
      "pipe to shell"),
     (re.compile(r"\b(ba|z|k|da|)sh\s+(-c\s+)?[\"']?\s*\$\((curl|wget)\b", _I), "shell runs downloaded script"),
     (re.compile(r"\b(ba|z|k|da|)sh\s+<\s*\((curl|wget)\b", _I), "shell runs downloaded script"),
-    (re.compile(r"\bbase64\s+(-d|--decode)\b[^|;]*\|\s*" + _PREFIX + r"*(\S*/)?(ba|z|k|da|)sh\b", _I),
+    (re.compile(r"\bbase64\s+(-d|--decode)\b[^|;]*\|\s*" + _PREFIX + r"{0,16}(\S*/)?(ba|z|k|da|)sh\b", _I),
      "decoded payload piped to shell"),
     (re.compile(r"\bshred\b"), "secure erase"),
     # a function piping itself to itself: `:(){ :|:& };:`, `bomb(){ bomb|bomb& }`. The name is

@@ -60,6 +60,17 @@ from davibemanager.safety.sensitive import sensitive
     ("sudo apt -y install mpv", "modifying"), ("flatpak --user install flathub io.mpv.Mpv", "modifying"),
     ("docker exec web apt-get install -y curl", "modifying"), ("sudo DEBIAN_FRONTEND=noninteractive apt-get install -y x", "modifying"),
     ("nice -n 19 apt-get upgrade", "modifying"),
+    # sudo's relatives, systemd's ways to run a command or to reboot, options that take an argument,
+    # a variable set for the command
+    ("pkexec reboot", "disruptive"), ("pkexec --user root rm -rf /srv/x", "disruptive"), ("run0 reboot", "disruptive"),
+    ("systemd-run --user reboot", "disruptive"), ("systemd-run -p MemoryMax=1G --scope shutdown now", "disruptive"),
+    ("busctl call org.freedesktop.login1 /org/freedesktop/login1 org.freedesktop.login1.Manager Reboot b false", "disruptive"),
+    ("dbus-send --system --print-reply --dest=org.freedesktop.login1 /org/freedesktop/login1 "
+     "org.freedesktop.login1.Manager.PowerOff boolean:true", "disruptive"),
+    ("gdbus call --system --dest org.freedesktop.login1 --object-path /org/freedesktop/login1 "
+     "--method org.freedesktop.login1.Manager.Reboot false", "disruptive"),
+    ("xargs -a list rm", "disruptive"), ("xargs --arg-file=list rm", "disruptive"), ("xargs -I {} rm {} < list", "disruptive"),
+    ("timeout -s KILL 5 reboot", "disruptive"), ("FOO=1 rm /etc/x", "modifying"), ("LC_ALL=C reboot", "disruptive"),
 ])
 def test_commands_are_labelled_at_least(command, level):
     assert LEVELS.index(classify(command)[0]) >= LEVELS.index(level), classify(command)
@@ -76,6 +87,9 @@ def test_commands_are_labelled_at_least(command, level):
     'which mpv && (dpkg -l mpv | tail -1 || flatpak list | grep -i mpv || echo "not a flatpak/snap install")',
     "apt list --installed | grep -c install", "echo 'apt install x'", "grep unlink src/x.c", "man unlink",
     "git status", "git diff --stat", "rsync --version", "flatpak list --all", "find . -name x -print",
+    "command -v reboot", "busctl introspect org.freedesktop.login1 /org/freedesktop/login1 | grep Reboot",
+    "busctl get-property org.freedesktop.login1 /org/freedesktop/login1 org.freedesktop.login1.Manager CanReboot",
+    "xargs -a list echo", "FOO=1 ls", "nice -n 19 ls", "sudo -u postgres psql -c 'select 1'",
 ])
 def test_ordinary_commands_stay_read_only(command):
     assert classify(command) == ("read_only", [])
@@ -151,6 +165,19 @@ def test_listing_forms_are_read_only(cmd):
 ])
 def test_changing_forms_still_raise(cmd, level):
     assert classify(cmd)[0] == level
+
+
+@pytest.mark.parametrize("command", [
+    "env " + "A=1 " * 4000 + "ls", "sudo " * 2000 + "ls", "xargs -0 " * 1500 + "ls", "sudo -u sudo " * 1500 + "ls",
+    "sudo -u x " * 1500 + "ls", "timeout 5 " * 2000 + "ls", "A=1 " * 5000 + "ls", "sudo -E A=1 " * 1500 + "ls",
+    "env -i A=1 " * 2000 + "ls",
+])
+def test_a_long_chain_of_prefixes_is_read_at_once(command):
+    # each word after an option is its argument or the next command, never both ways: tried every
+    # way, a line like these took from seconds to forever
+    started = time.monotonic()
+    classify(command)
+    assert time.monotonic() - started < 5
 
 
 @pytest.mark.parametrize("text,secret", [
