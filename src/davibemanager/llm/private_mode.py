@@ -16,7 +16,8 @@ the source; port changes there first), after SealedLore's providers/private_mode
    bundle through NanoGPT's relay and checks it against the hardware vendor's roots (AMD SEV-SNP
    or Intel TDX) and Sigstore's record of the router release. The report binds the enclave's
    HPKE key. The latest release is looked up from Tinfoil's GitHub; an older one is reported,
-   not refused, because rollouts lag.
+   not refused, because rollouts lag. Every fetch the SDK makes follows a redirect only to https,
+   and never from the internet into this computer or its network (llm/sdk_guard.py).
 2. **Preflight**: NanoGPT checks balance, reserves a charge and issues a cache scope. We send its
    sha256 as NanoGPT requires, but the sealed body carries **our own** random cache secret, so
    no one else (NanoGPT included) can probe our prompt cache.
@@ -54,7 +55,8 @@ from urllib.parse import urlparse
 import httpx
 from openai.types.chat import ChatCompletionChunk
 
-from ..netpolicy import check_url
+from ..netpolicy import check_url, is_local_host
+from . import sdk_guard
 from .capabilities import norm_id
 from .client import StreamAccumulator, is_private_mode
 from .dcap import since_boot
@@ -170,6 +172,11 @@ def tinfoil_verify(relay: str, cache_secret: str) -> Verified:
     """Attest Tinfoil's router through NanoGPT's relay. Blocking network I/O: run in a thread."""
     from tinfoil import SecureClient
     from tinfoil.github import fetch_latest_release
+
+    # The SDK fetches with bare requests, which follows a redirect anywhere, plain http included:
+    # its every fetch goes through a session that refuses one off https, or from the internet into
+    # this computer or its network (llm/sdk_guard.py), before anything is fetched.
+    sdk_guard.guard(is_local_host)
 
     # The cache secret is passed explicitly, or the SDK would create one under ~/.tinfoil;
     # this client only verifies, it never sends a request.
