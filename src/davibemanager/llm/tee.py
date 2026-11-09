@@ -491,7 +491,9 @@ class TeeClient:
             raise TeeRefused(f"{self.model}'s instance {name} signed unreadable evidence") from exc
         if attested.get("nonce") != nonce:
             raise TeeRefused(f"{self.model}'s instance {name} didn't sign our nonce")
-        if base64.b64decode(evidence.get("tdx_quote") or "") != raw:
+        # the signed copy of the quote: "quote" since Chutes renamed it (seen Nov 8 2026), "tdx_quote" before
+        signed_quote = evidence.get("quote") or evidence.get("tdx_quote") or ""
+        if base64.b64decode(signed_quote) != raw:
             raise TeeRefused(f"{self.model}'s instance {name} signed a different quote")
         check = _Checks()
         self._check_quote(raw, check)

@@ -473,6 +473,7 @@ class InstanceEvidence:
         signed_nonce: str | None = None,
         other_quote: bool = False,
         failed: tuple = (),
+        quote_key: str = "tdx_quote",
     ) -> dict:
         import hashlib
 
@@ -491,7 +492,7 @@ class InstanceEvidence:
                 {
                     "nonce": signed_nonce or nonce,
                     "evidence": {
-                        "tdx_quote": base64.b64encode(signed_quote).decode(),
+                        quote_key: base64.b64encode(signed_quote).decode(),
                         "nvtrust_evidence": json.dumps(gpu),
                     },
                 }
@@ -568,6 +569,16 @@ def test_every_instance_bound_and_signed_is_fully_attested(instances):
 def test_an_instance_that_doesnt_hold_refuses_them_all(instances, shape, refusal):
     with pytest.raises(TeeRefused, match=refusal):
         shaped(lambda nonce: (200, instances.body(nonce, **shape))).attest()
+
+
+def test_the_signed_quote_is_read_under_its_name_now_and_before(instances):
+    """Chutes renamed the signed copy of the quote tdx_quote -> quote (Nov 2026): either is read, and
+    either must be exactly the quote the instance presented."""
+    assert shaped(lambda nonce: (200, instances.body(nonce, quote_key="quote"))).attest().level == "full"
+    with pytest.raises(TeeRefused, match="signed a different quote"):
+        shaped(lambda nonce: (200, instances.body(nonce, quote_key="quote", other_quote=True))).attest()
+    with pytest.raises(TeeRefused, match="signed a different quote"):
+        shaped(lambda nonce: (200, instances.body(nonce, quote_key="neither"))).attest()
 
 
 def test_an_instance_signed_by_another_key_is_refused(instances):
