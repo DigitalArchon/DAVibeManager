@@ -3,8 +3,11 @@ means a different image (its tag is a hash of these, the Containerfile and the e
 
 # Ubuntu 24.04 base image, by digest (the same one DA Toolkit's AppImage is built on)
 BASE_IMAGE = "docker.io/library/ubuntu:24.04@sha256:008173c23f95b170204355c12626cb5a965d779a7e1283b09e9cffbb1bf33ca3"
-# the image's own packages come from the Ubuntu archive as it was at this moment
-APT_SNAPSHOT = "20260930T000000Z"
+# the image's own packages come from the Ubuntu archive as it was at this moment: after the
+# ca-certificates release that distrusts emSign ECC Root CA - G3 (20260816ubuntu0.24.04.1, whose eMudhra
+# intermediates had recoverable keys, Oct 2026), so nothing the assistant fetches over https in the sandbox
+# trusts that root; the same moment the AppImage's builder took for it (packaging/appimage/pins.sh)
+APT_SNAPSHOT = "20261022T000000Z"
 
 # appimagetool 1.9.1 (AppImage/appimagetool releases; digest as GitHub lists it)
 APPIMAGETOOL_URL = "https://github.com/AppImage/appimagetool/releases/download/1.9.1/appimagetool-x86_64.AppImage"

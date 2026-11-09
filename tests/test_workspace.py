@@ -396,6 +396,17 @@ def test_the_image_retries_what_apt_doesnt_and_keeps_its_downloads():
     assert podman.SNAPSHOT_URI == f"https://snapshot.ubuntu.com/ubuntu/{pins.APT_SNAPSHOT}/"
 
 
+def test_the_sandboxs_packages_are_from_after_the_emudhra_root_was_distrusted():
+    """Its ca-certificates is the archive's at the snapshot's moment: one before 20260816ubuntu0.24.04.1 (Oct
+    2026) still trusts emSign ECC Root CA - G3, whose eMudhra intermediates had recoverable keys, for all the
+    assistant fetches over https in the sandbox. Never older than the AppImage builder's, which moved for it."""
+    import re
+    from pathlib import Path
+    builder = re.search(r'^APT_SNAPSHOT="(\d{8}T\d{6}Z)"', (Path(__file__).resolve().parents[1] / "packaging/appimage/pins.sh")
+                        .read_text(), re.M).group(1)
+    assert re.fullmatch(r"\d{8}T\d{6}Z", pins.APT_SNAPSHOT) and pins.APT_SNAPSHOT >= builder >= "20261022T000000Z"
+
+
 async def test_the_build_mounts_its_download_cache_and_names_its_source(no_real_podman, monkeypatch, tmp_path):
     async def missing(tag):
         return False
