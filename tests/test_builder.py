@@ -1090,3 +1090,31 @@ def said(text):
         await c.queue.put(AssistantMessage([TextBlock(text)], "m"))
         await c.queue.put(result())
     return script
+
+
+async def test_claude_code_is_told_where_to_compact_and_a_change_restarts_it(builder_env):
+    from davibemanager.engine import UserError
+    engine, fake, events, clients = builder_env
+    assert engine.cfg.settings.builder_context == 200_000
+    engine._script = said("Hello.")
+    engine.send("Hi")
+    await wait_for(lambda: len(engine.conv.chat) == 2, "the answer")
+    assert clients[-1].options.env["CLAUDE_CODE_MAX_CONTEXT_TOKENS"] == "200000"
+    for wrong in (300_000, "1M", True, None):
+        with pytest.raises(UserError, match="compacted is one of"):
+            engine.save_settings({"builder_context": wrong})
+    assert engine.cfg.settings.builder_context == 200_000
+    first = engine.builder
+    engine.save_settings({"builder_context": 1_000_000})
+    engine.send("Again")
+    await wait_for(lambda: len(engine.conv.chat) == 4, "the second answer")
+    assert engine.builder is not first
+    assert clients[-1].options.env["CLAUDE_CODE_MAX_CONTEXT_TOKENS"] == "1000000"
+
+
+def test_where_the_assistant_compacts_is_200k_unless_chosen_and_read_back():
+    from davibemanager import config
+    assert config.Settings().builder_context == 200_000
+    assert config.from_dict({"settings": {"builder_context": 1_000_000}}).settings.builder_context == 1_000_000
+    for wrong in (123, "1M", True, 2_000_000):
+        assert config.from_dict({"settings": {"builder_context": wrong}}).settings.builder_context == 200_000

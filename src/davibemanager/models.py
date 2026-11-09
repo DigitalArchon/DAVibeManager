@@ -221,7 +221,7 @@ class Models:
         for m in self._models[provider_name]:
             caps = capabilities.lookup(self._caps.get(prov.name, {}), m) or {}
             out.append({"id": m, "tier": detect_tier(m, prov.base_url, prov.tier_overrides),
-                        "reasoning": caps.get("reasoning", False)})
+                        "reasoning": caps.get("reasoning", False), "context": caps.get("context")})
         return out
 
     async def _load_caps(self, prov: Provider) -> bool:

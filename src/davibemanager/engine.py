@@ -577,6 +577,13 @@ class Engine:
             if data["builder_reasoning"] not in ("low", "medium", "high"):
                 raise UserError("Reasoning is low, medium or high.")
             s.builder_reasoning = data["builder_reasoning"]
+        if "builder_context" in data:
+            if data["builder_context"] not in config_mod.CONTEXTS or isinstance(data["builder_context"], bool):
+                raise UserError(f"Where the conversation is compacted is one of "
+                                f"{', '.join(map(str, config_mod.CONTEXTS))} tokens.")
+            if data["builder_context"] != s.builder_context:
+                self._builder_stale = True        # Claude Code is told at its start
+            s.builder_context = data["builder_context"]
         if "web_search" in data:
             s.web_search = bool(data["web_search"])
         if "search_zero_retention" in data:
@@ -1276,6 +1283,9 @@ class Engine:
                 "ANTHROPIC_DEFAULT_OPUS_MODEL": model, "ANTHROPIC_DEFAULT_SONNET_MODEL": model,
                 "ANTHROPIC_DEFAULT_HAIKU_MODEL": small, "ANTHROPIC_SMALL_FAST_MODEL": small,
                 "CLAUDE_CODE_SUBAGENT_MODEL": model, "CLAUDE_AGENT_SDK_CLIENT_APP": "davibemanager",
+                # where it compacts the conversation: for model names it doesn't know (these), it would
+                # assume 200K, and these hold 1M
+                "CLAUDE_CODE_MAX_CONTEXT_TOKENS": str(self.cfg.settings.builder_context),
                 # the host tools wait for the user; Claude Code must outwait them
                 "MCP_TOOL_TIMEOUT": str((WAIT_FOR_USER + 120) * 1000)}
 

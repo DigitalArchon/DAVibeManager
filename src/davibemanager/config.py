@@ -30,6 +30,10 @@ APP_ID = "davibemanager"
 # GLM 5.3 can't see images, GLM 5.3 Flash can and is fast
 DEFAULT_MODEL = "z-ai/glm-5.3"
 DEFAULT_FAST_MODEL = "z-ai/glm-5.3-flash"
+# where the assistant's Claude Code compacts the conversation (summarises it, and goes on): it's told
+# (CLAUDE_CODE_MAX_CONTEXT_TOKENS), as for a model name it doesn't know it assumes 200K. Settings
+# offers these; the usual models hold 1M
+CONTEXTS = (200_000, 400_000, 1_000_000)
 PRIVATE_MODEL = "private/glm-5-3"          # NanoGPT Private Mode: end-to-end encrypted (paid)
 CLAUDE_MODEL = "anthropic/claude-opus-5.5"
 # how often an app's official source is asked for new releases (each app can choose its own)
@@ -121,6 +125,9 @@ class Settings:
     # default, max, when sent one). None is called recommended: for building, it's up to the user.
     # Never "none": with thinking off GLM reasons even more (into its answer)
     builder_reasoning: str = "high"
+    # the conversation's size, in tokens, where the assistant's Claude Code compacts it (CONTEXTS):
+    # every request sends the whole conversation, so a bigger one costs more each time
+    builder_context: int = CONTEXTS[0]
     # which of NanoGPT's hosts runs a model, by model id (llm/routes.py): {"priority": "speed" |
     # "latency" | "throughput" | "price" | "host", "fp8": bool, "host": id}. None for a model means
     # NanoGPT's own choice (on a subscription, included). Any route is paid per use
@@ -227,6 +234,8 @@ def from_dict(data: dict) -> Config:
     if settings.get("check_updates") is False and "check_every" not in settings:
         settings["check_every"] = "manual"      # "don't look for new versions", from before each app chose
     cfg.settings = _build(Settings, settings)
+    if cfg.settings.builder_context not in CONTEXTS or isinstance(cfg.settings.builder_context, bool):
+        cfg.settings.builder_context = CONTEXTS[0]      # a hand-edited size Settings doesn't offer
     apply_search_default(cfg.settings)
     return cfg
 

@@ -148,6 +148,12 @@ what they'd cost without one).
 The assistant is Claude Code, on a NanoGPT model: GLM 5.3 by default (included in a NanoGPT
 subscription), or private GLM 5.3, Claude Opus 5.5 or any other in Settings.
 
+When a conversation grows long, the assistant summarises it and goes on. **Settings → The
+assistant → Compact the conversation at** sets how long: 200K tokens by default, or 400K or 1M (the
+usual models hold 1M). Every message sends the whole conversation so far, so a bigger size remembers
+more but costs more each time on a model paid per use, and is slower. Settings warns when a model
+holds less than the size chosen. A change applies from the chat's next message.
+
 With a private model, the chat is sealed end to end: on this computer, to an enclave whose
 attestation has been checked, so NanoGPT passes it on without being able to read it. Everything of
 the chat goes that way (its quick tasks and pictures too, and second opinions: the reviewer is private

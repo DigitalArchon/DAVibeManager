@@ -66,3 +66,43 @@ def test_only_this_users_launches_bring_the_window_up(monkeypatch, tmp_path):
         c.sendall(b"show\n")
     assert not shown.wait(0.5)
     assert real(socket.socketpair()[0]) == os.getuid()
+
+
+def test_an_appindicator_counts_only_where_something_shows_it(monkeypatch):
+    """Stock GNOME has AppIndicator's library but nothing that shows one: closing the window would hide
+    it to an icon no one can see."""
+    import sys
+    import types
+    made = []
+    module = types.SimpleNamespace(Indicator=types.SimpleNamespace(new=lambda *a: made.append(a)))
+    monkeypatch.setitem(sys.modules, "gi.repository.FakeIndicator3", module)
+    gi = types.SimpleNamespace(require_version=lambda *a: None)
+    monkeypatch.setitem(sys.modules, "gi", gi)
+    monkeypatch.setattr(tray, "_tray_host", lambda: False)
+    t = tray.Tray.__new__(tray.Tray)
+    t.kind, t._icon = "", None
+    assert t._indicator("FakeIndicator3", "ayatana") is False and not made and t.kind == ""
+
+
+def test_a_notification_names_the_apps_own_desktop_entry(monkeypatch):
+    import sys
+    import types
+    hints, shown = {}, []
+
+    class Notification:
+        @staticmethod
+        def new(title, body, icon):
+            return Notification()
+
+        def set_hint(self, key, value):
+            hints[key] = value
+
+        def show(self):
+            shown.append(True)
+            return True
+    notify = types.SimpleNamespace(is_initted=lambda: True, init=lambda name: None, Notification=Notification)
+    glib = types.SimpleNamespace(get_prgname=lambda: "davibemanager", Variant=lambda kind, v: (kind, v))
+    monkeypatch.setitem(sys.modules, "gi", types.SimpleNamespace(require_version=lambda *a: None))
+    monkeypatch.setitem(sys.modules, "gi.repository", types.SimpleNamespace(GLib=glib, Notify=notify))
+    assert tray.notify("Built", "Ready") is True and shown
+    assert hints["desktop-entry"] == ("s", "davibemanager")

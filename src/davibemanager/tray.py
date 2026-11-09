@@ -3,8 +3,10 @@
 The icon is an XApp StatusIcon where the desktop has XApp (Cinnamon, MATE, Xfce on Mint: a left
 click opens the window), otherwise an Ayatana AppIndicator (a menu, as on GNOME with the
 AppIndicator extension, KDE and most others), or the original AppIndicator with the same API (what
-Arch and CachyOS ship). With none, there is no tray and closing the window quits the app, as any
-other app.
+Arch and CachyOS ship). An AppIndicator counts only where something shows one (a
+StatusNotifierWatcher on the session bus: not stock GNOME, without the AppIndicator extension), or
+closing the window would hide it to an icon no one can see. With none, there is no tray and closing
+the window quits the app, as any other app.
 
 A second launch (from the menu, or autostart) finds the first through an abstract Unix socket
 named for this user and asks it to show its window, then exits. Anyone on this computer can take an
@@ -82,6 +84,16 @@ def claim_single_instance(on_show: Callable[[], None]) -> bool:
     return True
 
 
+def _tray_host() -> bool:
+    """Whether something on the desktop shows AppIndicators (a StatusNotifierWatcher on the session bus)."""
+    from gi.repository import Gio, GLib
+    bus = Gio.bus_get_sync(Gio.BusType.SESSION, None)
+    reply = bus.call_sync("org.freedesktop.DBus", "/org/freedesktop/DBus", "org.freedesktop.DBus", "NameHasOwner",
+                          GLib.Variant("(s)", ("org.kde.StatusNotifierWatcher",)), GLib.VariantType("(b)"),
+                          Gio.DBusCallFlags.NONE, 1000, None)
+    return bool(reply.unpack()[0])
+
+
 class Tray:
     """A tray icon with Open / New chat / Quit. All callbacks run on the GTK main thread."""
 
@@ -147,6 +159,8 @@ class Tray:
         import gi
         gi.require_version(module, "0.1")
         AI = importlib.import_module(f"gi.repository.{module}")
+        if not _tray_host():
+            return False
         ind = AI.Indicator.new("davibemanager", str(ICON), AI.IndicatorCategory.APPLICATION_STATUS)
         ind.set_title("DA Vibe Manager")
         menu = self._menu()
@@ -162,17 +176,21 @@ class Tray:
             self._icon.set_tooltip_text("DA Vibe Manager: waiting for you" if on else "DA Vibe Manager")
 
 
-def notify(title: str, body: str) -> None:
-    """A desktop notification (libnotify), or nothing if there is no notification service."""
+def notify(title: str, body: str) -> bool:
+    """A desktop notification (libnotify): whether it was shown (not when there's no notification service)."""
     try:
         import gi
         gi.require_version("Notify", "0.7")
-        from gi.repository import Notify
+        from gi.repository import GLib, Notify
         if not Notify.is_initted():
             Notify.init("DA Vibe Manager")
-        Notify.Notification.new(title, body, str(ICON)).show()
+        n = Notify.Notification.new(title, body, str(ICON))
+        # our own desktop entry (the window's): libnotify would name the default GApplication's instead,
+        # and pywebview's has no id, which makes a hint of nothing and the notification fail
+        n.set_hint("desktop-entry", GLib.Variant("s", GLib.get_prgname() or "davibemanager"))
+        return bool(n.show())
     except Exception:  # noqa: BLE001 - a missed notification is no reason to interrupt anything
-        pass
+        return False
 
 
 AUTOSTART = """[Desktop Entry]

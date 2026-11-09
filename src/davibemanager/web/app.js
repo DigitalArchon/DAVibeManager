@@ -2270,6 +2270,27 @@ function aboutSettings(s, save) {
     part("hardware", "Your hardware", "Processor, memory and graphics."));
 }
 
+// where the assistant's Claude Code compacts the conversation (config.CONTEXTS), and a model of its
+// that holds less than that, once the provider's list says
+const CONTEXTS = [[200000, "200K"], [400000, "400K"], [1000000, "1M"]];
+function contextRow(s, nano, save) {
+  const warn = h("div", { class: "warnbox small hidden" });
+  const used = [s.builder_model, s.builder_small_model].filter(Boolean);
+  if (nano?.base_url) api("GET", `/api/models?provider=${encodeURIComponent(nano.name)}`).then((r) => {
+    const least = (r.models || []).filter((m) => used.includes(m.id) && m.context).reduce((n, m) => Math.min(n, m.context), Infinity);
+    if (least < s.builder_context) {
+      warn.textContent = `${least < 1e6 ? Math.round(least / 1000) + "K" : "1M"} is all this model holds: its requests would fail before the conversation is compacted. Choose a smaller size.`;
+      warn.classList.remove("hidden");
+    }
+  }).catch(() => {});
+  return h("div", {},
+    h("div", { class: "row small" }, "Compact the conversation at:",
+      h("select", { onchange: (e) => save({ builder_context: Number(e.target.value) }, "Saved: the assistant compacts there from its next message.") },
+        CONTEXTS.map(([v, l]) => h("option", { value: String(v), selected: s.builder_context === v }, l + " tokens")))),
+    h("div", { class: "small muted" }, "When a conversation grows this long, the assistant summarises it and goes on. Every message sends it the whole conversation so far, so a bigger size remembers more but costs more each time, on a model paid per use, and is slower."),
+    warn);
+}
+
 function settingsPanel() {
   const st = S.state, s = st.config.settings;
   const save = (body, msg = "Saved.") => guarded(async () => { await api("POST", "/api/settings", body); toast(msg, "ok", 2000); });
@@ -2335,6 +2356,7 @@ function settingsPanel() {
       !/^(anthropic\/|claude)/i.test(s.builder_model) ? h("div", { class: "row small" }, "How hard it thinks:",
         h("select", { onchange: (e) => save({ builder_reasoning: e.target.value }) },
           ["low", "medium", "high"].map((v) => h("option", { value: v, selected: s.builder_reasoning === v }, { low: "Low (fastest)", medium: "Medium", high: "High (slower)" }[v])))) : null,
+      contextRow(s, nano, save),
       nano?.base_url && /nano-gpt\.com/i.test(nano.base_url) && routable(s.builder_model) ? routeRow(s.builder_model) : null,
       nano?.base_url && /nano-gpt\.com/i.test(nano.base_url) && s.builder_small_model && s.builder_small_model !== s.builder_model && routable(s.builder_small_model)
         ? routeRow(s.builder_small_model) : null,
