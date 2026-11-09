@@ -80,6 +80,23 @@ def test_a_relock_keeps_what_is_pinned_unless_asked_to_upgrade():
     assert '-e UPGRADE="${UPGRADE:-0}"' in WRAPPER
 
 
+def test_the_lock_meets_every_floor_pyproject_sets():
+    """A relock keeps what the lock already pins, so a floor added for an advisory (certifi's root, Brotli's
+    decoder, pyasn1's and dnspython's denials of service) is only as good as the relock that followed it."""
+    import tomllib
+
+    def version(text):
+        return tuple(int(part) for part in re.findall(r"\d+", text))
+    deps = tomllib.loads((ROOT / "pyproject.toml").read_text())["project"]["dependencies"]
+    floors = [re.match(r"([A-Za-z0-9_.-]+)>=([0-9.]+)$", d).groups() for d in deps if re.match(r"[\w.-]+>=[\d.]+$", d)]
+    assert ("pyasn1", "0.6.5") in floors and ("dnspython", "2.9.0") in floors
+    pins = {re.sub(r"[-_.]+", "-", n).lower(): v for n, v in
+            re.findall(r"^([A-Za-z0-9_.-]+)==([^\s\\]+)", (PACKAGING / "requirements.lock").read_text(), re.M)}
+    for name, floor in floors:
+        locked = pins[re.sub(r"[-_.]+", "-", name).lower()]
+        assert version(locked) >= version(floor), f"{name}=={locked}"
+
+
 def test_the_base_image_and_downloads_are_pinned():
     pins = (PACKAGING / "pins.sh").read_text()
     assert re.search(r'BASE_IMAGE="[^"]+@sha256:[0-9a-f]{64}"', pins)
