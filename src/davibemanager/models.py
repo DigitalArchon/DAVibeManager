@@ -110,9 +110,12 @@ class Models:
             raise UserError(f"{e}. Unlock your keyring (GNOME Keyring or KWallet) and try again: a password in an "
                             "address is kept there, never in the settings file.") from None
         if original_name and original_name != name and old:
-            key = creds.get_secret("provider", original_name)
-            if key and not api_key:
-                creds.set_secret("provider", name, key)
+            try:
+                key = creds.get_secret("provider", original_name)
+                if key and not api_key:
+                    creds.set_secret("provider", name, key)
+            except creds.KeyringUnavailable as e:
+                raise UserError(f"{e}. Unlock your keyring (GNOME Keyring or KWallet) and try again.") from None
             creds.delete_secret("provider", original_name)
             s = self.cfg.settings
             if s.builder_provider == original_name:

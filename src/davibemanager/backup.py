@@ -398,7 +398,11 @@ class Backups:
     def set_password(self, password: str | None) -> None:
         if password:
             check_password(password)
-            creds.set_secret("backup", "password", password)
+            try:
+                creds.set_secret("backup", "password", password)
+            except creds.KeyringUnavailable as e:
+                raise BackupError(f"{e}. The backups' password is kept only there: unlock your keyring "
+                                  "(GNOME Keyring or KWallet) and try again.") from None
         else:
             creds.delete_secret("backup", "password")
         self.changed()
