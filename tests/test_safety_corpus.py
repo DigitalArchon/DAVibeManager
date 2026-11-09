@@ -187,6 +187,23 @@ def test_changing_forms_still_raise(cmd, level):
     ('PASSWORD = "djangoPw1"', "djangoPw1"), ("[pypi]\nusername = __token__\npassword = pypiPassw0rd", "pypiPassw0rd"),
     ("[client]\nuser=root\npassword = Hunter2Cnf", "Hunter2Cnf"), ("username=bob\npassword = smbPw1\ndomain=WORK", "smbPw1"),
     ("SECRET_KEY = 'django-insecure-abc123'", "django-insecure-abc123"), ("client_secret : clientS3cret", "clientS3cret"),
+    # tokens, webhooks and passwords in forms no rule knew (the keys in two pieces, as above)
+    ("hf_" "AbCdEfGhIjKlMnOpQrStUvWxYz012345", "AbCdEfGhIjKlMnOpQrStUvWxYz012345"),
+    ("//registry.npmjs.org/:_authToken=npm_" "AbCdEfGhIjKlMnOpQrStUvWxYz0123456789", "AbCdEfGhIjKlMnOpQrStUvWxYz0123456789"),
+    ("npm_" "AbCdEfGhIjKlMnOpQrStUvWxYz0123456789", "AbCdEfGhIjKlMnOpQrStUvWxYz0123456789"),
+    ("SG." "abcdefghijklmnopqrstuv.abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG", "abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG"),
+    ("xapp-" "1-A0123456789-0123456789012-abcdef0123456789", "abcdef0123456789"),
+    ("https://hooks.slack.com/services/" "T00000000/B00000000/XXXXXXXXXXXXXXXXXXXXXXXX", "XXXXXXXXXXXXXXXXXXXXXXXX"),
+    ("https://discord.com/api/webhooks/" "123456789012345678/abcdefghijklmnopqrstuvwxyzABCDEFGHIJ", "abcdefghijklmnopqrstuvwxyzABCDEFGHIJ"),
+    ("DefaultEndpointsProtocol=https;AccountName=acme;AccountKey=" "Zm9vYmFyYmF6cXV4MTIzNDU2Nzg5MA==;EndpointSuffix=core.windows.net",
+     "Zm9vYmFyYmF6cXV4MTIzNDU2Nzg5MA=="),
+    ("machine github.com login bob password ghpNetrcSecret", "ghpNetrcSecret"),
+    ("[gdrive]\ntype = drive\npass = rcloneObscured1\n", "rcloneObscured1"),
+    ("[wifi-security]\nkey-mgmt=none\nwep-key0=0123456789\n", "0123456789"),
+    ("curl -u bob:CurlSecret1 https://api.example", "CurlSecret1"), ("curl --user 'bob:Curl Secret2' https://x", "Secret2"),
+    ("curl -U proxyuser:ProxyPw1 https://x", "ProxyPw1"),
+    ("pypi-" "AgEIcHlwaS5vcmcCJGQ0ZTU3ZGM0LWE4NTEtNDc0Ni1hNzU2LWE1NzY4ZjQ2YjE3MAACKlszLCJ", "AgEIcHlwaS5vcmcCJGQ0ZTU3ZGM0LWE4NTEt"),
+    ("gl" "ptt-abcdefghijklmnopqrst0123", "abcdefghijklmnopqrst0123"),
 ])
 def test_secrets_in_these_forms_are_redacted(text, secret):
     out, n = redact(text)
@@ -201,6 +218,9 @@ def test_secrets_in_these_forms_are_redacted(text, secret):
     ("PWD=/home/bob\nOLDPWD=/home/bob/src", "OLDPWD=/home/bob/src"),
     ("kubectl get secret db-creds -o yaml", "db-creds"), ("db:\n  password:\n    host: db", "host: db"),
     ("TOKEN=\nNEXT_KEY=value", "NEXT_KEY=value"),
+    ("[wifi-security]\nwep-key-type=1\npsk-flags=0", "wep-key-type=1\npsk-flags=0"), ("bypass = 1\ncompass: north", "compass: north"),
+    ("the default password is set by the vendor", "the default password is set by the vendor"),
+    ("curl -u bob https://x", "curl -u bob https://x"), ("pass the salt", "pass the salt"),
 ])
 def test_diagnostic_output_is_not_mangled(text, kept):
     out, n = redact(text)
