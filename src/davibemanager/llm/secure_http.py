@@ -6,7 +6,9 @@ Ported from SealedLore (providers/http.py), where the verifier comes from:
   proxy variables never route it elsewhere; anything else keeps the environment's proxies
   and certificate settings.
 - **A redirect never downgrades.** The response hook refuses a redirect whose target isn't
-  https (or http to a local address, netpolicy.py), whether or not the client follows redirects.
+  https (or http to a local address, netpolicy.py), whether or not the client follows redirects,
+  and one from a server on the internet into this computer or the local network. A relative one
+  is judged where it leads (SealedLore's providers/http.py, Nov 2026).
 """
 
 from __future__ import annotations
@@ -16,7 +18,7 @@ from urllib.parse import urlparse
 
 import httpx
 
-from ..netpolicy import is_secure
+from ..netpolicy import is_local_host, is_secure
 
 LOOPBACK_HOSTS = {"localhost", "127.0.0.1", "::1", "[::1]"}
 
@@ -32,17 +34,39 @@ def is_loopback(url: str) -> bool:
     return (urlparse(url).hostname or "").lower() in LOOPBACK_HOSTS
 
 
+def is_local(url: str) -> bool:
+    """A server on this computer or the local network (netpolicy.is_local_host)."""
+    try:
+        return is_local_host(urlparse(url).hostname or "")
+    except ValueError:
+        return False
+
+
 def refuse_insecure_redirect(response: httpx.Response) -> None:
-    """A response hook: a redirect to anywhere the app wouldn't send to directly."""
+    """A response hook: a redirect to anywhere the app wouldn't send to directly, or from a server
+    out on the internet into this computer or the local network (a router's admin page)."""
     if not response.is_redirect:
         return
-    target = response.next_request.url if response.next_request is not None else None
-    if target is None:
-        target = response.headers.get("location")
-    if target is not None and not is_secure(str(target)):
+    location = response.headers.get("location")
+    if location is None:
+        return
+    # httpx runs the hooks before it builds the next request, so `Location` is read here as
+    # written: a relative one ("/c/2") was refused for having no scheme, and one to a local
+    # address passed for https. It is resolved the way the client will resolve it.
+    try:
+        target = str(response.request.url.join(location))
+    except httpx.InvalidURL:
+        target = location
+    source = str(response.request.url)
+    if not is_secure(target):
         raise ProviderError(
-            f"{response.request.url.host} redirected to {str(target)[:120]!r}; refusing to "
+            f"{response.request.url.host} redirected to {target[:120]!r}; refusing to "
             "send over an insecure connection"
+        )
+    if is_local(target) and not is_local(source):
+        raise ProviderError(
+            f"{response.request.url.host} redirected to {target[:120]!r}, a server on this "
+            "computer or your local network; refused"
         )
 
 

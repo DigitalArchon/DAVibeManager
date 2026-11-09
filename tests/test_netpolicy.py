@@ -1,5 +1,6 @@
 """Which addresses the app may use (https anywhere, http only locally), and which the workspace may reach."""
 
+import httpx
 import pytest
 
 from davibemanager.config import Provider
@@ -209,3 +210,60 @@ def test_upnp_gives_the_routers_public_address_from_its_description():
     threading.Thread(target=lambda: (server.handle_request(), server.server_close()), daemon=True).start()
     assert netpolicy._upnp_ask([f"http://127.0.0.1:{server.server_port}/rootDesc.xml"]) == "198.51.100.4"
     assert netpolicy._upnp_ask(["http://router.example.org/rootDesc.xml"]) is None     # not this network's
+
+
+# --- the TEE verifier's client: where a redirect may lead (llm/secure_http.py) ---------------------
+
+def _verifier_client(base, handler):
+    from davibemanager.llm.secure_http import make_client
+    return make_client(base, transport=httpx.MockTransport(handler), follow_redirects=True)
+
+
+def test_a_redirect_off_https_is_refused_before_anything_is_sent_there():
+    from davibemanager.llm.secure_http import ProviderError
+    seen = []
+
+    def handler(request):
+        seen.append(str(request.url))
+        return httpx.Response(307, headers={"location": "http://elsewhere.example/collect"})
+    with pytest.raises(ProviderError, match="insecure"):
+        _verifier_client("https://api.example/v1", handler).get("https://api.example/v1/tee/attestation")
+    assert seen == ["https://api.example/v1/tee/attestation"]
+
+
+def test_a_relative_redirect_and_one_that_stays_on_https_are_followed():
+    """httpx runs response hooks before it resolves Location: read raw, a relative one ("/v2/x") had no
+    scheme, and every one was refused (SealedLore's test, b829e91)."""
+    for location, lands in (("/v2/x", "https://api.example/v2/x"), ("https://cdn.example/x", "https://cdn.example/x")):
+        seen = []
+
+        def handler(request, location=location):
+            seen.append(str(request.url))
+            return httpx.Response(308, headers={"location": location}) if len(seen) == 1 else httpx.Response(200)
+        assert _verifier_client("https://api.example/v1", handler).get("https://api.example/v1/a").status_code == 200
+        assert seen == ["https://api.example/v1/a", lands]
+
+
+@pytest.mark.parametrize("location", ["https://192.168.1.1/admin", "http://192.168.1.1/admin", "http://localhost:8080/x",
+                                      "https://[fd00::1]/"])
+def test_a_server_on_the_internet_cannot_redirect_into_the_local_network(location):
+    from davibemanager.llm.secure_http import ProviderError
+    seen = []
+
+    def handler(request):
+        seen.append(str(request.url))
+        return httpx.Response(302, headers={"location": location})
+    with pytest.raises(ProviderError, match="local network"):
+        _verifier_client("https://api.example/v1", handler).get("https://api.example/v1/a")
+    assert len(seen) == 1, "the redirect was not followed"
+
+
+def test_a_local_server_may_redirect_on_the_local_network():
+    seen = []
+
+    def handler(request):
+        seen.append(str(request.url))
+        return httpx.Response(307, headers={"location": "http://192.168.1.20:7860/v1/x"}) if len(seen) == 1 \
+            else httpx.Response(200)
+    _verifier_client("http://192.168.1.10:7860/v1", handler).get("http://192.168.1.10:7860/v1/a")
+    assert seen[-1] == "http://192.168.1.20:7860/v1/x"
