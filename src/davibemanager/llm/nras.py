@@ -1,7 +1,9 @@
 """NVIDIA's verdict on a TEE/ model's GPUs, with NVIDIA's signature checked.
 
-Ported from SealedLore (its providers/nras.py, Sept 2026), itself ported from the author's
-AI-Assistant app (assistant/nras.py), with httpx for requests; the checks are the same.
+The same checks in each of the author's apps that attest TEE models (DA Assistant, DA Vibe
+Manager, DA Private Coder, DA Toolkit, SealedLore), kept alike since Nov 2026; first written
+for the AI-Assistant app (assistant/nras.py), with httpx for requests here. NVIDIA's keys are
+cached on dcap.since_boot, a clock that runs on while the machine sleeps.
 
 A TEE/ model's attestation carries NVIDIA GPU evidence, made with our nonce.
 llm/tee.py sends it to NVIDIA's Remote Attestation Service (NRAS), which answers with signed
@@ -35,6 +37,7 @@ from typing import Any
 
 import httpx
 
+from .dcap import since_boot
 from .secure_http import make_client
 
 JWKS_URL = "https://nras.attestation.nvidia.com/.well-known/jwks.json"
@@ -62,7 +65,7 @@ _keys_lock = threading.Lock()
 
 def _jwks(session: httpx.Client, refresh: bool = False) -> dict[str, dict[str, Any]]:
     with _keys_lock:
-        if not refresh and _keys["keys"] and time.monotonic() - _keys["at"] < KEYS_TTL:
+        if not refresh and _keys["keys"] and since_boot() - _keys["at"] < KEYS_TTL:
             return _keys["keys"]
     try:
         response = session.get(JWKS_URL, timeout=TIMEOUT_SECONDS)
@@ -78,7 +81,7 @@ def _jwks(session: httpx.Client, refresh: bool = False) -> dict[str, dict[str, A
         raise KeysUnavailable(error)
     keys = {k["kid"]: k for k in body["keys"] if isinstance(k, dict) and k.get("kid")}
     with _keys_lock:
-        _keys.update(at=time.monotonic(), keys=keys)
+        _keys.update(at=since_boot(), keys=keys)
     return keys
 
 

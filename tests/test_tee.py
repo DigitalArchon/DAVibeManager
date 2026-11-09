@@ -574,7 +574,55 @@ def test_intels_collateral_is_fetched_again_after_a_sleep(asleep, monkeypatch):
     assert len(asked) == 2
 
 
+def test_nvidias_keys_are_fetched_again_after_a_sleep(asleep, monkeypatch):
+    monkeypatch.setattr(nras, "_keys", {"at": 0.0, "keys": {}})
+    asked = []
+    client = httpx.Client(transport=httpx.MockTransport(
+        lambda r: asked.append(r) or httpx.Response(200, json={"keys": [{"kid": "k1"}]})))
+    for _ in range(2):
+        assert "k1" in nras._jwks(client)
+    assert len(asked) == 1
+    asleep["boot"] += 2 * 3600
+    nras._jwks(client)
+    assert len(asked) == 2
 
+
+async def test_a_tee_attestation_is_made_again_after_a_sleep(asleep):
+    from davibemanager.config import Config, Provider
+    from davibemanager.llm.tee import Attestation
+    from davibemanager.models import TEE_REATTEST_SECONDS, Models
+    cfg = Config(providers=[Provider("NanoGPT", "https://nano-gpt.com/api/v1")])
+    m = Models(cfg, save_config=lambda c: None, emit=lambda *a, **k: None, log=lambda *a, **k: None)
+    made = []
+
+    class Enclave:
+        def attest(self):
+            made.append(1)
+            return Attestation(verified=True, level="full", nonce_ok=True)
+
+        def close(self):
+            pass
+    m.tee_factory = lambda base, key, model: Enclave()
+    m.key = lambda prov: "k"
+    for _ in range(2):
+        await m.tee_guard(cfg.providers[0], "TEE/glm-5.3")
+    assert len(made) == 1
+    asleep["boot"] += TEE_REATTEST_SECONDS + 1                 # a quarter of an hour asleep
+    await m.tee_guard(cfg.providers[0], "TEE/glm-5.3")
+    assert len(made) == 2
+
+
+async def test_the_private_enclave_is_attested_again_after_a_sleep(asleep):
+    from davibemanager.llm.private_mode import Enclave
+    verified = []
+    enclave = Enclave("https://nano-gpt.com/api/v1/private/tinfoil",
+                      verifier=lambda relay, secret: verified.append(1) or object())
+    await enclave.current()
+    await enclave.current()
+    assert len(verified) == 1
+    asleep["boot"] += 2 * 3600
+    await enclave.current()
+    assert len(verified) == 2
 
 
 def test_tee_models_are_named_so():

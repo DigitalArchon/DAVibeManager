@@ -25,8 +25,9 @@ the source; port changes there first), after SealedLore's providers/private_mode
    as Private Mode, and a stream that ends without its final chunk. Nothing is ever sent
    unsealed and nothing falls back to the plain endpoint (`LLMClient` refuses `private/*`).
 
-The attestation is redone once it is five minutes old, and once more if the enclave says the
-key has changed.
+The attestation is redone once it is five minutes old, on a clock that runs on while the computer
+sleeps (dcap.since_boot: one made before a suspend isn't taken for fresh after it), and once more
+if the enclave says the key has changed.
 
 **Retired models.** The enclave is Tinfoil's router whatever the model, so a `private/` model
 NanoGPT no longer offers (private/glm-5-3-flash, Oct 2026) attests fine, and its first message
@@ -56,6 +57,7 @@ from openai.types.chat import ChatCompletionChunk
 from ..netpolicy import check_url
 from .capabilities import norm_id
 from .client import StreamAccumulator, is_private_mode
+from .dcap import since_boot
 
 RELAY_PATH = "/api/v1/private/tinfoil"
 ROUTER_REPO = "tinfoilsh/confidential-model-router"
@@ -210,7 +212,7 @@ class Enclave:
     """The attested enclave one provider seals to; re-attests when stale or rotated."""
 
     def __init__(self, relay: str, verifier: Verifier = tinfoil_verify,
-                 clock: Callable[[], float] = time.monotonic, on_attested: Callable[[Attestation], None] | None = None):
+                 clock: Callable[[], float] = since_boot, on_attested: Callable[[Attestation], None] | None = None):
         self.relay = relay
         self._on_attested = on_attested     # each new attestation, for the log (and an older release, for the user)
         # Ours, not NanoGPT's: see the module docstring. In memory only.

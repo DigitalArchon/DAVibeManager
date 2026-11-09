@@ -17,6 +17,7 @@ from typing import Callable
 from . import creds
 from .config import Config, Provider, provider_defaults
 from .llm import capabilities
+from .llm import dcap
 from .llm import params as params_mod
 from .llm import routes as routes_mod
 from .llm import tee as tee_mod
@@ -24,7 +25,9 @@ from .llm.client import LLMClient, detect_tier, is_private_mode
 from .llm.private_mode import Enclave, PrivateModeClient, list_private_models, offers_private_mode, relay_url
 from .netpolicy import InsecureURL, check_url
 
-# A TEE model's attestation is made again, with a fresh nonce, before a send once it is this old.
+# A TEE model's attestation is made again, with a fresh nonce, before a send once it is this old: on a
+# clock that runs on while the computer sleeps (dcap.since_boot), so one made before a night's suspend
+# isn't taken for minutes old in the morning.
 TEE_REATTEST_SECONDS = 900
 # a provider's model list that couldn't be read is asked for again after this long, no sooner
 CAPS_RETRY_SECONDS = 30
@@ -402,7 +405,7 @@ class Models:
             return None
         async with self._attest_lock:
             hit = self._tee.get((prov.name, prov.base_url, model))     # another address: attested again
-            if hit and time.monotonic() - hit[1] < TEE_REATTEST_SECONDS:
+            if hit and dcap.since_boot() - hit[1] < TEE_REATTEST_SECONDS:
                 return hit[2]
             make = self.tee_factory or tee_mod.TeeClient
             try:
@@ -415,7 +418,7 @@ class Models:
                 client.close()
                 self._log("enclave_attestation_failed", model=model, error=str(e))
                 raise UserError(f"{model}'s TEE attestation didn't hold, so nothing was sent to it: {e}") from e
-            self._tee[(prov.name, prov.base_url, model)] = (client, time.monotonic(), att.to_dict())
+            self._tee[(prov.name, prov.base_url, model)] = (client, dcap.since_boot(), att.to_dict())
             self._log("enclave_attested", model=model, **att.to_dict())
             told = (model, tuple(att.shortfalls))
             if att.level == "partial" and told not in self._told_partial:
