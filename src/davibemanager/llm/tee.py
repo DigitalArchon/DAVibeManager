@@ -90,6 +90,10 @@ REBUILT_STREAMS = frozenset({"TEE/gemma-4-31b-it"})
 RECEIPT_KEYS_LOOSE = "receipt keys not in the quote"
 # A shortfall: RedPill's gateway is attested, not the model's host behind it.
 MODEL_ENCLAVE_UNCHECKED = "the model's own enclave unchecked (RedPill's gateway)"
+# A shortfall: a model Chutes answers first, which RedPill's gateway answers now and then, attested
+# while nano-gpt had no gateway report for a reason but that RedPill doesn't serve it (a rate limit,
+# an outage): whether its gateway may answer, and its keys, aren't known (`_attest_instances`).
+GATEWAY_UNCHECKED = "RedPill's gateway unchecked"
 
 
 @dataclass
@@ -469,7 +473,7 @@ class TeeClient:
         self.signers = frozenset()
         self.keyset = self.keyset_digest = None
         self.instances = False
-        gateway = self._attest_gateway()
+        gateway, unheard = self._attest_gateway()
         try:
             body, nonce = self._fetch_attestation()
         except ProviderError as exc:
@@ -481,7 +485,7 @@ class TeeClient:
                 return self._attest_gateway_alone(gateway, "its own attestation timed out")
             raise self._refused(exc) from exc
         if isinstance(body.get("evidence"), list):
-            return self._attest_instances(body, nonce, gateway)
+            return self._attest_instances(body, nonce, gateway, unheard)
         if isinstance(body.get("all_attestations"), list) and "signing_address" not in body:
             # RedPill relaying Chutes (live, Sept 2026: TEE/glm-5.1, TEE/qwen3.5-27b,
             # TEE/qwen3.5-397b-a17b; Nov 10 2026: TEE/deepseek-v3.2). The quotes are
@@ -555,10 +559,12 @@ class TeeClient:
             )
         return TeeRefused(f"{self.model}'s attestation couldn't be fetched: {exc}")
 
-    def _attest_gateway(self) -> _Gateway | None:
+    def _attest_gateway(self) -> tuple[_Gateway | None, str]:
         """RedPill's gateway, attested for our nonce (`report=aci`, nano-gpt,
         Nov 10 2026), or None where nano-gpt has no such report: a model only
-        Chutes or Tinfoil serves (HTTP 400), an outage, or another shape.
+        Chutes or Tinfoil serves (HTTP 400), an outage, or another shape. With
+        it, why there was none, where that wasn't RedPill not serving the model
+        (an outage, a rate limit: `_attest_instances`), else "".
 
         The quote's report data is the SHA-256 of RedPill's attestation
         statement, the gateway's whole keyset and our nonce, zero padded
@@ -571,13 +577,13 @@ class TeeClient:
         keys are past their time."""
         try:
             body, nonce = self._fetch_attestation(aci=True)
-        except ProviderError:
-            return None
+        except ProviderError as exc:
+            return None, "" if exc.status_code == 400 else str(exc)[:200]
         report = body.get("attestation") if body.get("api_version") == "aci/1" else None
         evidence = report.get("evidence") if isinstance(report, dict) else None
         keyset = report.get("workload_keyset") if isinstance(report, dict) else None
         if not (isinstance(evidence, dict) and isinstance(keyset, dict) and evidence.get("quote")):
-            return None
+            return None, ""
         try:
             raw = bytes.fromhex(str(evidence["quote"]))
             quote = dcap.parse_quote(raw)
@@ -598,7 +604,7 @@ class TeeClient:
             if isinstance(entry, dict)
             and (address := _address_of_public(entry.get("public_key"))) is not None
         )
-        return _Gateway(keyset=keyset, signers=signers, check=check)
+        return _Gateway(keyset=keyset, signers=signers, check=check), ""
 
     def _refuse_expired(self, keyset: dict[str, Any] | None) -> None:
         """Keys the gateway's keyset holds only until a time now past are refused: what was
@@ -724,7 +730,7 @@ class TeeClient:
         check.note(tie)
 
     def _attest_instances(
-        self, body: dict[str, Any], nonce: str, gateway: _Gateway | None = None
+        self, body: dict[str, Any], nonce: str, gateway: _Gateway | None = None, unheard: str = ""
     ) -> Attestation:
         """Per instance: each quote binds an instance key, which signed our nonce.
 
@@ -745,7 +751,14 @@ class TeeClient:
         A model Chutes answers first falls back to RedPill now and then (nano-gpt,
         Nov 10 2026): with the gateway attested too, such a reply's record and
         receipt are checked against its bound keys, and the gateway's checks
-        count with the instances'.
+        count with the instances'. A request may then go through RedPill's
+        gateway, whose host is its word, not attested here, so the model falls
+        short as any the gateway answers does (`MODEL_ENCLAVE_UNCHECKED`; DA
+        Assistant's reading too; SealedLore counts it whole). Where nano-gpt had
+        no gateway report for a reason but that RedPill doesn't serve the model
+        (`unheard`: a rate limit, an outage), whether the gateway may answer isn't
+        known: that falls short too (`GATEWAY_UNCHECKED`), so an outage never
+        reads better than the report would.
         """
         failed = [str(i) for i in body.get("failed_instance_ids") or []]
         instances = body["evidence"]
@@ -765,10 +778,22 @@ class TeeClient:
             check.merge(result)
         self.instances = True
         if gateway is None:
+            if unheard:
+                check.fall_short(GATEWAY_UNCHECKED)
+                check.note(
+                    f"nano-gpt gave no report of RedPill's gateway just now ({unheard}), and it "
+                    "answers some models Chutes serves first now and then: such a reply can't be checked"
+                )
             attestation = check.attestation(instances=len(instances))
             attestation.detail += "; this provider signs no replies, so answers show as unsigned"
             return attestation
         check.merge(gateway.check)
+        check.fall_short(MODEL_ENCLAVE_UNCHECKED)
+        check.note(
+            "RedPill's gateway answers it instead now and then, and passes the request on to a host "
+            "of its own: such a reply is checked against the gateway's attested keys, and its host is "
+            "the gateway's word in its receipt, not attested here"
+        )
         self.signers = gateway.signers
         self._take_keyset(
             gateway.keyset,

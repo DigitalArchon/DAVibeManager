@@ -1028,6 +1028,8 @@ def receipt_server(
                 if aci == "400":
                     return httpx.Response(
                         400, json={"error": "report=aci is only available for models served through RedPill"})
+                if aci == "429":
+                    return httpx.Response(429, json={"error": "Rate limit exceeded"})
                 bound_to = nonce if aci == "bound" else "ab" * 32
                 statement = (
                     f'{{"keyset_digest":"{keyset_digest}","nonce":"{bound_to}",'
@@ -1325,16 +1327,28 @@ def test_only_a_relay_or_a_timeout_has_the_gateway_stand_in():
 def test_a_chutes_model_with_the_gateway_checks_the_replies_redpill_answers(instances):
     """Chutes answers first and signs nothing; a reply RedPill answers instead names its receipt, checked
     against the gateway's bound keys."""
+    from davibemanager.llm.tee import GATEWAY_UNCHECKED, MODEL_ENCLAVE_UNCHECKED
+
     client = receipt_client(model="TEE/glm-5.1", aci="bound", plain=lambda nonce: (200, instances.body(nonce)))
     result = client.attest()
-    assert result.level == "full" and result.instances
+    # a request may go through the gateway, whose host is its word: short of that, as any the gateway answers
+    assert result.level == "partial" and result.instances and result.shortfalls == [MODEL_ENCLAVE_UNCHECKED]
+    assert "host is the gateway's word" in result.detail
     assert client.check_reply("req_9", receipt_id="rcpt-1", body_hash=streamed()) == "verified"
     with pytest.raises(ProviderError, match="signs no replies"):
         client.check_reply("req_9", body_hash=streamed())
-    # Chutes alone (report=aci answers 400): unsigned, as before.
+    # Chutes alone (report=aci answers 400): whole and unsigned, as before.
     alone = receipt_client(model="TEE/kimi-k3", aci="400", plain=lambda nonce: (200, instances.body(nonce)))
+    assert alone.attest().level == "full"
     with pytest.raises(ProviderError, match="signs no replies"):
         alone.check_reply("req_9", receipt_id="rcpt-1", body_hash=streamed())
+    # No report for another reason (a rate limit, as live): whether the gateway may answer isn't known, and an
+    # outage never reads better than the report would
+    unheard = receipt_client(model="TEE/glm-5.1", aci="429", plain=lambda nonce: (200, instances.body(nonce)))
+    result = unheard.attest()
+    assert result.level == "partial" and result.shortfalls == [GATEWAY_UNCHECKED] and "HTTP 429" in result.detail
+    with pytest.raises(ProviderError, match="signs no replies"):
+        unheard.check_reply("req_9", receipt_id="rcpt-1", body_hash=streamed())
 
 
 # --- every TEE reply through the gateway, checked once it has gone on ------------------------------
