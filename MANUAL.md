@@ -170,18 +170,26 @@ sleeps):
 
 - the Intel TDX quote, read from its own signed bytes, must bind the enclave's signing key to a fresh
   number of the app's;
-- the quote must verify up to Intel's root, through certificates allowed to sign others, and be
+- where NanoGPT has it, RedPill's gateway's own report too, asked for with another fresh number: its
+  quote binds all the gateway's keys, those that sign each reply's record and its receipts, to that
+  number;
+- each quote must verify up to Intel's root, through certificates allowed to sign others, and be
   neither revoked nor a debug enclave, and Intel rates the machine's firmware;
-- NVIDIA's signed verdict on the GPUs must be for that number, and pass.
+- NVIDIA's signed verdict on the GPUs must be for the app's number, and pass.
 
 Anything forged, revoked or made for another number is refused, and nothing is sent. What couldn't be
 checked (no GPU evidence offered, Intel's or NVIDIA's service out of reach, a rating below up to date)
 makes the attestation partial, and the app says so, once a model. Most of NanoGPT's TEE models are
 RedPill's gateway, which passes each request on to the model's host: its attestation is partial
-("the model's own enclave unchecked"), since it shows the gateway's enclave, not the model's.
+("the model's own enclave unchecked"), since it shows the gateway's enclave, not the model's. A model
+whose own attestation NanoGPT can't give for the app's number (one relayed from Chutes for another, or
+one that took too long) is attested through that gateway instead, with "no GPU evidence" too. Models
+Chutes answers (several Kimi, GLM and Gemma ones) have each of their instances attested for the app's
+number. The Tinfoil-hosted TEE models are refused: NanoGPT can't attest them for a fresh number. Some
+have a private version, which is attested its own way.
 
 After each reply has reached the assistant, the app fetches the record NanoGPT keeps of it, signed by
-the attested key, and checks it is for the exact text that came back; where the gateway kept a signed
+an attested key, and checks it is for the exact text that came back; where the gateway kept a signed
 receipt, that too, saying the model the reply came from was verified. The app's own requests to a TEE
 model are checked the same way: a second opinion, the summary of what's new in an update, the review
 of an app you import, and a picture described for the assistant. **☰ → Sandbox activity** lists them
@@ -190,15 +198,17 @@ beside the assistant's requests and marks each: **TEE verified**; **TEE signed, 
 so nothing shows it came from the attested enclave); or **TEE ⚠ check failed**: the reply doesn't
 match its record. Then the app says so, once for as long as that model's replies keep failing, and
 attests the model again before anything more goes to it. The check never holds up or changes what
-the assistant, or you, are given.
+the assistant, or you, are given. Chutes signs no replies, so a reply it answers is marked not verified;
+one RedPill's gateway answers instead is checked as any other.
 
 What this doesn't prove: which software the enclave runs. No measurement of it is compared with a
 published one, so what the attestation shows is genuine, current hardware holding a live key, bound
 to the app's number, not what runs there. Nor what was sent: the record holds the request as NanoGPT
-forwarded it. And through NanoGPT, the receipt's keys aren't in the quote ("receipt keys not in the
-quote", the attestation says): the quote binds the key that signs each reply's record, while the
-receipt's own key is only published beside it, so the receipt's word that the model was verified rests
-on NanoGPT's relay. For a chat nobody else can read, use a private model.
+forwarded it. And where NanoGPT has no gateway report for a model, the receipt's keys aren't in the
+quote ("receipt keys not in the quote", the attestation says): the quote binds the key that signs each
+reply's record, while the receipt's own key is only published beside it, so the receipt's word that
+the model was verified rests on NanoGPT's relay. (Since November 10 2026 every model RedPill's gateway
+serves has that report.) For a chat nobody else can read, use a private model.
 
 ## Which host runs the model
 
