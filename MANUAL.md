@@ -193,7 +193,10 @@ RedPill's gateway, which passes each request on to the model's host: its attesta
 whose own attestation NanoGPT can't give for the app's number (one relayed from Chutes for another, or
 one that took too long) is attested through that gateway instead, with "no GPU evidence" too. Models
 Chutes answers (several Kimi, GLM and Gemma ones) have each of their instances attested for the app's
-number. The Tinfoil-hosted TEE models are refused: NanoGPT can't attest them for a fresh number. Some
+number. Where RedPill's gateway answers some of their requests instead (GLM 5.1 and 5.2, Kimi K2.6),
+the gateway is attested too, and their attestation is partial like the gateway's own models'; if
+NanoGPT couldn't give the gateway's report just then, it says "RedPill's gateway unchecked". The
+Tinfoil-hosted TEE models are refused: NanoGPT can't attest them for a fresh number. Some
 have a private version, which is attested its own way.
 
 After each reply has reached the assistant, the app fetches the record NanoGPT keeps of it, signed by
