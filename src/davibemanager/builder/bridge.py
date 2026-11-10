@@ -155,9 +155,12 @@ class BuilderSession:
                  resume: str = "", emit: Callable[..., None], on_session: Callable[[str], None],
                  on_change: Callable[[dict], None], on_turn_end: Callable[[dict], None],
                  on_wake: Callable[[], dict] | None = None, client_factory: Callable | None = None,
-                 mode: str = "computer"):
+                 mode: str = "computer", effort: Callable[[], str] | None = None):
         self.container = container
         self.mode = mode                           # the kind of chat: "computer" or "app" (its prompt and tools)
+        # how hard it thinks (Settings): Claude Code is started at it. The gateway fits each request to
+        # what its model takes (llm/params.py), so a change reaches a session already started too
+        self._effort = effort or (lambda: "")
         self.wrapper = wrapper
         self.host = host
         self._env = env
@@ -195,7 +198,10 @@ class BuilderSession:
 
     def _options(self):
         from claude_agent_sdk import ClaudeAgentOptions, HookMatcher
+        effort = self._effort()
         return ClaudeAgentOptions(
+            # --effort: without it, Claude Code sends high to a model whose name it doesn't know (NanoGPT's)
+            effort=effort if effort in ("low", "medium", "high", "xhigh", "max") else None,
             cli_path=str(self.wrapper),
             system_prompt={"type": "preset", "preset": "claude_code", "append": builder_prompt(self.mode)},
             # the container is the sandbox: everything in it is the assistant's to use

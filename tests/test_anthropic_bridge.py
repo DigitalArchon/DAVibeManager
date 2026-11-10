@@ -184,7 +184,7 @@ async def test_private_models_are_asked_for_the_chosen_reasoning_never_none(priv
         await c.post("/v1/messages", headers={"authorization": f"Bearer {g.token}"},
                      json={"model": "private/glm-5-3", "stream": True, "thinking": {"type": "disabled"},
                            "messages": [{"role": "user", "content": "hi"}]})
-    assert fake.calls[-1][3]["reasoning_effort"] == "high"    # for GLM, "none" means reasoning without limit
+    assert fake.calls[-1][3]["reasoning_effort"] == "medium"  # the default; for GLM, "none" means reasoning without limit
 
 
 async def test_progress_is_reported_while_the_model_reasons():
@@ -215,7 +215,7 @@ async def test_every_non_anthropic_model_is_translated_and_a_tee_model_checked_f
             msg = {"stream": True, "messages": [{"role": "user", "content": "hi"}]}
             r = await c.post("/v1/messages", headers=h, json={"model": "z-ai/glm-5.3", **msg})
             said = "".join(d["delta"].get("text", "") for n, d in parse(r.content) if n == "content_block_delta")
-            assert said == "Hi from GLM" and fake.calls[-1][3]["reasoning_effort"] == "high"
+            assert said == "Hi from GLM" and fake.calls[-1][3]["reasoning_effort"] == "medium"
             r = await c.post("/v1/messages", headers=h, json={"model": "TEE/glm-5.3", **msg})
             assert r.status_code == 502 and "attestation refused" in r.text
             await c.post("/v1/messages", headers=h, json={"model": "anthropic/claude-opus-5.5", **msg})
@@ -541,6 +541,69 @@ def test_the_nearest_effort_a_model_takes():
     assert [params_mod.nearest_effort(e, every) for e in every] == every
     assert params_mod.nearest_effort("max", ["minimal", "low", "medium", "high"]) == "high"
     assert params_mod.nearest_effort("low", ["none", "high"]) == "high"           # never none: GLM reasons without limit
+
+
+def test_claude_models_take_what_anthropic_lists_however_their_name_is_written():
+    takes = params_mod.claude_takes
+    every, no_xhigh = params_mod.CLAUDE_EFFORTS, ("low", "medium", "high", "max")
+    for model in ("anthropic/claude-opus-5.5", "claude-opus-5-5", "anthropic/claude-opus-5", "anthropic/claude-opus-4.8",
+                  "anthropic/claude-opus-4.7:thinking", "anthropic/claude-sonnet-5.5", "anthropic/claude-sonnet-5",
+                  "anthropic/claude-haiku-5.5", "anthropic/claude-fable-5.1", "anthropic/claude-opus-latest",
+                  "claude-mythos-5-1", " Anthropic/Claude-Opus-5.5 "):
+        assert takes(model) == (every, True), model
+    assert takes("anthropic/claude-opus-4.6") == takes("anthropic/claude-sonnet-4.6:thinking") == (no_xhigh, True)
+    assert takes("anthropic/claude-opus-4.5") == takes("claude-opus-4-5-20251101") == (("low", "medium", "high"), False)
+    for model in ("anthropic/claude-haiku-4.5", "anthropic/claude-sonnet-4.5", "anthropic/claude-opus-4.1:thinking:8192",
+                  "claude-sonnet-4-20250514", "claude-3-7-sonnet-20250219"):
+        assert takes(model) == ((), False), model
+    for model in ("claude-3-5-haiku-20241022", "z-ai/glm-5.3", "Gemma-4-31B-Claude-4.6-Opus-Reasoning-Distilled", ""):
+        assert takes(model) is None, model
+
+
+def test_a_claude_request_is_fitted_to_the_effort_chosen_as_near_as_its_model_goes():
+    """As Claude Code 2.1.292 sends NanoGPT's names (measured Nov 10 2026): a 5.x model adaptive with an effort; a
+    4.x one a budget and no effort (Opus 4.8 refuses a budget); Haiku 4.5 adaptive with an effort (it takes neither)."""
+    fit = params_mod.fit_claude
+    adaptive = {"type": "adaptive", "display": "omitted"}
+    new = {"max_tokens": 128000, "thinking": dict(adaptive), "output_config": {"effort": "high"}}
+    assert fit(new, "anthropic/claude-opus-5.5", "medium") == {"effort": "medium"}
+    assert new == {"max_tokens": 128000, "thinking": adaptive, "output_config": {"effort": "medium"}}
+    old = {"max_tokens": 32000, "thinking": {"type": "enabled", "budget_tokens": 31999, "display": "omitted"}}
+    assert fit(old, "anthropic/claude-opus-4.8", "max") == {"effort": "max"}
+    assert old["thinking"] == adaptive and old["output_config"] == {"effort": "max"}
+    sonnet = {"max_tokens": 32000, "thinking": {"type": "enabled", "budget_tokens": 31999}}
+    assert fit(sonnet, "anthropic/claude-sonnet-4.6", "low") == {"effort": "low"} and sonnet["thinking"] == {"type": "adaptive"}
+    # Opus 4.5: no max, and it thinks by a budget, sized to the effort
+    opus = {"max_tokens": 32000, "thinking": {"type": "adaptive"}}
+    assert fit(opus, "anthropic/claude-opus-4.5", "max") == {"effort": "high", "budget": 31999}
+    assert opus == {"max_tokens": 32000, "thinking": {"type": "enabled", "budget_tokens": 31999}, "output_config": {"effort": "high"}}
+    haiku = {"max_tokens": 32000, "thinking": dict(adaptive), "output_config": {"effort": "high"}}
+    assert fit(haiku, "anthropic/claude-haiku-4.5", "low") == {"effort": "", "budget": 4096}
+    assert haiku == {"max_tokens": 32000, "thinking": {"type": "enabled", "budget_tokens": 4096, "display": "omitted"}}
+    # the budget stays under max_tokens, and goes where there's no room for one (1,024 at least)
+    small = {"max_tokens": 8000, "thinking": {"type": "enabled", "budget_tokens": 31999}}
+    assert fit(small, "anthropic/claude-sonnet-4.5", "high") == {"effort": "", "budget": 7999}
+    tiny = {"max_tokens": 1000, "thinking": {"type": "enabled", "budget_tokens": 31999},
+            "output_config": {"format": {"type": "json_schema"}, "effort": "high"}}
+    assert fit(tiny, "anthropic/claude-sonnet-4.5", "high") == {"effort": ""}
+    assert tiny == {"max_tokens": 1000, "output_config": {"format": {"type": "json_schema"}}}
+
+
+def test_a_claude_request_that_doesnt_think_is_left_as_it_came_but_never_with_an_effort_its_model_lacks():
+    fit = params_mod.fit_claude
+    quick = {"max_tokens": 512, "messages": []}
+    assert fit(quick, "anthropic/claude-opus-5.5", "max") == {} and quick == {"max_tokens": 512, "messages": []}
+    named = {"max_tokens": 512, "output_config": {"effort": "high"}}
+    assert fit(named, "anthropic/claude-haiku-4.5", "high") == {"effort": ""} and named == {"max_tokens": 512}
+    off = {"thinking": {"type": "disabled"}, "output_config": {"effort": "high"}}
+    assert fit(off, "anthropic/claude-opus-4.6", "low") == {"effort": "low"}
+    assert off == {"thinking": {"type": "disabled"}, "output_config": {"effort": "low"}}
+    # a model not known here keeps what Claude Code sent, its effort the one chosen where it named one
+    unknown = {"thinking": {"type": "enabled", "budget_tokens": 9000}, "output_config": {"effort": "high"}}
+    assert fit(unknown, "someone/model", "low") == {"effort": "low"}
+    assert unknown == {"thinking": {"type": "enabled", "budget_tokens": 9000}, "output_config": {"effort": "low"}}
+    unnamed = {"thinking": {"type": "adaptive"}}
+    assert fit(unnamed, "someone/model", "low") == {} and unnamed == {"thinking": {"type": "adaptive"}}
     assert params_mod.nearest_effort("medium", None) == "medium"
     kimi = ('Private Mode request failed (HTTP 400): {"error":{"message":"Kimi K3 supports thinking_effort values: '
             'low, high, max (parameter=thinking_effort, value=medium)"}}')

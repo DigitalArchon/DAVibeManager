@@ -35,7 +35,7 @@ import httpx
 from .llm import anthropic_bridge as bridge
 from .llm import routes
 from .llm.client import is_private_mode
-from .llm.params import effort_unsupported, efforts_named, nearest_effort, with_effort
+from .llm.params import effort_unsupported, efforts_named, fit_claude, nearest_effort, with_effort
 from . import netpolicy
 from .netpolicy import InsecureURL, check_url, is_global_ip, is_secure, key_problem, own_networks, scrubbed, shown
 
@@ -265,7 +265,9 @@ class Upstream:
     # whether a translated model reads images itself (then it gets them, not descriptions)
     # (None: not known now, the provider's model list unread: the request is refused, to be asked again)
     sees: Callable[[str], Awaitable[bool | None]] | None = None
-    reasoning: str = "high"          # reasoning effort for translated models (never "none": see config)
+    # how hard the assistant thinks (config.BUILDER_EFFORTS): a translated model's reasoning effort, a
+    # Claude model's own effort and thinking, each the nearest it takes (never "none": see config)
+    reasoning: str = "medium"
     # the efforts a translated model takes (None: not known, sent as asked); the nearest goes (llm/params.py)
     efforts: Callable[[str], Awaitable[tuple[str, ...] | None]] | None = None
     # which of NanoGPT's hosts runs a translated model: model id -> its route, or None for
@@ -469,6 +471,12 @@ class Gateway:
             if bridge.drop_our_thinking(data):
                 # another model's reasoning, signed as ours: Anthropic's API refuses a signature it didn't make
                 body = json.dumps(data).encode()
+            # how hard it thinks, as chosen in Settings and as near as the model goes: Claude Code was started
+            # at it, but reads NanoGPT's names wrongly, and a change since reaches it only at its next start
+            before = (json.dumps(data.get("thinking")), json.dumps(data.get("output_config")))
+            fitted = fit_claude(data, sent_model, up.reasoning or "medium") if data else {}
+            if (json.dumps(data.get("thinking")), json.dumps(data.get("output_config"))) != before:
+                body = json.dumps(data).encode()
             headers = {k: v for k, v in request.headers.items() if k.lower() in PASS_HEADERS}
             if up.auth == "x-api-key":
                 headers["x-api-key"] = key
@@ -492,6 +500,10 @@ class Gateway:
             rec = {"kind": "model", "path": path, "model": sent_model,
                    "asked_for": model if model != sent_model else "", "status": resp.status_code,
                    "provider": up.provider, "tier": up.tier, "bytes_out": len(body)}
+            if "effort" in fitted:
+                rec.update(effort=fitted["effort"], **({"effort_asked": up.reasoning}
+                                                       if fitted["effort"] != up.reasoning else {}),
+                           **({"thinking_budget": fitted["budget"]} if "budget" in fitted else {}))
             if resp.status_code >= 400:
                 # the provider's own explanation (wrong key, unknown model, no credit), for the log and the CLI
                 raw = (await resp.aread())[:8000]
@@ -548,7 +560,7 @@ class Gateway:
             return err(Refused(404, f"{path} isn't available for {model}.", "not_found_error"))
         if self._images is None or self._images.model != up.vision_model:
             self._images = bridge.ImageDescriber(up.describe, up.vision_model)
-        wanted = up.reasoning or "high"
+        wanted = up.reasoning or "medium"
         try:
             native = False
             if up.sees is not None and bridge.has_images(data):

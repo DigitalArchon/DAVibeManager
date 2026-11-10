@@ -2353,9 +2353,12 @@ function settingsPanel() {
         () => save({ builder_model: "anthropic/claude-opus-5.5", builder_small_model: "" }, "The assistant now uses Claude Opus 5.5.")),
       radio("am", "custom", preset, "Something else", null, () => { customBox.classList.remove("hidden"); }),
       customBox,
-      !/^(anthropic\/|claude)/i.test(s.builder_model) ? h("div", { class: "row small" }, "How hard it thinks:",
+      // one setting for every model: each is sent the nearest it takes, Claude Code in the sandbox too
+      h("div", { class: "row small" }, "How hard it thinks:",
         h("select", { onchange: (e) => save({ builder_reasoning: e.target.value }) },
-          ["low", "medium", "high"].map((v) => h("option", { value: v, selected: s.builder_reasoning === v }, { low: "Low (fastest)", medium: "Medium", high: "High (slower)" }[v])))) : null,
+          ["low", "medium", "high", "max"].map((v) => h("option", { value: v, selected: s.builder_reasoning === v },
+            { low: "Low (fastest, cheapest)", medium: "Medium (recommended)", high: "High (slower, costs more)", max: "Max (slowest, costs most)" }[v]))),
+        h("span", { class: "muted" }, "Models that offer fewer levels get the nearest one.")),
       contextRow(s, nano, save),
       nano?.base_url && /nano-gpt\.com/i.test(nano.base_url) && routable(s.builder_model) ? routeRow(s.builder_model) : null,
       nano?.base_url && /nano-gpt\.com/i.test(nano.base_url) && s.builder_small_model && s.builder_small_model !== s.builder_model && routable(s.builder_small_model)

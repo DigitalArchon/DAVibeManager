@@ -2,7 +2,10 @@
 
 Settings hold what the technician chose; a missing key means "use the model's default".
 Per request, reasoning effort is sent only to models that reason, and moved to the nearest
-level the model takes (GLM and Kimi take low/high/max; Opus takes low..max).
+level the model takes (GLM and Kimi take low/high/max; Opus takes low..max). The assistant's
+one setting (config.BUILDER_EFFORTS) reaches Claude models as Claude's own effort and thinking
+(`fit_claude`), from Anthropic's table rather than NanoGPT's listing, which names efforts for
+Claude models that take none on Anthropic's endpoint (Sonnet 4.5, Nov 2026).
 
 Measured live (Nov 8 2026, by DA Private Coder): a private model refuses a level it doesn't take
 with HTTP 400 (private Kimi K3 takes only low, high and max; private DeepSeek V4.1 Flash low, high,
@@ -86,6 +89,94 @@ def effort_unsupported(error: str) -> bool:
     low = error.lower()
     return "reasoning_effort" in low and any(w in low for w in (
         "not supported", "unsupported", "unrecognized", "unknown parameter", "not allowed", "extra inputs"))
+
+
+# How hard the assistant thinks (Settings → The assistant, config.BUILDER_EFFORTS) is one setting for
+# every model. Each is sent the nearest it takes: a reasoning effort for models other than Claude,
+# Claude's own effort and thinking for Claude (`fit_claude`); Claude Code in the sandbox is started
+# at it (builder/bridge.py).
+
+# Claude's own levels (output_config.effort), from Anthropic's model table (Nov 2026)
+CLAUDE_EFFORTS = ("low", "medium", "high", "xhigh", "max")
+# the thinking budget, in tokens, for a Claude model that thinks by one rather than adaptively:
+# Claude Code sends 31,999 (its most) whatever the effort
+THINKING_BUDGET = {"low": 4096, "medium": 10240, "high": 20480, "max": 31999}
+_CLAUDE = re.compile(r"claude-(opus|sonnet|haiku|fable|mythos)-(?:(latest)|(\d+)(?:-(\d{1,2}))?)(?:-\d{8})?$")
+_CLAUDE_3 = re.compile(r"claude-(\d)-(\d)-(opus|sonnet|haiku)(?:-\d{8})?$")
+
+
+def claude_takes(model: str) -> tuple[tuple[str, ...], bool] | None:
+    """What a Claude model takes, however NanoGPT or Anthropic writes it ("anthropic/claude-opus-5.5",
+    "claude-opus-4-5-20251101", "anthropic/claude-sonnet-5:thinking"): (its efforts, () for none;
+    whether it thinks adaptively, else by a budget of tokens). None for one not known here, or that
+    doesn't think (Claude 3 but Sonnet 3.7).
+
+    Claude Code reads NanoGPT's names wrongly (2.1.292, measured Nov 10 2026): every 4.x model as one
+    of the old ones, sent a budget and no effort (Opus 4.7 and 4.8 refuse a budget), and Haiku 4.5 as
+    a new one, sent adaptive thinking and an effort (it takes neither)."""
+    name = re.sub(r"[._]", "-", str(model or "").split("/")[-1].split(":")[0].strip().lower())
+    if m := _CLAUDE.fullmatch(name):
+        family = m.group(1)
+        version = (99, 0) if m.group(2) else (int(m.group(3)), int(m.group(4) or 0))
+    elif m := _CLAUDE_3.fullmatch(name):
+        family, version = m.group(3), (int(m.group(1)), int(m.group(2)))
+    else:
+        return None
+    if family in ("fable", "mythos") or version >= {"opus": (4, 7), "sonnet": (5, 0), "haiku": (5, 0)}[family]:
+        return CLAUDE_EFFORTS, True
+    if family in ("opus", "sonnet") and version >= (4, 6):
+        return ("low", "medium", "high", "max"), True
+    if family == "opus" and version == (4, 5):
+        return ("low", "medium", "high"), False
+    if version >= (4, 0) or (family, version) == ("sonnet", (3, 7)):
+        return (), False                      # Opus 4 and 4.1, Sonnet 4 and 4.5, Haiku 4.5, Sonnet 3.7
+    return None
+
+
+def fit_claude(body: dict, model: str, effort: str) -> dict:
+    """A request for a Claude model made to take `effort` (config.BUILDER_EFFORTS), as near as the model
+    goes (`body` is changed in place): its effort the nearest it takes, or none; its thinking the kind
+    it takes, a budget sized to the effort for a model that thinks by one. Only a request that thinks
+    or names an effort is fitted (the assistant's own steps); one that doesn't (Claude Code's quick
+    tasks) is left as it came, but never with an effort the model doesn't take. A model not known
+    here keeps what Claude Code sent, with the effort chosen where it named one.
+    Returns what went: {"effort": "low"…, or "" for none; "budget"?: thinking tokens}, or {}."""
+    config = body.get("output_config") if isinstance(body.get("output_config"), dict) else None
+    thinking = body.get("thinking") if isinstance(body.get("thinking"), dict) else None
+    thinks = thinking is not None and thinking.get("type") in ("enabled", "adaptive")
+    named = config is not None and "effort" in config
+    takes = claude_takes(model)
+    if takes is None:
+        if not named:
+            return {}
+        config["effort"] = effort
+        return {"effort": effort}
+    levels, adaptive = takes
+    if not (thinks or named):
+        return {}
+    sent = nearest_effort(effort, levels) if levels else ""
+    if sent:
+        body["output_config"] = {**(config or {}), "effort": sent}
+    elif config is not None:
+        config.pop("effort", None)
+        if not config:
+            del body["output_config"]
+    out = {"effort": sent}
+    if thinks:
+        shown = {"display": thinking["display"]} if "display" in thinking else {}
+        if adaptive:
+            body["thinking"] = {"type": "adaptive", **shown}
+        else:
+            most = body.get("max_tokens")
+            budget = THINKING_BUDGET.get(effort, THINKING_BUDGET["medium"])
+            if isinstance(most, int) and not isinstance(most, bool):
+                budget = min(budget, most - 1)
+            if budget >= 1024:                # the least a budget may be
+                body["thinking"] = {"type": "enabled", "budget_tokens": budget, **shown}
+                out["budget"] = budget
+            else:
+                del body["thinking"]
+    return out
 
 
 def with_effort(params: dict, effort: str) -> dict:

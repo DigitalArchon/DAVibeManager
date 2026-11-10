@@ -358,6 +358,38 @@ async def test_the_gateways_own_refusals_tell_claude_code_not_to_ask_again(gw):
     assert not upstream_reqs
 
 
+async def test_a_claude_request_goes_at_the_effort_chosen_as_near_as_its_model_goes(tmp_path):
+    """Claude Code reads NanoGPT's 4.x names as old models (a budget, no effort: Opus 4.8 refuses that), and a
+    change in Settings reaches a session already started only through the gateway."""
+    sent, events = [], []
+    chosen = {"reasoning": "max"}
+    g = Gateway(tmp_path / "gw", lambda: Upstream("https://upstream.example/api/v1", "bearer", lambda: "sk-real",
+                                                 ("anthropic/claude-opus-4.8", "anthropic/claude-opus-4.5"),
+                                                 provider="NanoGPT", reasoning=chosen["reasoning"]),
+                on_event=events.append,
+                http=httpx.AsyncClient(transport=httpx.MockTransport(lambda r: sent.append(json.loads(r.content)) or httpx.Response(
+                    200, text='event: message_stop\ndata: {"type": "message_stop"}\n\n', headers={"content-type": "text/event-stream"}))))
+    await g.start()
+    try:
+        async with _model_client(g) as c:
+            for model, effort in (("anthropic/claude-opus-4.8", "max"), ("anthropic/claude-opus-4.5", "max"),
+                                  ("anthropic/claude-opus-4.8", "low")):
+                chosen["reasoning"] = effort
+                r = await c.post("/v1/messages", headers={"authorization": f"Bearer {g.token}"}, json={
+                    "model": model, "max_tokens": 32000, "stream": True, "messages": [],
+                    "thinking": {"type": "enabled", "budget_tokens": 31999, "display": "omitted"}})
+                assert r.status_code == 200
+        await asyncio.sleep(0.05)
+    finally:
+        await g.stop()
+    assert [(b["thinking"], b["output_config"]) for b in sent] == [
+        ({"type": "adaptive", "display": "omitted"}, {"effort": "max"}),
+        ({"type": "enabled", "budget_tokens": 31999, "display": "omitted"}, {"effort": "high"}),
+        ({"type": "adaptive", "display": "omitted"}, {"effort": "low"})]
+    assert [(e["effort"], e.get("effort_asked"), e.get("thinking_budget")) for e in events if e.get("kind") == "model"] == [
+        ("max", None, None), ("high", "max", 31999), ("low", None, None)]
+
+
 async def test_without_a_key_the_request_is_refused_as_forbidden_not_as_claude_codes_login(tmp_path):
     g = Gateway(tmp_path / "gw", lambda: Upstream("https://upstream.example/api/v1", "bearer", lambda: None, ("big-model",),
                                                  provider="NanoGPT"),

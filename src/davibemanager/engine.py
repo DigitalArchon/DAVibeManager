@@ -574,8 +574,11 @@ class Engine:
                 raise UserError("Second opinions are on changes, on everything, or off.")
             s.second_opinion = data["second_opinion"]
         if "builder_reasoning" in data:
-            if data["builder_reasoning"] not in ("low", "medium", "high"):
-                raise UserError("Reasoning is low, medium or high.")
+            if data["builder_reasoning"] not in config_mod.BUILDER_EFFORTS:
+                raise UserError("How hard the assistant thinks is low, medium, high or max.")
+            if data["builder_reasoning"] != s.builder_reasoning:
+                # Claude Code is started at it (the gateway sends each request at it meanwhile)
+                self._builder_stale = True
             s.builder_reasoning = data["builder_reasoning"]
         if "builder_context" in data:
             if data["builder_context"] not in config_mod.CONTEXTS or isinstance(data["builder_context"], bool):
@@ -1269,7 +1272,7 @@ class Engine:
                 container=SANDBOX, wrapper=self.runtime_dir / "claude", host=self, env=self._builder_env,
                 resume=conv.session, emit=self._builder_event, on_session=on_session, on_change=self._entry_changed,
                 on_turn_end=self._turn_end, on_wake=self._woken, client_factory=self.builder_client_factory,
-                mode=conv.mode or "computer")
+                mode=conv.mode or "computer", effort=lambda: self.cfg.settings.builder_reasoning)
         return self.builder
 
     async def _close_builder(self) -> None:

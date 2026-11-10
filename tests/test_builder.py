@@ -1112,6 +1112,35 @@ async def test_claude_code_is_told_where_to_compact_and_a_change_restarts_it(bui
     assert clients[-1].options.env["CLAUDE_CODE_MAX_CONTEXT_TOKENS"] == "1000000"
 
 
+async def test_claude_code_is_started_at_how_hard_it_thinks_and_a_change_restarts_it(builder_env):
+    from davibemanager.engine import UserError
+    engine, _, _, clients = builder_env
+    assert engine.cfg.settings.builder_reasoning == "medium"
+    engine._script = said("Hello.")
+    engine.send("Hi")
+    await wait_for(lambda: len(engine.conv.chat) == 2, "the answer")
+    assert clients[-1].options.effort == "medium"
+    for wrong in ("xhigh", "none", "", None, True):
+        with pytest.raises(UserError, match="low, medium, high or max"):
+            engine.save_settings({"builder_reasoning": wrong})
+    first = engine.builder
+    engine.save_settings({"builder_reasoning": "medium"})       # the same: nothing to restart
+    assert not engine._builder_stale
+    engine.save_settings({"builder_reasoning": "max"})
+    engine.send("Again")
+    await wait_for(lambda: len(engine.conv.chat) == 4, "the second answer")
+    assert engine.builder is not first and clients[-1].options.effort == "max"
+
+
+def test_how_hard_the_assistant_thinks_is_medium_unless_chosen_and_read_back():
+    from davibemanager import config
+    assert config.Settings().builder_reasoning == "medium"
+    for chosen in ("low", "medium", "high", "max"):
+        assert config.from_dict({"settings": {"builder_reasoning": chosen}}).settings.builder_reasoning == chosen
+    for wrong in ("xhigh", "none", "", 3):
+        assert config.from_dict({"settings": {"builder_reasoning": wrong}}).settings.builder_reasoning == "medium"
+
+
 def test_where_the_assistant_compacts_is_200k_unless_chosen_and_read_back():
     from davibemanager import config
     assert config.Settings().builder_context == 200_000

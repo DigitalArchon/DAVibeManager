@@ -34,6 +34,10 @@ DEFAULT_FAST_MODEL = "z-ai/glm-5.3-flash"
 # (CLAUDE_CODE_MAX_CONTEXT_TOKENS), as for a model name it doesn't know it assumes 200K. Settings
 # offers these; the usual models hold 1M
 CONTEXTS = (200_000, 400_000, 1_000_000)
+# how hard the assistant thinks (Settings.builder_reasoning): one setting for every model, each sent
+# the nearest it takes (llm/params.py)
+BUILDER_EFFORTS = ("low", "medium", "high", "max")
+BUILDER_EFFORT = "medium"
 PRIVATE_MODEL = "private/glm-5-3"          # NanoGPT Private Mode: end-to-end encrypted (paid)
 CLAUDE_MODEL = "anthropic/claude-opus-5.5"
 # how often an app's official source is asked for new releases (each app can choose its own)
@@ -120,11 +124,12 @@ class Settings:
     builder_small_model: str = DEFAULT_FAST_MODEL
     # describes images for a model that can't see them (any but Anthropic's); empty = none
     builder_vision_model: str = DEFAULT_FAST_MODEL
-    # how hard a model other than Claude reasons before it answers: "low", "medium" or "high", each
-    # model sent the nearest it takes (llm/params.py: GLM 5.3 takes no medium, and reasons at its
-    # default, max, when sent one). None is called recommended: for building, it's up to the user.
-    # Never "none": with thinking off GLM reasons even more (into its answer)
-    builder_reasoning: str = "high"
+    # how hard the assistant thinks: "low", "medium" (recommended), "high" or "max" (BUILDER_EFFORTS),
+    # for every model, each sent the nearest it takes (llm/params.py: GLM 5.3 takes no medium, and
+    # reasons at its default, max, when sent one, so it is sent high; Claude its own effort and
+    # thinking), and Claude Code in the sandbox started at it. Never "none": with thinking off GLM
+    # reasons even more (into its answer). Medium since Nov 10 2026 (was high); a saved choice stays
+    builder_reasoning: str = BUILDER_EFFORT
     # the conversation's size, in tokens, where the assistant's Claude Code compacts it (CONTEXTS):
     # every request sends the whole conversation, so a bigger one costs more each time
     builder_context: int = CONTEXTS[0]
@@ -236,6 +241,8 @@ def from_dict(data: dict) -> Config:
     cfg.settings = _build(Settings, settings)
     if cfg.settings.builder_context not in CONTEXTS or isinstance(cfg.settings.builder_context, bool):
         cfg.settings.builder_context = CONTEXTS[0]      # a hand-edited size Settings doesn't offer
+    if cfg.settings.builder_reasoning not in BUILDER_EFFORTS:
+        cfg.settings.builder_reasoning = BUILDER_EFFORT  # likewise a level ("xhigh", "none")
     apply_search_default(cfg.settings)
     return cfg
 
