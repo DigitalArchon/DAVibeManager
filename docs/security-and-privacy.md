@@ -114,9 +114,11 @@ through NanoGPT's relay. For that it fetches Sigstore's public trust root (tuf-r
 Tinfoil's latest router release, and for an Intel TDX enclave its published hardware measurements,
 from Tinfoil's proxy of GitHub (github-proxy.tinfoil.sh), and, where the attestation doesn't carry
 it, AMD's certificate for the processor through Tinfoil's proxy (kds-proxy.tinfoil.sh). These are
-public records: nothing of yours goes, and no key. The app makes Tinfoil's fetches follow a redirect
-only to HTTPS, and never from the internet into this computer or your network. Sigstore's trust root
-is fetched by Sigstore's own library, by its own rules; what it fetches is signed, and checked.
+public records: nothing of yours goes, and no key. The app holds every one of these fetches, Sigstore's
+included, to its rule for redirects: one is followed only to HTTPS, and never from the internet into
+this computer or your network (for Sigstore's trust root, five at most). One it may not follow fails
+the attestation, and nothing is sent. Should a version of that software not let the app hold its
+fetches to that, the attestation is refused, saying why, rather than made without it.
 
 ### RedPill (api.redpill.ai): only with Name the provider behind each TEE reply
 
@@ -180,9 +182,9 @@ then fetches from your distribution's own servers, as it always does.
   `http://` is allowed (for a model server of your own, say). An address that is neither is
   refused, saying why: it is never used, and never quietly rewritten.
 - **Redirects.** A model provider's redirect is never followed: the request, your words in it,
-  would go wherever it points. Nor is one in a TEE model's checks; Tinfoil's checks of a private
-  model follow one only to HTTPS, and never from a server on the internet into this computer or your
-  network.
+  would go wherever it points. Nor is one in a TEE model's checks; the checks of a private model
+  (Tinfoil's and Sigstore's) follow one only to HTTPS, and never from a server on the internet into
+  this computer or your network: one they may not follow fails the attestation, and nothing is sent.
 - **Proxies.** The app has no proxy setting of its own: its requests use your system's proxy
   settings (`HTTPS_PROXY` and the like), as most programs do. Sync goes through Tor.
 - **The sandbox** reaches nothing but public internet addresses, over HTTPS, through the app
