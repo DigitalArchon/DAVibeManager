@@ -14,7 +14,8 @@ DA Vibe Manager is in beta. Only the latest release (or `main`) gets fixes.
 
 ## What's in scope
 
-Anything that breaks one of DA Vibe Manager's promises, for example:
+Anything that breaks one of DA Vibe Manager's promises, as
+[docs/security-and-privacy.md](docs/security-and-privacy.md) sets them out, for example:
 
 - the AI (or text in a command's output, a web page or a shared app) getting a command run on
   your computer without your click, or reaching your files from the sandbox;

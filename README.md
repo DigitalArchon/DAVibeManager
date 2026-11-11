@@ -71,6 +71,10 @@ Every release can be rebuilt from its commit to the same bytes: see
 
 ## Security
 
+How DA Vibe Manager handles your security and privacy (what leaves your computer and who gets it,
+what is checked, what is kept, and what it can't protect you from) is set out in
+[docs/security-and-privacy.md](docs/security-and-privacy.md).
+
 Please report vulnerabilities privately as described in [SECURITY.md](SECURITY.md), not in a
 public issue.
 

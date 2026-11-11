@@ -246,7 +246,9 @@ forwarded it. And where NanoGPT has no gateway report for a model, the receipt's
 quote ("receipt keys not in the quote", the attestation says): the quote binds the key that signs each
 reply's record, while the receipt's own key is only published beside it, so the receipt's word that
 the model was verified rests on NanoGPT's relay. (Since November 10 2026 every model RedPill's gateway
-serves has that report.) For a chat nobody else can read, use a private model.
+serves has that report.) For a chat nobody else can read, use a private model. What each kind of
+model is sent, and what each attestation shows and leaves to someone's word, is set out in full in
+[Security and privacy](docs/security-and-privacy.md#the-ai-models).
 
 ## Which host runs the model
 
@@ -457,7 +459,8 @@ nothing needs.
 ## How it stays safe
 
 The assistant runs **inside a sealed Podman container on your computer, not on your computer
-itself.**
+itself.** Every service the app talks to, what it keeps and what it can't protect you from are in
+[Security and privacy](docs/security-and-privacy.md).
 
 - **In its sandbox, it's free.** It can download source code, install tools, build and test
   apps (GUI apps too, on a virtual screen) and take screenshots to show you.
