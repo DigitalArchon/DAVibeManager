@@ -831,3 +831,71 @@ async def test_our_thinking_never_reaches_a_claude_model(tmp_path):
     history = seen[0]["messages"]
     assert history[1]["content"] == [{"type": "text", "text": "Earlier answer."}]
     assert history[3]["content"][0] == claudes
+
+
+# --- an answer with no stream in it is said, never taken for an empty reply (SealedLore's e947938) ---------------
+
+def _answering(status: int, content: bytes = b"", headers: dict | None = None):
+    """A chat client whose provider answers every request so, and the requests it was sent."""
+    from davibemanager.llm.client import LLMClient
+
+    seen = []
+
+    def handler(request):
+        seen.append(request)
+        return httpx.Response(status, content=content, headers=headers or {})
+    return LLMClient("https://example.test/v1", "k", httpx.AsyncClient(transport=httpx.MockTransport(handler))), seen
+
+
+async def _streamed(client, exact: bool = False) -> list:
+    return [e async for e in client.stream("z-ai/glm-5.3", [{"role": "user", "content": "hi"}], exact=exact)]
+
+
+@pytest.mark.parametrize(("body", "kind"), [
+    (b"<html><body>Sign in to the Wi-Fi</body></html>", "text/html"),
+    (b"", "text/event-stream"),
+    (b'{"id": "x", "choices": []}', "application/json"),
+])
+@pytest.mark.parametrize("exact", [False, True])
+async def test_an_answer_with_no_stream_in_it_is_said_never_an_empty_reply(body, kind, exact):
+    """A web page answering 200 where the API was expected (an address without its /v1, a sign-in page on a local
+    network), or a body with no event in it, ended the assistant's turn with an empty reply and no reason: the SDK
+    read it as a stream with nothing in it. A TEE model's reply (exact) went the same way."""
+    from davibemanager.llm.secure_http import ProviderError
+
+    client, seen = _answering(200, body, {"content-type": kind})
+    with pytest.raises(ProviderError) as info:
+        await _streamed(client, exact)
+    said = str(info.value)
+    assert f"https://example.test/v1/chat/completions answered HTTP 200 ({kind}) with no reply in it" in said
+    assert "an address without its /v1" in said and info.value.status_code == 200
+    assert len(seen) == 1, "nothing asked again"
+
+
+async def test_a_stream_is_read_whatever_its_content_type_says():
+    """Real servers label their streams every way (llama.cpp, proxies): a body with `data:` lines is the reply."""
+    stream = b'data: {"id": "c", "choices": [{"delta": {"content": "fine"}, "finish_reason": "stop"}]}\n\ndata: [DONE]\n\n'
+    for kind in ("text/html", "application/json", "text/plain", None):
+        client, _ = _answering(200, stream, {"content-type": kind} if kind else {})
+        events = await _streamed(client)
+        assert "".join(v for k, v in events if k == "text") == "fine", kind
+        assert events[-1][1].finish_reason == "stop" and events[-1][1].body_hash is None, "hashed only for a TEE reply"
+    # and one that says nothing but [DONE] is an empty reply, as the endpoint sent it
+    client, _ = _answering(200, b"data: [DONE]\n\n", {"content-type": "text/event-stream"})
+    events = await _streamed(client)
+    assert events[-1][0] == "done" and events[-1][1].content == ""
+
+
+async def test_the_assistant_is_told_of_an_answer_with_no_stream_in_it_not_given_an_empty_reply(tmp_path):
+    client, _ = _answering(200, b"<html>Not here</html>", {"content-type": "text/html; charset=utf-8"})
+    async with translating(tmp_path, client, models=("z-ai/glm-5.3",)) as (g, log):
+        r = await _post(g, {**ASK, "model": "z-ai/glm-5.3"})
+        whole = await _post(g, {**ASK, "stream": False, "model": "z-ai/glm-5.3"})
+    evs = parse(r.content)
+    assert not [d for n, d in evs if n == "content_block_delta"]
+    said = [d for n, d in evs if n == "error"][0]["error"]["message"]
+    assert said.startswith("z-ai/glm-5.3: https://example.test/v1/chat/completions answered HTTP 200 (text/html)")
+    assert log[0]["status"] == 502 and "with no reply in it" in log[0]["error"]
+    # asked whole, it is refused by what it is, and not asked again: the address is wrong, not busy
+    assert whole.status_code == 502 and "with no reply in it" in whole.json()["error"]["message"]
+    assert whole.headers.get("x-should-retry") == "false"
