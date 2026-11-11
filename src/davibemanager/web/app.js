@@ -1857,15 +1857,20 @@ const REVIEW_WHAT = { second_opinion: "second opinion", shared_app_review: "revi
 // request it was (the assistant's, a second opinion, a picture described) is marked with what was found
 function markChecked(network, check) {
   const req = network.find((e) => e.kind !== "tee_reply" && e.id && e.id === check.of);
-  if (req) Object.assign(req, { tee: check.tee }, check.detail ? { tee_detail: check.detail } : {});
+  if (req) Object.assign(req, { tee: check.tee }, check.detail ? { tee_detail: check.detail } : {},
+    check.upstream ? { tee_upstream: check.upstream } : {});
   return req;
 }
 
-// A TEE reply's mark as Sandbox activity shows it: [its words, its colour, its tooltip], or null for none
+// A TEE reply's mark as Sandbox activity shows it: [its words, its colour, its tooltip], or null for none. Who ran
+// its model, where Settings asks for it (models.upstream_view, llm/tee.py served_by), goes beside a mark whose
+// receipt the name rests on, never beside a failed one, and what that means in its tooltip
 function teeMark(e) {
   const mark = TEE_MARKS[e.tee];
   if (!mark) return null;
-  return [mark[0], mark[1], TEE_TIPS[e.tee] + (e.tee_detail ? ` (${e.tee_detail})` : "")];
+  const up = ["verified", "signed"].includes(e.tee) ? e.tee_upstream : null;
+  return [mark[0] + (up?.name ? ` · run by ${up.label || up.name}` : ""), mark[1],
+    TEE_TIPS[e.tee] + (e.tee_detail ? ` (${e.tee_detail})` : "") + (up?.words ? `\n\n${up.words}` : "")];
 }
 
 function privacyMark(e) {
@@ -2281,6 +2286,10 @@ function aboutSettings(s, save) {
     part("hardware", "Your hardware", "Processor, memory and graphics."));
 }
 
+// Settings → TEE models, under "Name the provider behind each TEE reply" (llm/tee.py served_by): what it does, and
+// whom it tells (SealedLore's TEE_UPSTREAMS_NOTE)
+const TEE_UPSTREAMS_NOTE = "Most TEE models are attested as RedPill's gateway, which passes each request on to the provider that runs the model. With this on, after a TEE reply checks out the app asks RedPill which provider that was (Phala, Fortanix, NEAR AI, 0G, Tinfoil…) and shows it beside the reply's mark in Sandbox activity. This connects to api.redpill.ai directly, not through NanoGPT, so RedPill sees this computer's internet address and that one of its models was used around then. Only the session's id is sent, never your messages or your key. It is one small download a model an hour, and never for models Chutes serves, whose records are megabytes each. What it names is RedPill's word, matched to the receipt the attested gateway signed.";
+
 // where the assistant's Claude Code compacts the conversation (config.CONTEXTS), and a model of its
 // that holds less than that, once the provider's list says
 const CONTEXTS = [[200000, "200K"], [400000, "400K"], [1000000, "1M"]];
@@ -2377,6 +2386,14 @@ function settingsPanel() {
       h("div", { class: "warnbox" }, h("b", {}, "Mind the cost. "), COST_NOTE),
       h("div", { class: "field" }, h("span", {}, "NanoGPT API key"), h("div", { class: "row" }, key,
         h("button", { class: "small", onclick: () => guarded(async () => { if (!key.value.trim()) return; await api("POST", "/api/setup", { api_key: key.value }); key.value = ""; toast("Key saved.", "ok"); }) }, "Save")))),
+    h("div", { class: "section" }, h("h3", {}, "TEE models"),
+      h("div", { class: "small muted" }, "NanoGPT's TEE/ models are attested before anything is sent to them, and ☰ → Sandbox activity marks each reply with what its check found."),
+      // off by default, and said plainly (SealedLore's, the author's, Nov 11 2026): the one call that goes to RedPill
+      // directly, not through NanoGPT
+      h("label", { class: "radio" }, h("input", { type: "checkbox", checked: !!s.tee_name_upstreams,
+        onchange: (e) => save({ tee_name_upstreams: e.target.checked }, e.target.checked
+          ? "TEE replies name the provider that ran them, from the next one." : "Nothing is asked of api.redpill.ai now.") }),
+        h("div", {}, h("div", {}, "Name the provider behind each TEE reply"), h("div", { class: "small muted" }, TEE_UPSTREAMS_NOTE)))),
     h("div", { class: "section" }, h("h3", {}, "Web searches"),
       h("label", { class: "radio" }, h("input", { type: "checkbox", checked: s.web_search !== false, onchange: (e) => save({ web_search: e.target.checked }) }),
         h("div", {}, h("div", {}, "Let the assistant search the web"), h("div", { class: "small muted" },

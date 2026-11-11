@@ -137,6 +137,11 @@ class Settings:
     # "latency" | "throughput" | "price" | "host", "fp8": bool, "host": id}. None for a model means
     # NanoGPT's own choice (on a subscription, included). Any route is paid per use
     model_routes: dict = field(default_factory=dict)
+    # after a TEE reply whose receipt holds, name the provider that ran its model, from RedPill's public
+    # record of its gateway's session (llm/tee.py served_by), beside the reply's mark in Sandbox activity.
+    # Off by default: it connects to api.redpill.ai directly, not through NanoGPT, so RedPill sees this
+    # computer's address (SealedLore's, the author's, Nov 11 2026: a clear choice in Settings)
+    tee_name_upstreams: bool = False
     # generation parameters for the reviewer; a missing key means "the model's default"
     generation: dict = field(default_factory=lambda: {"temperature": 0.2, "reasoning_effort": "low"})
     # sandbox container limits

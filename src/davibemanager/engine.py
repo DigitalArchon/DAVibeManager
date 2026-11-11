@@ -587,6 +587,8 @@ class Engine:
             if data["builder_context"] != s.builder_context:
                 self._builder_stale = True        # Claude Code is told at its start
             s.builder_context = data["builder_context"]
+        if "tee_name_upstreams" in data:
+            s.tee_name_upstreams = bool(data["tee_name_upstreams"])    # asked of RedPill from the next TEE reply
         if "web_search" in data:
             s.web_search = bool(data["web_search"])
         if "search_zero_retention" in data:
@@ -2157,6 +2159,8 @@ class Engine:
                     old["tee"] = ev.get("tee")
                     if ev.get("detail"):
                         old["tee_detail"] = ev["detail"]
+                    if ev.get("upstream"):
+                        old["tee_upstream"] = ev["upstream"]      # who ran its model, where that was asked
                     break
         else:
             self._count_tokens(ev)

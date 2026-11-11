@@ -175,3 +175,44 @@ def test_a_tee_replys_mark_says_what_is_the_gateways_word_and_that_it_passed_in_
         assert "passed NanoGPT's servers in the clear: a private model is end-to-end encrypted instead" in tip
     assert failed[1] == "danger" and "its receipt doesn't hold" in failed[2] and "attested again" in failed[2]
     assert checking[0] == "TEE · checking its signature…" and none is None
+
+
+def test_a_tee_reply_says_who_ran_its_model_beside_its_mark_when_settings_ask():
+    """Settings → TEE models (SealedLore's, Nov 11 2026): the provider RedPill's record names goes beside a mark
+    whose receipt the name rests on, "TEE verified · run by Phala", and what that means in its tooltip; never
+    beside a failed check, and a lookup that named nobody says why in the tooltip alone."""
+    phala = {"name": "phala-244", "label": "Phala", "words": "Run by Phala: RedPill's record of its gateway's session …"}
+    nobody = {"name": "", "label": "", "words": "The provider that ran it wasn't named: api.redpill.ai answered HTTP 503."}
+    cases = [{"tee": "verified", "tee_upstream": phala}, {"tee": "signed", "tee_upstream": {**phala, "label": "Tinfoil"}},
+             {"tee": "failed", "tee_upstream": phala}, {"tee": "verified", "tee_upstream": nobody}, {"tee": "verified"}]
+    verified, signed, failed, unnamed, plain = run(tee_mark(), cases)
+    assert verified[0] == "TEE verified · run by Phala" and verified[2].endswith("\n\n" + phala["words"])
+    assert signed[0] == "TEE signed, text not compared · run by Tinfoil"
+    assert failed[0] == "TEE ⚠ check failed" and phala["words"] not in failed[2]
+    assert unnamed[0] == "TEE verified" and unnamed[2].endswith("\n\n" + nobody["words"])
+    assert plain[0] == "TEE verified" and "\n\n" not in plain[2]
+
+
+def test_a_tee_replys_check_carries_who_ran_its_model_to_its_row():
+    code = script("markChecked") + """
+const test = (check) => {
+  const rows = [{ kind: "model", id: "a", tee: "checking" }];
+  markChecked(rows, check);
+  return rows[0].tee_upstream || null;
+};"""
+    up = {"name": "tinfoil", "label": "Tinfoil", "words": "Run by Tinfoil …"}
+    assert run(code, [{"of": "a", "tee": "verified", "upstream": up}, {"of": "a", "tee": "verified"}]) == [up, None]
+
+
+def test_naming_a_tee_replys_provider_is_a_choice_that_says_where_it_goes():
+    """The author, Nov 11 2026: "Port it, off by default, include the warning to the user about what it does"."""
+    note = json.loads(re.search(r"^const TEE_UPSTREAMS_NOTE = (\".*\");$", APP_JS.read_text(encoding="utf-8"), re.M).group(1))
+    for said in ("connects to api.redpill.ai directly, not through NanoGPT", "RedPill sees this computer's internet address",
+                 "that one of its models was used around then", "Only the session's id is sent, never your messages or your key",
+                 "one small download a model an hour", "never for models Chutes serves, whose records are megabytes each",
+                 "RedPill's word, matched to the receipt the attested gateway signed"):
+        assert said in note, said
+    text = APP_JS.read_text(encoding="utf-8")
+    panel = re.search(r"^function settingsPanel\(\) \{.*?^}$", text, re.M | re.S).group(0)
+    assert 'checked: !!s.tee_name_upstreams' in panel and "save({ tee_name_upstreams: e.target.checked }" in panel
+    assert '"Name the provider behind each TEE reply"' in panel and "TEE_UPSTREAMS_NOTE" in panel

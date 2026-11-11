@@ -993,6 +993,11 @@ def receipt_server(
     plain=None,
     also: int | None = None,
     with_receipt: bool = True,
+    session: dict | None = None,
+    session_body: bytes | None = None,
+    session_status: int = 200,
+    session_headers: dict | None = None,
+    guarded: bool = False,
 ):
     """nano-gpt as live (Nov 4 2026): the attestation's quote binds the signing key; the keyset beside
     it lists that key as its e2ee key ("e2ee"), or the quote binds the keyset itself ("statement"), or
@@ -1002,7 +1007,12 @@ def receipt_server(
     `aci` is what `report=aci` answers (Nov 10 2026): RedPill's report binding the keyset to our nonce
     ("bound"), to another ("unbound"), a 400 ("400"), or the plain report as before nano-gpt offered it
     ("none"). `plain(nonce) -> (status, body)` stands in for the plain report. With `also`, the keyset
-    lists a second e2ee key, that one's. `with_receipt` False: the record comes with no receipt in it."""
+    lists a second e2ee key, that one's. `with_receipt` False: the record comes with no receipt in it.
+
+    `session`: RedPill's record of the gateway's session, which the receipt names by its sha256 and
+    api.redpill.ai serves (as `session_body`, or with `session_status` / `session_headers`, when given).
+    `guarded`: the client is built as the app builds the TEE client's (llm/secure_http.make_client: its
+    redirect guard), not a bare one."""
     import hashlib
 
     from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
@@ -1033,6 +1043,7 @@ def receipt_server(
     request_hash = hashlib.sha256(b"the request forwarded").hexdigest()
     response_hash = (body_hash or "sha256:" + hashlib.sha256(stream).hexdigest())[7:]
     pending = [not_ready]
+    session_id = hashlib.sha256(tee._canonical(session)).hexdigest() if session else "s"
 
     def handler(request: httpx.Request) -> httpx.Response:
         url = str(request.url)
@@ -1040,6 +1051,11 @@ def receipt_server(
             seen.append(request)
         if url.startswith(NRAS_URL):
             return httpx.Response(200, json=[["JWT", jwt({"x-nvidia-overall-att-result": True})], {}])
+        if url.startswith(tee.SESSION_RECORDS):
+            body = session_body if session_body is not None else json.dumps(session).encode()
+            # pieces, as a stream with no length named
+            content = iter(body) if isinstance(body, list) else body
+            return httpx.Response(session_status, content=content, headers=session_headers or {})
         if "/tee/attestation" in url:
             nonce = request.url.params["nonce"]
             if request.url.params.get("report") == "aci" and aci != "none":
@@ -1101,7 +1117,7 @@ def receipt_server(
                 "event_log": [
                     {"type": "request.received", "body_hash": f"sha256:{request_hash}"},
                     {"type": "upstream.verified", "result": upstream, "required": True,
-                     "session_id": "s", "model_id": "m"},
+                     "session_id": session_id, "model_id": "m"},
                     {"type": "response.returned", "body_hash": f"sha256:{response_hash}"},
                 ],
             }
@@ -1118,6 +1134,10 @@ def receipt_server(
             )
         return httpx.Response(404)
 
+    if guarded:
+        from davibemanager.llm.secure_http import make_client
+
+        return make_client("https://nano-gpt.com/api/v1", transport=httpx.MockTransport(handler), trust_env=False)
     return httpx.Client(transport=httpx.MockTransport(handler))
 
 
@@ -1779,3 +1799,211 @@ async def test_a_tee_picture_describer_whose_attestation_fails_is_sent_nothing(e
     assert asked == []                                                # the picture never went
     row = next(e for e in engine.network if e.get("kind") == "vision")
     assert row["status"] == 502 and "attestation" in row["error"]
+
+
+# --- who ran the model: RedPill's session records (Settings → TEE models; SealedLore's tests, 44e145d) -----------
+
+TINFOIL = {
+    "api_version": "aci/1",
+    "upstream_name": "tinfoil",
+    "verifier_id": "private-ai-verifier/tinfoil/v1",
+    "claims": {
+        "extra": {"evidence_scope": "router"},
+        "gpu_attested": {"status": "unknown"},
+    },
+    "established_at": 1_799_999_000,
+    "expires_at": 1_800_002_600,
+}
+
+
+@pytest.fixture
+def no_records_kept(monkeypatch):
+    """Each test reads RedPill's records afresh: they are kept a process."""
+    from davibemanager.llm import tee
+
+    monkeypatch.setattr(tee, "_records", {})
+
+
+def redpill_asked(seen) -> list:
+    from davibemanager.llm import tee
+
+    return [r for r in seen if str(r.url).startswith(tee.SESSION_RECORDS)]
+
+
+def test_a_reply_names_its_provider_by_redpills_record_read_once_a_session(no_records_kept):
+    """The author, Nov 11 2026: name the reply's upstream, by choice, saying it goes to api.redpill.ai directly.
+    The receipt the attested gateway signed names the session by the record's sha256, so the record is believed
+    only as the receipt names it."""
+    import hashlib
+
+    from davibemanager.llm import tee
+    from davibemanager.llm.tee import upstream_label, upstream_words
+
+    seen: list = []
+    client = receipt_client(aci="bound", session=TINFOIL, seen=seen)
+    found = client.check("req_9", receipt_id="rcpt-1", body_hash=streamed(), name_upstream=True)
+    assert found.mark == "verified"
+    upstream = found.upstream
+    assert (upstream.name, upstream.scope, upstream.gpus, upstream.model) == ("tinfoil", "router", "unknown", "m")
+    assert upstream_label(upstream) == "Tinfoil"
+    words = upstream_words(upstream)
+    assert "its router" in words and "no GPU attestation" in words
+    assert "RedPill's word, fetched from api.redpill.ai" in words
+    asked = redpill_asked(seen)
+    assert len(asked) == 1 and asked[0].method == "GET"
+    assert str(asked[0].url) == tee.SESSION_RECORDS + hashlib.sha256(tee._canonical(TINFOIL)).hexdigest()
+    assert str(asked[0].url).startswith("https://api.redpill.ai/")
+    sent = {k.lower() for k in asked[0].headers}
+    assert "authorization" not in sent and "x-tee-verification-route" not in sent, "no key goes to RedPill"
+    # The next reply in the same session reads no record again; one not asked to name its provider asks
+    # nothing of RedPill at all.
+    again = client.check("req_9", receipt_id="rcpt-1", body_hash=streamed(), name_upstream=True)
+    assert again.upstream.name == "tinfoil"
+    assert client.check_reply("req_9", receipt_id="rcpt-1", body_hash=streamed()) == "verified"
+    assert len(redpill_asked(seen)) == 1
+
+
+def test_a_provider_label_is_redpills_name_without_its_number():
+    from davibemanager.llm.tee import TeeUpstream, upstream_label
+
+    assert upstream_label(TeeUpstream(name="phala-244")) == "Phala"
+    assert upstream_label(TeeUpstream(name="near-ai")) == "NEAR AI"
+    assert upstream_label(TeeUpstream(name="somebody-new")) == "somebody-new"
+
+
+@pytest.mark.parametrize(
+    "server, note",
+    [
+        ({"session_body": b'{"upstream_name": "chutes"}'}, "isn't the one the receipt names"),
+        ({"session_headers": {"content-length": "3424330"}}, "3,424 KB, more than is read"),
+        ({"session_body": b" " * 1_000_001}, "1,000 KB, more than is read for one reply"),
+        ({"session_body": [b" " * 600_000, b" " * 600_000]}, "its record is more than is read for one reply"),
+        ({"session_status": 503}, "answered HTTP 503"),
+        ({"session_status": 308, "session_headers": {"location": "https://elsewhere.example/s"}}, "answered HTTP 308"),
+        ({"session_body": b"not json"}, "couldn't be read"),
+        # nested past what Python's reader takes (RecursionError, not ValueError): a name not read, never the mark
+        ({"session_body": b"[" * 100_000 + b"]" * 100_000}, "couldn't be read"),
+    ],
+)
+def test_a_record_that_cant_be_read_or_believed_names_nobody(no_records_kept, server, note):
+    """Never a failed reply: the mark is the gateway's check, and stands."""
+    seen: list = []
+    client = receipt_client(aci="bound", session=TINFOIL, seen=seen, **server)
+    found = client.check("req_9", receipt_id="rcpt-1", body_hash=streamed(), name_upstream=True)
+    assert found.mark == "verified"
+    assert found.upstream.name == "" and note in found.upstream.note
+    assert len(redpill_asked(seen)) == 1, "nothing followed, nothing asked again"
+
+
+def test_redpills_record_is_fetched_by_the_tee_clients_own_rules(no_records_kept):
+    """As Intel's and NVIDIA's are (llm/secure_http.make_client): a redirect to anywhere insecure is refused, and
+    none is followed."""
+    seen: list = []
+    client = receipt_client(aci="bound", session=TINFOIL, seen=seen, guarded=True, session_status=302,
+                            session_headers={"location": "http://redpill.example/v1/aci/sessions/x"})
+    found = client.check("req_9", receipt_id="rcpt-1", body_hash=streamed(), name_upstream=True)
+    assert found.mark == "verified" and found.upstream.name == ""
+    assert "refusing to send over an insecure connection" in found.upstream.note
+    assert len(redpill_asked(seen)) == 1
+
+
+def test_a_reply_served_outside_the_session_its_receipt_names_names_nobody(no_records_kept):
+    stale = {**TINFOIL, "expires_at": 1_799_999_500}
+    client = receipt_client(aci="bound", session=stale)
+    found = client.check("req_9", receipt_id="rcpt-1", body_hash=streamed(), name_upstream=True)
+    assert found.mark == "verified" and "outside the session" in found.upstream.note
+
+
+def test_a_model_chutes_serves_is_never_looked_up(no_records_kept, instances):
+    """A Chutes instance has a session of its own, 3.4 MB for deepseek-v3.2, and replies spread over the
+    instances: megabytes nearly every message. A reply RedPill's gateway answers for one isn't looked up either."""
+    seen: list = []
+    client = receipt_client(model="TEE/glm-5.1", aci="bound", plain=lambda nonce: (200, instances.body(nonce)),
+                            session=TINFOIL, seen=seen)
+    found = client.check("req_9", receipt_id="rcpt-1", body_hash=streamed(), name_upstream=True)
+    assert found.mark == "verified" and found.upstream.name == "" and "Chutes serves" in found.upstream.note
+    assert redpill_asked(seen) == []
+
+
+def test_a_session_named_by_a_receipt_not_read_is_never_looked_up(no_records_kept):
+    seen: list = []
+    client = receipt_client(tied="none", session=TINFOIL, seen=seen)
+    found = client.check("req_9", receipt_id="rcpt-1", body_hash=streamed(), name_upstream=True)
+    assert found.mark == "verified" and "wasn't read under the attested keys" in found.upstream.note
+    assert redpill_asked(seen) == []
+
+
+def test_at_most_64_records_are_kept(no_records_kept):
+    import hashlib
+
+    from davibemanager.llm import tee
+
+    records = [{"upstream_name": f"p-{n}", "established_at": 0, "expires_at": 1} for n in range(tee.SESSION_RECORDS_KEPT + 1)]
+    by_id = {hashlib.sha256(tee._canonical(r)).hexdigest(): r for r in records}
+    asked: list = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        asked.append(request)
+        return httpx.Response(200, json=by_id[str(request.url).rsplit("/", 1)[1]])
+    with httpx.Client(transport=httpx.MockTransport(handler)) as http:
+        ids = list(by_id)
+        for session in ids:
+            tee._session_record(http, session)
+        assert len(tee._records) == tee.SESSION_RECORDS_KEPT and ids[0] not in tee._records
+        tee._session_record(http, ids[-1])
+    assert len(asked) == len(ids), "the newest read once"
+
+
+async def test_a_reply_names_its_provider_only_when_settings_ask(tmp_path, no_records_kept):
+    """Off by default (Settings → TEE models): asking RedPill goes to api.redpill.ai directly, so nothing asks it
+    unless the user chose to. Every reply whose mark Sandbox activity shows is named once asked: the assistant's,
+    here through the gateway."""
+    seen, told, logged = [], [], []
+    models, prov = _tee_models(seen, told, logged, aci="bound", session=TINFOIL)
+    assert models.cfg.settings.tee_name_upstreams is False
+    factory, asked = _stream_of(STREAM)
+    said, log = await _ask_through_gateway(tmp_path, models, prov, factory)
+    (check,) = [e for e in log if e["kind"] == "tee_reply"]
+    assert check["tee"] == "verified" and "upstream" not in check and redpill_asked(seen) == []
+    models.cfg.settings.tee_name_upstreams = True
+    said, log = await _ask_through_gateway(tmp_path, models, prov, factory)
+    (check,) = [e for e in log if e["kind"] == "tee_reply"]
+    up = check["upstream"]
+    assert check["tee"] == "verified" and (up["name"], up["label"], up["scope"], up["note"]) == ("tinfoil", "Tinfoil", "router", "")
+    assert up["words"].startswith("Run by Tinfoil (as m): RedPill's record") and "fetched from api.redpill.ai" in up["words"]
+    assert len(redpill_asked(seen)) == 1
+    assert [d for event, d in logged if event == "tee_reply_checked"][-1]["upstream"]["name"] == "tinfoil"
+
+
+async def test_a_reply_whose_provider_wasnt_named_says_why_and_keeps_its_mark(tmp_path, no_records_kept):
+    seen, told, logged = [], [], []
+    models, prov = _tee_models(seen, told, logged, aci="bound", session=TINFOIL, session_status=503)
+    models.cfg.settings.tee_name_upstreams = True
+    factory, asked = _stream_of(STREAM)
+    said, log = await _ask_through_gateway(tmp_path, models, prov, factory)
+    (check,) = [e for e in log if e["kind"] == "tee_reply"]
+    assert check["tee"] == "verified" and check["upstream"]["label"] == ""
+    assert check["upstream"]["words"] == "The provider that ran it wasn't named: api.redpill.ai answered HTTP 503."
+
+
+async def test_the_log_marks_a_request_with_who_ran_its_model(env):
+    engine, _, events = env
+    engine._network_event({"kind": "review", "model": "TEE/qwen3.8-27b", "id": "abc123", "tee": "checking", "status": 200})
+    upstream = {"name": "phala-244", "label": "Phala", "words": "Run by Phala: RedPill's record …"}
+    engine._network_event({"kind": "tee_reply", "of": "abc123", "model": "TEE/qwen3.8-27b", "tee": "verified",
+                           "upstream": upstream})
+    request = engine.network[-1]
+    assert request["tee"] == "verified" and request["tee_upstream"] == upstream
+    assert _logged()[-1]["upstream"] == upstream                         # network.jsonl keeps the check as it came
+
+
+async def test_naming_a_tee_replys_provider_is_a_setting_off_by_default(env):
+    from davibemanager import config as config_mod
+
+    engine, _, events = env
+    assert config_mod.Settings().tee_name_upstreams is False
+    engine.save_settings({"tee_name_upstreams": True})
+    assert engine.cfg.settings.tee_name_upstreams is True
+    assert config_mod.from_dict(engine.cfg.to_dict()).settings.tee_name_upstreams is True
+    engine.save_settings({"tee_name_upstreams": False})
+    assert engine.cfg.settings.tee_name_upstreams is False

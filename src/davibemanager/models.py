@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import re
 import time
+from dataclasses import asdict
 from typing import Callable
 
 from . import config as config_mod
@@ -34,6 +35,13 @@ TEE_REATTEST_SECONDS = 900
 CAPS_RETRY_SECONDS = 30
 # the reviewer chosen automatically: the first private model matching one of these, in order
 REVIEWER_PREFERENCE = (r"glm", r"deepseek", r"kimi", r"qwen", r"gpt-oss", r"llama", r".")
+
+
+def upstream_view(upstream: tee_mod.TeeUpstream) -> dict:
+    """Who ran a TEE reply's model (llm/tee.py served_by), as its check's event carries it: RedPill's record
+    as read, the provider's name as the mark shows it ("Phala"), and what it means for the mark's tooltip."""
+    return {**asdict(upstream), "label": tee_mod.upstream_label(upstream) if upstream.name else "",
+            "words": tee_mod.upstream_words(upstream)}
 
 
 class UserError(Exception):
@@ -473,7 +481,8 @@ class Models:
     def reply_check(self, prov: Provider, model: str):
         """How a reply of TEE `model` is checked, against the attestation in force now (tee_guard made it
         just before the request): an async (reply's TurnResult) -> {"tee": "verified" | "signed" | "failed"
-        | "unchecked", "detail"?} that never raises (llm/tee.py check_reply), or None when none is kept.
+        | "unchecked", "detail"?, "upstream"?} that never raises (llm/tee.py check_reply), or None when none is
+        kept. "upstream" (upstream_view) is who ran the model, by RedPill's record, when Settings asks for it.
 
         The outcome goes in the log; a reply that failed (not signed by the attested key, or not the text it
         signed) is said to the user, and its model attested again before its next request. One that couldn't
@@ -486,11 +495,17 @@ class Models:
         client = hit[0]
 
         async def check(reply) -> dict:
+            record = {"receipt_id": getattr(reply, "receipt_id", None), "body_hash": getattr(reply, "body_hash", None),
+                      "route": getattr(reply, "tee_route", None)}
+            # who ran its model too, where the user asked for it (Settings, off by default: it asks api.redpill.ai,
+            # llm/tee.py served_by); never the mark's concern
+            named = self.cfg.settings.tee_name_upstreams and callable(getattr(client, "check", None))
             try:
-                mark = await asyncio.to_thread(
-                    client.check_reply, getattr(reply, "id", None), receipt_id=getattr(reply, "receipt_id", None),
-                    body_hash=getattr(reply, "body_hash", None), route=getattr(reply, "tee_route", None))
-                found = {"tee": mark}
+                if named:
+                    done = await asyncio.to_thread(client.check, getattr(reply, "id", None), **record, name_upstream=True)
+                    found = {"tee": done.mark, **({"upstream": upstream_view(done.upstream)} if done.upstream else {})}
+                else:
+                    found = {"tee": await asyncio.to_thread(client.check_reply, getattr(reply, "id", None), **record)}
             except Exception as e:  # noqa: BLE001 - an unreachable check is not a failed one
                 found = {"tee": "unchecked", "detail": str(e)[:300]}
             self._log("tee_reply_checked", model=model, **found)
