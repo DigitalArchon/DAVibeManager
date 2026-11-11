@@ -975,6 +975,7 @@ def receipt_server(
     aci: str = "none",
     plain=None,
     also: int | None = None,
+    with_receipt: bool = True,
 ):
     """nano-gpt as live (Nov 4 2026): the attestation's quote binds the signing key; the keyset beside
     it lists that key as its e2ee key ("e2ee"), or the quote binds the keyset itself ("statement"), or
@@ -984,7 +985,7 @@ def receipt_server(
     `aci` is what `report=aci` answers (Nov 10 2026): RedPill's report binding the keyset to our nonce
     ("bound"), to another ("unbound"), a 400 ("400"), or the plain report as before nano-gpt offered it
     ("none"). `plain(nonce) -> (status, body)` stands in for the plain report. With `also`, the keyset
-    lists a second e2ee key, that one's."""
+    lists a second e2ee key, that one's. `with_receipt` False: the record comes with no receipt in it."""
     import hashlib
 
     from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
@@ -1095,7 +1096,7 @@ def receipt_server(
                     "signature": sign(personal_hash(text.encode()), signer, 4242).hex(),
                     "signing_address": address,
                     "signing_algo": "ecdsa",
-                    "receipt": receipt,
+                    **({"receipt": receipt} if with_receipt else {}),
                 },
             )
         return httpx.Response(404)
@@ -1290,6 +1291,40 @@ def test_the_gateway_stands_in_for_a_model_whose_own_evidence_was_relayed():
     # Without the gateway, refused as before.
     with pytest.raises(TeeRefused, match="nonce the relay chose"):
         receipt_client(aci="400", plain=lambda nonce: (200, RELAYED))
+
+
+def test_through_the_gateway_alone_a_reply_without_a_receipt_is_not_verified():
+    """The gateway's signature says only that the reply passed through it; the receipt is its word that the
+    model's own enclave answered. A record with no receipt was "verified" all the same, as for a model attested
+    itself (SealedLore's test, dd39efc)."""
+    bare = receipt_client(aci="bound", plain=lambda nonce: (200, RELAYED), with_receipt=False)
+    assert bare.attest().shortfalls == ["no GPU evidence", MODEL_ENCLAVE_UNCHECKED]
+    with pytest.raises(ProviderError, match="no receipt"):
+        bare.check_reply("req_9", receipt_id="rcpt-1", body_hash=streamed())
+    # nor with a keyset too loose to read one under (it names no time it holds until): the receipt that came
+    # isn't read, so it is no one's word that counts
+    loose = receipt_client(aci="bound", not_after="undated", plain=lambda nonce: (200, RELAYED))
+    assert loose.keyset is None and "receipt keys expired" in loose.attest().shortfalls
+    with pytest.raises(ProviderError, match="no receipt"):
+        loose.check_reply("req_9", receipt_id="rcpt-1", body_hash=streamed())
+    # A model attested itself needs none: its own key signed the reply.
+    itself = receipt_client(with_receipt=False)
+    assert not itself.receipt_required
+    assert itself.check_reply("req_9", body_hash=streamed()) == "verified"
+
+
+def test_the_receipt_rule_is_cleared_when_the_model_is_attested_again(instances):
+    """Attested through the gateway alone once, then its own report holds (Chutes' instances, this time): the
+    rule is the gateway-alone attestation's, not the model's for good."""
+    asked: list[str] = []
+
+    def plain(nonce):
+        asked.append(nonce)
+        return (200, RELAYED) if len(asked) == 1 else (200, instances.body(nonce))
+    client = receipt_client(model="TEE/glm-5.1", aci="bound", plain=plain)
+    assert client.receipt_required
+    client.attest()
+    assert client.instances and not client.receipt_required
 
 
 def test_a_slow_attestation_is_asked_again_with_a_new_nonce_then_the_gateway_stands_in():

@@ -366,6 +366,10 @@ class TeeClient:
         self.signers: frozenset[str] = frozenset()
         # Attested by its instances (Chutes), whose replies carry no record.
         self.instances = False
+        # Attested through the gateway alone (`_attest_gateway_alone`): a reply
+        # is verified only with a receipt that holds, the gateway's word that
+        # the model's own enclave answered it.
+        self.receipt_required = False
         # The receipt keys, when tied to the attested quote (`_take_keyset`).
         self.keyset: dict[str, Any] | None = None
         self.keyset_digest: str | None = None
@@ -473,6 +477,7 @@ class TeeClient:
         self.signers = frozenset()
         self.keyset = self.keyset_digest = None
         self.instances = False
+        self.receipt_required = False
         gateway, unheard = self._attest_gateway()
         try:
             body, nonce = self._fetch_attestation()
@@ -631,6 +636,7 @@ class TeeClient:
             "gateway's word that its upstream was verified"
         )
         self.signers = gateway.signers
+        self.receipt_required = True
         self._take_keyset(gateway.keyset, "the quote binds its receipt keys", check)
         return check.attestation()
 
@@ -983,9 +989,17 @@ class TeeClient:
         if compared and f"sha256:{response_hash.lower()}" != body_hash:
             return "failed"
         receipt = body.get("receipt")
-        if isinstance(receipt, dict) and self.keyset is not None:
-            if not self._receipt_holds(receipt, request_hash, response_hash):
-                return "failed"
+        checked = isinstance(receipt, dict) and self.keyset is not None
+        if checked and not self._receipt_holds(receipt, request_hash, response_hash):
+            return "failed"
+        if self.receipt_required and not checked:
+            # Attested through the gateway alone, the gateway's signature says
+            # only that the reply passed through it: the receipt is its word
+            # that the model's own enclave answered, and without one that holds
+            # under the attested keys, that much wasn't checked.
+            raise ProviderError(
+                "the reply came with no receipt to say the model's enclave answered"
+            )
         return "verified" if compared else "signed"
 
     def _signature(self, lookup: str, route: str | None, *, wait: bool) -> dict[str, Any]:
