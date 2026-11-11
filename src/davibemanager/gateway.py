@@ -468,6 +468,15 @@ class Gateway:
                             "(Settings), or leave them empty to use the same one.", "permission_error", model=sent_model)
             if up.chat is not None and not is_anthropic(sent_model):
                 return await self._translated(path, data, up, sent_model, model, len(body))
+            if up.guard is not None:
+                # forwarded as it is, but through the guard every translated request takes: a model the provider's
+                # settings mark TEE (tier_overrides) is attested before anything goes to it, or nothing does
+                # (llm/client.detect_tier relies on it; SealedLore's 0721878: every call to a TEE model, guarded)
+                try:
+                    await up.guard(sent_model)
+                except Exception as e:  # noqa: BLE001 - the reason goes to the CLI and the log
+                    return fail(path, 502, f"Couldn't prepare the request for {sent_model}: {e}", "api_error",
+                                retry=_may_pass(e), model=sent_model)
             if bridge.drop_our_thinking(data):
                 # another model's reasoning, signed as ours: Anthropic's API refuses a signature it didn't make
                 body = json.dumps(data).encode()

@@ -1554,6 +1554,65 @@ async def test_a_tee_reply_that_cant_be_checked_is_unchecked_and_sends_nothing_a
     assert not [d for kind, d in told if kind == "toast" and d.get("level") == "error"]
 
 
+async def _forward_claude(tmp_path, guard, model: str = "anthropic/claude-opus-5.5"):
+    """Claude Code's request for a Claude model, which the gateway forwards to the provider's Anthropic endpoint as
+    it is (never translated). What reached the provider, and what Claude Code was told."""
+    from davibemanager.gateway import Gateway, Upstream
+
+    forwarded = []
+
+    def provider(request: httpx.Request) -> httpx.Response:
+        forwarded.append(request)
+        return httpx.Response(200, json={"type": "message", "content": [], "usage": {}},
+                              headers={"content-type": "application/json"})
+    g = Gateway(tmp_path / "gw", lambda: Upstream(
+        "https://nano-gpt.com/api/v1", "bearer", lambda: "k", (model,), provider="NanoGPT",
+        chat=lambda m: pytest.fail("a Claude model isn't translated"), guard=guard),
+        http=httpx.AsyncClient(transport=httpx.MockTransport(provider)))
+    await g.start()
+    try:
+        async with httpx.AsyncClient(transport=httpx.AsyncHTTPTransport(uds=str(g.model_socket)), base_url="http://gw") as c:
+            r = await c.post("/v1/messages", headers={"authorization": f"Bearer {g.token}"}, json={
+                "model": model, "messages": [{"role": "user", "content": "the user's own words"}]})
+    finally:
+        await g.stop()
+    return forwarded, r
+
+
+async def test_a_claude_model_marked_tee_is_attested_before_anything_is_forwarded(tmp_path):
+    """A provider's tier_overrides may mark a cloud model TEE (llm/client.detect_tier: "raising standard -> tee is
+    safe: a TEE model is attested before every send, failing closed"). A Claude model goes to the provider's
+    Anthropic endpoint as it is, and that path skipped the guard every translated request takes: what was asked
+    of it went unattested. As SealedLore's 0721878: every call to a TEE model goes through the guard."""
+    guarded = []
+
+    async def refused(model):
+        guarded.append(model)
+        raise RuntimeError(f"{model}'s TEE attestation didn't hold, so nothing was sent to it")
+    forwarded, r = await _forward_claude(tmp_path, refused)
+    assert guarded == ["anthropic/claude-opus-5.5"] and forwarded == []
+    assert r.status_code == 502 and "attestation didn't hold" in r.json()["error"]["message"]
+    assert r.headers.get("x-should-retry") == "false", "asking again won't help"
+
+    async def not_tee(model):                    # the guard's answer for any other model: nothing to attest
+        return None
+    forwarded, r = await _forward_claude(tmp_path, not_tee)
+    assert r.status_code == 200 and len(forwarded) == 1, "forwarded as ever"
+
+    # the app's own guard (Models.tee_guard), with the provider's settings marking the model TEE: NanoGPT offers
+    # no attestation for it, so nothing goes
+    from davibemanager.config import Config, Provider
+    from davibemanager.models import Models
+
+    prov = Provider("NanoGPT", "https://nano-gpt.com/api/v1", tier_overrides={"anthropic/claude-opus-5.5": "tee"})
+    models = Models(Config(providers=[prov]), save_config=lambda c: None, emit=lambda *a, **k: None,
+                    log=lambda *a, **k: None)
+    models.key = lambda p: "k"
+    models.tee_factory = lambda base, key, model: client_for(attestation_status=400)
+    forwarded, r = await _forward_claude(tmp_path, lambda m: models.tee_guard(prov, m))
+    assert forwarded == [] and "attestation didn't hold, so nothing was sent to it" in r.json()["error"]["message"]
+
+
 async def test_a_model_that_isnt_tee_is_read_as_ever_and_nothing_checked(tmp_path):
     from davibemanager.gateway import Gateway, Upstream
     from davibemanager.llm.client import TurnResult

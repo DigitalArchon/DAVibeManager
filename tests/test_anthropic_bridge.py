@@ -220,7 +220,8 @@ async def test_every_non_anthropic_model_is_translated_and_a_tee_model_checked_f
             assert r.status_code == 502 and "attestation refused" in r.text
             await c.post("/v1/messages", headers=h, json={"model": "anthropic/claude-opus-5.5", **msg})
             assert upstream == ["anthropic/claude-opus-5.5"]          # Claude goes straight through
-        assert guarded == ["z-ai/glm-5.3", "TEE/glm-5.3"] and len(fake.calls) == 1
+        # every model through the guard, Claude's too (one a provider marks TEE is attested first: test_tee.py)
+        assert guarded == ["z-ai/glm-5.3", "TEE/glm-5.3", "anthropic/claude-opus-5.5"] and len(fake.calls) == 1
     finally:
         await g.stop()
 
