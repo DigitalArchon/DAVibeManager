@@ -460,11 +460,14 @@ class Models:
             self._log("enclave_attested", model=model, **att.to_dict())
             told = (model, tuple(att.shortfalls))
             if att.level == "partial" and told not in self._told_partial:
-                # sent all the same, as before; but the user knows how far the attestation goes
+                # sent all the same, as before; but the user knows how far the attestation goes, and what was
+                # attested: RedPill's gateway is not the machine that runs the model (llm/tee.py what_was_attested)
                 self._told_partial.add(told)
+                what = "TEE gateway attested" if att.attested == "gateway" else "TEE attested"
                 self._emit("toast", level="info", text=(
-                    f"{model} is attested only in part ({', '.join(att.shortfalls)}). What goes to it isn't sealed "
-                    "end to end: for that, choose a private model."))
+                    f"{model}: {what}, only in part ({', '.join(att.shortfalls)}). "
+                    + (tee_mod.what_was_attested(att)
+                       or "What goes to it isn't sealed end to end: for that, choose a private model.")))
             return att.to_dict()
 
     def reply_check(self, prov: Provider, model: str):

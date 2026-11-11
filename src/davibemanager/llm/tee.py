@@ -48,6 +48,13 @@ end-to-end private: plaintext passes nano-gpt's gateway. For that, a
 `private/` model (llm/private_mode.py). Every TEE reply is read as a stream,
 its bytes hashed, so nano-gpt's exact mode for whole replies
 (`X-NanoGPT-TEE-Response`) isn't needed.
+
+Which machine is attested (`Attestation.attested`, `what_was_attested`, SealedLore's, Nov 11 2026):
+for every model RedPill serves, its gateway (live: the plain report's quote is the gateway's image,
+its signing key the gateway's), which passes requests on to the machine running the model; that
+machine is the gateway's word in the receipt (`upstream.verified`). For a model Chutes serves, each
+instance it lists. The GPU evidence nano-gpt's report carries is for our nonce but not in the
+quote (`GPUS_LOOSE`).
 """
 
 from __future__ import annotations
@@ -88,6 +95,11 @@ REBUILT_STREAMS = frozenset({"TEE/gemma-4-31b-it"})
 # A shortfall (SealedLore's): the quote binds the key that signs each reply's
 # record, not the receipt keys around it (nano-gpt has no gateway report for the model).
 RECEIPT_KEYS_LOOSE = "receipt keys not in the quote"
+# A shortfall too (SealedLore's, Nov 11 2026): NVIDIA vouched for GPU evidence made with our nonce, but
+# the quote of the machine attested doesn't commit to it (nano-gpt's report: the signing address and our
+# nonce only), so the GPUs may be another machine's, the model's upstream say, relayed. A Chutes
+# instance's quote binds its GPU evidence's nonce, so its GPUs are its own.
+GPUS_LOOSE = "GPUs not tied to the quote"
 # A shortfall: RedPill's gateway is attested, not the model's host behind it.
 MODEL_ENCLAVE_UNCHECKED = "the model's own enclave unchecked (RedPill's gateway)"
 # A shortfall: a model Chutes answers first, which RedPill's gateway answers now and then, attested
@@ -115,6 +127,10 @@ class Attestation:
     tcb_status: str = ""
     gpus: int = 0
     instances: int = 0  # per-instance providers (Chutes): how many instances were attested
+    # What was attested (`what_was_attested`): "gateway", RedPill's gateway, which passes the model's
+    # requests on; "instances", each instance the provider listed; "enclave", the one whose key signs
+    # the replies, not shown to be either. "" before Nov 11 2026.
+    attested: str = ""
 
     @property
     def summary(self) -> str:
@@ -229,6 +245,40 @@ def is_private_mode(model: str) -> bool:
     return model.startswith("private/")
 
 
+def what_was_attested(attestation: Attestation) -> str:
+    """What an attestation that held was of, and what it leaves to someone's word, plainly, for
+    wherever the attestation is shown (SealedLore's, Nov 11 2026; the author: "always make clear to
+    the user what is actually happening and if it is properly attested or not"). Live, Nov 11 2026:
+    every model RedPill serves is attested as its gateway, which passes requests to the model's own
+    provider (Phala, Fortanix, NEAR AI, 0G, Tinfoil's router or Chutes, by RedPill's session
+    records); a model Chutes serves itself, as its instances."""
+    clear = (
+        " What you send passes NanoGPT's servers in the clear on the way; a private model is "
+        "end-to-end encrypted instead."
+    )
+    if attestation.attested == "gateway":
+        return (
+            "Attested: RedPill's TEE gateway, which NanoGPT sends this model's requests through and "
+            "which passes them on to the machine that runs the model. That machine isn't attested by "
+            "this app: that it is a verified TEE is the gateway's word, in each reply's signed receipt."
+            + clear
+        )
+    if attestation.attested == "instances":
+        count = attestation.instances
+        listed = f"each of the {count} instances" if count > 1 else "the instance"
+        return (
+            f"Attested: {listed} this model's provider listed. They sign no replies, so nothing shows "
+            "which machine answered a request: NanoGPT routes each one, and a model may be served "
+            "elsewhere when its provider is busy." + clear
+        )
+    if attestation.attested == "enclave":
+        return (
+            "Attested: the enclave whose key signs this model's replies. Whether that machine runs the "
+            "model itself or passes requests on isn't shown." + clear
+        )
+    return ""
+
+
 def _bases(base_url: str) -> list[str]:
     """Where the TEE endpoints may live: the docs give the path three ways."""
     base = base_url.rstrip("/")
@@ -312,7 +362,9 @@ class _Checks:
         self.tcb(other.status)
         self.gpus += other.gpus
 
-    def attestation(self, *, signing_address: str | None = None, instances: int = 0) -> Attestation:
+    def attestation(
+        self, attested: str, *, signing_address: str | None = None, instances: int = 0
+    ) -> Attestation:
         return Attestation(
             verified=True,
             level="partial" if self.shortfalls else "full",
@@ -323,6 +375,7 @@ class _Checks:
             gpus=self.gpus,
             tcb_status=self.status,
             instances=instances,
+            attested=attested,
             detail="; ".join(self.notes),
         )
 
@@ -638,7 +691,7 @@ class TeeClient:
         self.signers = gateway.signers
         self.receipt_required = True
         self._take_keyset(gateway.keyset, "the quote binds its receipt keys", check)
-        return check.attestation()
+        return check.attestation("gateway")
 
     def _attest_signing_key(
         self, body: dict[str, Any], nonce: str, gateway: _Gateway | None = None
@@ -663,6 +716,9 @@ class TeeClient:
         signers = frozenset({address.lower()})
         # The gateway, when its report binds a keyset this key is in: the key is the gateway's.
         bound = gateway if gateway is not None and address.lower() in gateway.signers else None
+        # The machine whose key signs the replies (`Attestation.attested`): RedPill's gateway when the
+        # key is one of the gateway's own (its keyset), else not known to be.
+        attested = "enclave"
         if (
             report_data[:20] == bytes.fromhex(address[2:])
             and not any(report_data[20:32])
@@ -675,6 +731,7 @@ class TeeClient:
                 check.merge(bound.check)
                 keyset, signers = bound.keyset, bound.signers
                 tie = "the gateway's quote binds its receipt keys, the signing key among them"
+                attested = "gateway"
             else:
                 tie = (
                     "its receipt keys are published beside the attested signing key"
@@ -694,6 +751,7 @@ class TeeClient:
                 "to our nonce"
             )
             tie = "the quote binds its receipt keys"
+            attested = "gateway"
         else:
             raise TeeRefused(f"{self.model}'s attestation didn't bind its signing key to our nonce")
         self._refuse_expired(keyset)
@@ -708,13 +766,19 @@ class TeeClient:
                        "quote and the GPUs' evidence are checked, not that the model itself runs in an enclave")
         self._check_quote(raw, check)
         payload = _json(body.get("nvidia_payload"))
-        self._check_gpus(
-            payload if isinstance(payload, dict) else None, nonce, check, "this request's nonce"
-        )
+        payload = payload if isinstance(payload, dict) else None
+        self._check_gpus(payload, nonce, check, "this request's nonce")
+        if payload is not None and payload.get("evidence_list"):
+            # The quote's report data is the signing key and our nonce (or the keyset and our nonce):
+            # nothing in it commits to the GPU evidence.
+            check.fall_short(GPUS_LOOSE)
+            check.note(
+                "the quote doesn't commit to the GPU evidence, so the GPUs may be another machine's"
+            )
         self.signing_address = address
         self.signers = signers
         self._take_keyset(keyset if tie else None, tie, check)
-        return check.attestation(signing_address=address)
+        return check.attestation(attested, signing_address=address)
 
     def _take_keyset(self, keyset: dict[str, Any] | None, tie: str, check: _Checks) -> None:
         """The gateway's receipt-signing keys (RedPill's aci/1 `workload_keyset`),
@@ -790,7 +854,7 @@ class TeeClient:
                     f"nano-gpt gave no report of RedPill's gateway just now ({unheard}), and it "
                     "answers some models Chutes serves first now and then: such a reply can't be checked"
                 )
-            attestation = check.attestation(instances=len(instances))
+            attestation = check.attestation("instances", instances=len(instances))
             attestation.detail += "; this provider signs no replies, so answers show as unsigned"
             return attestation
         check.merge(gateway.check)
@@ -806,7 +870,7 @@ class TeeClient:
             "a reply RedPill's gateway answers instead is checked against its attested keys",
             check,
         )
-        attestation = check.attestation(instances=len(instances))
+        attestation = check.attestation("instances", instances=len(instances))
         attestation.detail += "; the instances sign no replies, so their answers show as unsigned"
         return attestation
 
