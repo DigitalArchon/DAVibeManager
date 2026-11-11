@@ -23,6 +23,10 @@ def script(*names: str) -> str:
         if m := re.search(rf"^const {name} = .*;$", text, re.M):
             parts.append(m.group(0))
             continue
+        # one written over several lines: an object or array closed on a line of its own
+        if m := re.search(rf"^const {name} = [{{\[]$.*?^[}}\]];$", text, re.M | re.S):
+            parts.append(m.group(0))
+            continue
         m = re.search(rf"^function {name}\(.*?^}}$", text, re.M | re.S)
         assert m, f"{name} isn't in app.js"
         parts.append(m.group(0))
@@ -147,3 +151,27 @@ const test = (check) => {
     text = APP_JS.read_text(encoding="utf-8")
     assert "markChecked(st.network, ev.event);" in text
     assert 'const asked = ["model", "vision", "review"].includes(e.kind);' in text and "asked ? [\" \", privacyMark(e)]" in text
+
+
+def tee_mark() -> str:
+    """A TEE reply's mark as Sandbox activity shows it (teeMark): [words, colour, tooltip], or null."""
+    return script("TEE_MARKS", "TEE_CLEAR", "TEE_TIPS", "teeMark") + "\nconst test = (e) => teeMark(e);"
+
+
+def test_a_tee_replys_mark_says_what_is_the_gateways_word_and_that_it_passed_in_the_clear():
+    """SealedLore's marks (Nov 11 2026): for a model RedPill serves, the attested enclave is its gateway, and the
+    machine that ran the model is the gateway's word; every mark short of end-to-end encryption says the text
+    passed NanoGPT in the clear. "Verified" read as though the model itself had been checked."""
+    cases = [{"tee": "verified"}, {"tee": "signed"},
+             {"tee": "unchecked", "tee_detail": "the reply came with no receipt to say the model's enclave answered"},
+             {"tee": "failed"}, {"tee": "checking"}, {"kind": "model"}]
+    verified, signed, unchecked, failed, checking, none = run(tee_mark(), cases)
+    assert verified[:2] == ["TEE verified", "ok"]
+    assert "that enclave is RedPill's gateway" in verified[2] and "which is the gateway's word, not checked" in verified[2]
+    assert signed[0] == "TEE signed, text not compared" and "the machine running the model is the gateway's word" in signed[2]
+    assert unchecked[:2] == ["TEE ⚠ reply not verified", "warn"] and "as Chutes doesn't" in unchecked[2]
+    assert unchecked[2].endswith("(the reply came with no receipt to say the model's enclave answered)")
+    for tip in (verified[2], signed[2], unchecked[2]):
+        assert "passed NanoGPT's servers in the clear: a private model is end-to-end encrypted instead" in tip
+    assert failed[1] == "danger" and "its receipt doesn't hold" in failed[2] and "attested again" in failed[2]
+    assert checking[0] == "TEE · checking its signature…" and none is None

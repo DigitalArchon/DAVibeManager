@@ -1830,12 +1830,16 @@ const TEE_MARKS = {
   failed: ["TEE ⚠ check failed", "danger"],
   unchecked: ["TEE ⚠ reply not verified", "warn"],
 };
+// What each mark means, and what is someone's word (SealedLore's TEE_MARK_TIPS, Nov 11 2026): for a model RedPill
+// serves, the attested enclave is RedPill's gateway, and the machine that ran the model is the gateway's word.
+// Every mark short of end-to-end encryption says the text passed NanoGPT in the clear
+const TEE_CLEAR = " What was sent passed NanoGPT's servers in the clear: a private model is end-to-end encrypted instead.";
 const TEE_TIPS = {
   checking: "This reply is being checked against the record its attested enclave signed.",
-  verified: "The attested enclave's key signed this reply's record, and the record is for the exact text that came back. Where NanoGPT's gateway kept a signed receipt, it was read too, saying the model the reply came from was verified. What a TEE proves stops there: the request passed NanoGPT's gateway in the clear, and no measurement of the software is compared.",
-  signed: "The attested enclave's key signed this reply's record, but the text couldn't be compared with it (NanoGPT rebuilds this model's replies).",
-  failed: "This reply doesn't match the record its attested enclave signed: not signed by that enclave's key, or not the text that was signed. The model is attested again before its next request.",
-  unchecked: "No signed record of this reply could be read, so nothing shows it came from the attested enclave.",
+  verified: "TEE verified: the attested enclave's key signed this reply's record, and the record is for the exact text that came back. For a model RedPill serves, that enclave is RedPill's gateway, which passed the request on to the machine running the model: the gateway's signed receipt, read too, says that machine was verified, which is the gateway's word, not checked by this app. No measurement of the software is compared either." + TEE_CLEAR,
+  signed: "TEE signed: the attested enclave's key signed this reply's record, but the text couldn't be compared with it (NanoGPT rebuilds this model's replies), so a change on the way here wouldn't show. As for a verified reply, the machine running the model is the gateway's word." + TEE_CLEAR,
+  failed: "This reply doesn't match its record: not signed by the attested key, not the text that was signed, or its receipt doesn't hold (another key, another reply, or a model that wasn't verified). The model is attested again before anything more is sent to it.",
+  unchecked: "Not verified: no signed record of this reply could be read (this model's provider keeps none, as Chutes doesn't, or the check couldn't be reached), so nothing shows it came from the enclave that was attested. NanoGPT routes each request, and a model may be served elsewhere when its provider is busy." + TEE_CLEAR,
 };
 // What a row of Sandbox activity was: the assistant's own (a model request, a site reached, a search) or one
 // the app made for it (a picture described, a second opinion, a fetch refused)
@@ -1857,11 +1861,18 @@ function markChecked(network, check) {
   return req;
 }
 
-function privacyMark(e) {
-  if (e.private) return h("span", { class: "chip private", title: "Sealed end to end: only the attested enclave could read it." }, "🔒 sealed");
+// A TEE reply's mark as Sandbox activity shows it: [its words, its colour, its tooltip], or null for none
+function teeMark(e) {
   const mark = TEE_MARKS[e.tee];
   if (!mark) return null;
-  return h("span", { class: `chip${mark[1] ? ` ${mark[1]}` : ""}`, title: TEE_TIPS[e.tee] + (e.tee_detail ? ` (${e.tee_detail})` : "") }, mark[0]);
+  return [mark[0], mark[1], TEE_TIPS[e.tee] + (e.tee_detail ? ` (${e.tee_detail})` : "")];
+}
+
+function privacyMark(e) {
+  if (e.private) return h("span", { class: "chip private", title: "Sealed end to end: only the attested enclave could read it." }, "🔒 sealed");
+  const mark = teeMark(e);
+  if (!mark) return null;
+  return h("span", { class: `chip${mark[1] ? ` ${mark[1]}` : ""}`, title: mark[2] }, mark[0]);
 }
 
 function searchesEl(evs) {
