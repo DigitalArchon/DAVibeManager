@@ -186,31 +186,58 @@ sleeps):
 - NVIDIA's signed verdict on the GPUs must be for the app's number, and pass.
 
 Anything forged, revoked or made for another number is refused, and nothing is sent. What couldn't be
-checked (no GPU evidence offered, Intel's or NVIDIA's service out of reach, a rating below up to date)
-makes the attestation partial, and the app says so, once a model. Most of NanoGPT's TEE models are
-RedPill's gateway, which passes each request on to the model's host: its attestation is partial
-("the model's own enclave unchecked"), since it shows the gateway's enclave, not the model's. A model
-whose own attestation NanoGPT can't give for the app's number (one relayed from Chutes for another, or
-one that took too long) is attested through that gateway instead, with "no GPU evidence" too. Models
-Chutes answers (several Kimi, GLM and Gemma ones) have each of their instances attested for the app's
-number. Where RedPill's gateway answers some of their requests instead (GLM 5.1 and 5.2, Kimi K2.6),
-the gateway is attested too, and their attestation is partial like the gateway's own models'; if
-NanoGPT couldn't give the gateway's report just then, it says "RedPill's gateway unchecked". The
-Tinfoil-hosted TEE models are refused: NanoGPT can't attest them for a fresh number. Some
+checked (no GPU evidence offered, GPUs the quote doesn't commit to, Intel's or NVIDIA's service out of
+reach, a rating below up to date) makes the attestation partial, and the app says so, once a model,
+with what was attested and what that leaves to someone's word:
+
+- **RedPill's TEE gateway**, for most of NanoGPT's TEE models: the note says "TEE gateway attested".
+  The gateway passes each request on to the machine that runs the model (in November 2026 Phala's,
+  Fortanix's, NEAR AI's, 0G's, Tinfoil's router or Chutes'). That machine isn't attested by the app:
+  that it is a verified TEE is the gateway's word, in each reply's signed receipt, so the attestation
+  is partial ("the model's own enclave unchecked"). The GPU evidence NanoGPT's report carries is made
+  for the app's number, but the gateway's quote doesn't commit to it, so it also says "GPUs not tied
+  to the quote": they may be another machine's. A model whose own attestation NanoGPT can't give for
+  the app's number (one relayed from Chutes for another, or one that took too long) is attested
+  through that gateway alone, with "no GPU evidence" too, and a reply of it counts as verified only
+  with a receipt that holds: one without is marked not verified.
+- **Each instance**, for models Chutes answers (several Kimi, GLM and Gemma ones), each with its own
+  GPUs, for the app's number. Chutes signs no replies, so nothing shows which instance answered:
+  NanoGPT routes each request, and a model may be served elsewhere when its provider is busy. Where
+  RedPill's gateway answers some of their requests instead (GLM 5.1 and 5.2, Kimi K2.6), the gateway
+  is attested too, and their attestation is partial like the gateway's own models'; if NanoGPT
+  couldn't give the gateway's report just then, it says "RedPill's gateway unchecked".
+
+The Tinfoil-hosted TEE models are refused: NanoGPT can't attest them for a fresh number. Some
 have a private version, which is attested its own way.
 
 After each reply has reached the assistant, the app fetches the record NanoGPT keeps of it, signed by
 an attested key, and checks it is for the exact text that came back; where the gateway kept a signed
-receipt, that too, saying the model the reply came from was verified. The app's own requests to a TEE
-model are checked the same way: a second opinion, the summary of what's new in an update, the review
-of an app you import, and a picture described for the assistant. **☰ → Sandbox activity** lists them
-beside the assistant's requests and marks each: **TEE verified**; **TEE signed, text not compared**
-(NanoGPT rebuilds that model's replies); **TEE ⚠ reply not verified** (no record of it could be read,
-so nothing shows it came from the attested enclave); or **TEE ⚠ check failed**: the reply doesn't
-match its record. Then the app says so, once for as long as that model's replies keep failing, and
-attests the model again before anything more goes to it. The check never holds up or changes what
-the assistant, or you, are given. Chutes signs no replies, so a reply it answers is marked not verified;
-one RedPill's gateway answers instead is checked as any other.
+receipt, that too, saying the machine the reply came from was verified. That last part is the
+gateway's word. The app's own requests to a TEE model are checked the same way: a second opinion, the
+summary of what's new in an update, the review of an app you import, and a picture described for the
+assistant. **☰ → Sandbox activity** lists them beside the assistant's requests and marks each: **TEE
+verified**; **TEE signed, text not compared** (NanoGPT rebuilds that model's replies); **TEE ⚠ reply
+not verified** (no record of it could be read, so nothing shows it came from the attested enclave);
+or **TEE ⚠ check failed**: the reply doesn't match its record. Then the app says so, once for as long
+as that model's replies keep failing, and attests the model again before anything more goes to it.
+Hovering over a mark says what it means, what in it is the gateway's word, and that what was sent
+passed NanoGPT in the clear. The check never holds up or changes what the assistant, or you, are
+given. Chutes signs no replies, so a reply it answers is marked not verified; one RedPill's gateway
+answers instead is checked as any other.
+
+**Settings → TEE models → Name the provider behind each TEE reply** (off by default) says who ran the
+model, beside the reply's mark: "TEE verified · run by Phala", say. Each receipt names the gateway's
+session with the machine that answered, and RedPill publishes that session's record, saying which
+provider it is (Phala, Fortanix, NEAR AI, 0G, Tinfoil's router and others; the same model can be run
+by different ones from one reply to the next). With the option on, the app fetches that record after
+each reply whose receipt holds, and believes it only if it is exactly the record the receipt names.
+This connects to `api.redpill.ai` directly, not through NanoGPT, so RedPill sees your computer's
+internet address and that one of its models was used around then; only the session's id is sent,
+never your messages or your key. A session's record is read once while the app runs (a session
+serves a provider for about an hour), and is a few kilobytes to a few hundred. It is never fetched
+for a model Chutes serves: each Chutes instance has a session of its own, about 3.4 MB for
+`TEE/deepseek-v3.2`, and replies are spread across them, so it would be megabytes nearly every
+message. What the record says is RedPill's word: the app doesn't check the machine it names.
 
 What this doesn't prove: which software the enclave runs. No measurement of it is compared with a
 published one, so what the attestation shows is genuine, current hardware holding a live key, bound
