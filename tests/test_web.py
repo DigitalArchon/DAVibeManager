@@ -216,3 +216,17 @@ def test_naming_a_tee_replys_provider_is_a_choice_that_says_where_it_goes():
     panel = re.search(r"^function settingsPanel\(\) \{.*?^}$", text, re.M | re.S).group(0)
     assert 'checked: !!s.tee_name_upstreams' in panel and "save({ tee_name_upstreams: e.target.checked }" in panel
     assert '"Name the provider behind each TEE reply"' in panel and "TEE_UPSTREAMS_NOTE" in panel
+
+
+def test_a_tee_request_with_no_reply_to_check_is_never_said_to_be_checking():
+    """A request whose whole reply never came (refused, stopped, cut short) has no check coming: the gateway no longer
+    names one (gateway.as_sent), and a line from before that, refused or broken off, read "checking its signature…"
+    for ever. It reads as having no reply now (DA Private Coder's 6c26aa6); one that came whole is still checked."""
+    cases = [{"tee": "checking", "status": 402, "error": "TEE/glm-5.3-flash: your NanoGPT balance is too low"},
+             {"tee": "checking", "status": 502, "error": "event: error …context too long"},
+             {"tee": "checking", "status": 200, "error": "cut short"}, {"tee": "checking"},
+             {"tee": "checking", "status": 200}, {"tee": "verified", "status": 200}]
+    refused, broken, errored, unnamed, checking, verified = run(tee_mark(), cases)
+    assert refused is broken is errored is None
+    # nothing says it broke off: still being checked
+    assert unnamed[0] == checking[0] == "TEE · checking its signature…" and verified[0] == "TEE verified"

@@ -1866,6 +1866,10 @@ function markChecked(network, check) {
 // its model, where Settings asks for it (models.upstream_view, llm/tee.py served_by), goes beside a mark whose
 // receipt the name rests on, never beside a failed one, and what that means in its tooltip
 function teeMark(e) {
+  // A request whose whole reply never came (refused, stopped, cut short) has no check coming: the gateway no longer
+  // names one (gateway.as_sent), and a line from before that, refused or broken off, reads as having no reply, not
+  // "checking" for ever (DA Private Coder's, 6c26aa6)
+  if (e.tee === "checking" && (e.error || (e.status !== undefined && e.status !== 200))) return null;
   const mark = TEE_MARKS[e.tee];
   if (!mark) return null;
   const up = ["verified", "signed"].includes(e.tee) ? e.tee_upstream : null;

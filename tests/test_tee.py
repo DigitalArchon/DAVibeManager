@@ -1462,7 +1462,9 @@ def _tee_models(seen: list, told: list, logged: list, **server):
     return m, cfg.providers[0]
 
 
-async def _ask_through_gateway(tmp_path, models, prov, client_factory, times=1):
+async def _ask_through_gateway(tmp_path, models, prov, client_factory, times=1, stream=True, checked=True):
+    """Claude Code's request for TEE/glm-5.3-flash through the gateway, `times` times; with `checked`, each waited for
+    until its reply's check has come (else a moment, for one that shouldn't come). What it said, and its events."""
     from davibemanager.gateway import Gateway, Upstream
 
     models.client_factory = client_factory
@@ -1478,10 +1480,10 @@ async def _ask_through_gateway(tmp_path, models, prov, client_factory, times=1):
         async with httpx.AsyncClient(transport=httpx.AsyncHTTPTransport(uds=str(g.model_socket)), base_url="http://gw") as c:
             for _ in range(times):
                 r = await c.post("/v1/messages", headers={"authorization": f"Bearer {g.token}"}, json={
-                    "model": "TEE/glm-5.3-flash", "stream": True, "messages": [{"role": "user", "content": "hi"}]})
+                    "model": "TEE/glm-5.3-flash", "stream": stream, "messages": [{"role": "user", "content": "hi"}]})
                 said.append(r.text)
-                for _ in range(300):
-                    if sum(1 for e in log if e["kind"] == "tee_reply") == len(said):
+                for _ in range(300 if checked else 30):
+                    if checked and sum(1 for e in log if e["kind"] == "tee_reply") == len(said):
                         break
                     await asyncio.sleep(0.01)
     finally:
@@ -1611,6 +1613,50 @@ async def test_a_claude_model_marked_tee_is_attested_before_anything_is_forwarde
     models.tee_factory = lambda base, key, model: client_for(attestation_status=400)
     forwarded, r = await _forward_claude(tmp_path, lambda m: models.tee_guard(prov, m))
     assert forwarded == [] and "attestation didn't hold, so nothing was sent to it" in r.json()["error"]["message"]
+
+
+def _refused_with(status: int, said: dict):
+    """NanoGPT's chat completions endpoint, refusing every request with `status` (no balance, say)."""
+    from davibemanager.llm.client import LLMClient
+
+    asked = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        asked.append(json.loads(request.content))
+        return httpx.Response(status, json=said)
+    http = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    return (lambda prov, model="": LLMClient(prov.base_url, "k", http)), asked
+
+
+async def test_a_tee_request_with_no_reply_at_all_is_never_logged_as_being_checked(tmp_path):
+    """Refused by NanoGPT (no balance, say): no reply came, so none is checked, and Sandbox activity said "checking"
+    of it for ever (DA Private Coder's 6c26aa6: the request's event names no check that won't come)."""
+    for stream in (True, False):
+        seen, told, logged = [], [], []
+        models, prov = _tee_models(seen, told, logged)
+        factory, asked = _refused_with(402, {"error": {"message": "Insufficient balance"}})
+        said, log = await _ask_through_gateway(tmp_path, models, prov, factory, stream=stream, checked=False)
+        assert "balance is too low" in said[0] and asked, stream
+        (request,) = [e for e in log if e["kind"] == "model"]
+        assert request["status"] == 402 and "tee" not in request and "id" not in request, stream
+        assert not [e for e in log if e["kind"] == "tee_reply"], stream
+        assert not [r for r in seen if "/tee/signature/" in str(r.url)], stream
+
+
+async def test_a_tee_reply_cut_short_is_neither_checked_nor_logged_as_being_checked(tmp_path):
+    """Broken off partway, it has no record to match: no check is made (_check_later), and its request was logged as
+    "checking" all the same, for ever."""
+    broken = STREAM.split(b"\n\n")[0] + b'\n\ndata: {"error": {"message": "context too long"}}\n\n'
+    for stream in (True, False):
+        seen, told, logged = [], [], []
+        models, prov = _tee_models(seen, told, logged)
+        factory, asked = _stream_of(broken)
+        said, log = await _ask_through_gateway(tmp_path, models, prov, factory, stream=stream, checked=False)
+        assert "context too long" in said[0], stream
+        (request,) = [e for e in log if e["kind"] == "model"]
+        assert request["status"] == 502 and "tee" not in request and "id" not in request, stream
+        assert not [e for e in log if e["kind"] == "tee_reply"], stream
+        assert not [r for r in seen if "/tee/signature/" in str(r.url)], stream
 
 
 async def test_a_model_that_isnt_tee_is_read_as_ever_and_nothing_checked(tmp_path):

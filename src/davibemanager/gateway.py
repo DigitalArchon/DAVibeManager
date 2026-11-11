@@ -222,6 +222,15 @@ def _route_held(rec: dict) -> dict:
     return rec
 
 
+def as_sent(rec: dict, ended: dict) -> dict:
+    """A TEE request's event as it went. One whose whole reply never came (refused, stopped, cut short) has no check
+    coming (`_check_later` checks only a reply its stream carried to the end), so it names none: it was "checking"
+    for ever, and Sandbox activity marked it so (DA Private Coder's proxy.as_sent, 6c26aa6)."""
+    if rec.get("tee") == "checking" and ended.get("reply") is None:
+        return {k: v for k, v in rec.items() if k not in ("id", "tee")}
+    return rec
+
+
 def refusal_response(e: Refused):
     """A refusal as Anthropic's API says one, telling Claude Code not to ask again unless it may help."""
     from starlette.responses import JSONResponse
@@ -559,9 +568,12 @@ class Gateway:
         rec = {"kind": "model", "path": path, "model": model, "asked_for": asked if asked != model else "",
                "provider": up.provider, "tier": "e2ee" if private else up.tier, "private": private, "bytes_out": size}
         started = time.monotonic()
+        ended: dict = {}                            # the provider's whole reply, once its stream has ended
 
         def err(e: Refused):
-            self.on_event({**rec, "status": e.status, "error": str(e), "seconds": round(time.monotonic() - started, 2)})
+            # refused, before or while it answered: no whole reply, so no check is coming (as_sent)
+            self.on_event({**as_sent(rec, ended), "status": e.status, "error": str(e),
+                           "seconds": round(time.monotonic() - started, 2)})
             return refusal_response(e)
         if path == "/v1/messages/count_tokens":
             return JSONResponse({"input_tokens": bridge.estimate_tokens(data)})
@@ -605,7 +617,6 @@ class Gateway:
         if where in self._no_reasoning_back and bridge.handed_back(messages):
             messages = bridge.without_reasoning(messages)
             rec["reasoning_back"] = False
-        ended: dict = {}                            # the provider's whole reply, once its stream has ended
         try:
             # the provider's answer first: a request it refuses is told by its status, not as a reply cut short
             events = await answered(self._stream(client, model, messages, tools, params, rec, where,
@@ -620,7 +631,7 @@ class Gateway:
                 return err(upstream_refusal(model, e, up.provider, answering=True))
             # the provider's own count (cached tokens, the bill), as for a streamed reply; none if it gave none
             # (the reply's own figures would be the gateway's estimate)
-            self.on_event(_route_held({**rec, "seconds": round(time.monotonic() - started, 2),
+            self.on_event(_route_held({**as_sent(rec, ended), "seconds": round(time.monotonic() - started, 2),
                                        **({"usage": openai_usage(stats["usage"])} if stats.get("usage") else {})}))
             self._check_later(check, ended, rec)
             return JSONResponse(reply)
@@ -638,7 +649,9 @@ class Gateway:
             finally:
                 if "usage" in stats:
                     stats["usage"] = openai_usage(stats["usage"])
-                self.on_event(_route_held({**rec, **stats, "bytes_in": n, "seconds": round(time.monotonic() - started, 2)}))
+                # stopped or cut short, no whole reply: no check is coming, and the event names none (as_sent)
+                self.on_event(_route_held({**as_sent(rec, ended), **stats, "bytes_in": n,
+                                           "seconds": round(time.monotonic() - started, 2)}))
                 self._check_later(check, ended, rec)
         return StreamingResponse(body(), media_type="text/event-stream")
 
