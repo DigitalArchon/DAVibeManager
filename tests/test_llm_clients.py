@@ -151,3 +151,81 @@ def test_a_local_https_server_is_still_checked_against_the_environments_certific
     assert len(context.get_ca_certs()) == 1                              # the one certificate of that file
     assert context.verify_mode.name == "CERT_REQUIRED" and context.check_hostname
     assert isinstance(httpx.AsyncClient(**local_http_options("https://192.168.1.50/v1")), httpx.AsyncClient)
+
+
+# ---------------------------------------------------------------- the SDK's own environment variables (DA Toolkit's 624a4be)
+
+async def test_the_sdks_environment_adds_no_header_to_a_provider(monkeypatch):
+    """OPENAI_ORG_ID, OPENAI_PROJECT_ID and OPENAI_CUSTOM_HEADERS are for OpenAI's own service: whatever
+    another tool or the shell set there went, as headers, to every provider. A provider is sent its own
+    key and nothing else."""
+    import httpx2                                       # the SDK's own HTTP library
+    from openai import DefaultAsyncHttpxClient
+
+    for name, value in {"OPENAI_ORG_ID": "org-ENV", "OPENAI_PROJECT_ID": "proj-ENV", "OPENAI_API_KEY": "ENV-OPENAI-KEY",
+                        "OPENAI_ADMIN_KEY": "ENV-ADMIN-KEY", "OPENAI_BASE_URL": "https://env-base.invalid/v1",
+                        "OPENAI_CUSTOM_HEADERS": "X-Env: 1\nAuthorization: Bearer ENV-HEADER-KEY\nOpenAI-Beta: env"}.items():
+        monkeypatch.setenv(name, value)
+    got: list[tuple[str, dict]] = []
+
+    def handler(request):
+        got.append((str(request.url), {k.lower(): v for k, v in request.headers.items()}))
+        if request.url.path.endswith("/models"):
+            return httpx2.Response(200, json={"object": "list", "data": []})
+        if not json.loads(request.content).get("stream"):
+            return httpx2.Response(200, json={"id": "c", "object": "chat.completion", "created": 0, "model": "m", "choices": [
+                {"index": 0, "finish_reason": "stop", "message": {"role": "assistant", "content": "fine"}}]})
+        return httpx2.Response(200, headers={"content-type": "text/event-stream"},
+                              content=f"data: {json.dumps(CHUNK)}\n\ndata: [DONE]\n\n".encode())
+
+    for base, key in (("https://models.example/api/v1", "PROVIDER-KEY"), ("http://localhost:11434/v1", None)):
+        client = LLMClient(base, key, http_client=DefaultAsyncHttpxClient(transport=httpx2.MockTransport(handler)))
+        client._client = client._client.with_options(max_retries=0)       # a copy the SDK makes is cleared too
+        await client.list_models()
+        [e async for e in client.stream("m", USER)]
+        assert await client.complete("m", USER) == "fine"
+    assert len(got) == 6
+    for url, headers in got:
+        assert not url.startswith("https://env-base.invalid"), url
+        assert headers["authorization"] in ("Bearer PROVIDER-KEY", "Bearer not-needed"), url
+        for name in ("openai-organization", "openai-project", "x-env", "openai-beta"):
+            assert name not in headers, (url, name)
+        assert "ENV" not in json.dumps(headers), url
+
+
+# ---------------------------------------------------------------- a server that isn't there (DA Toolkit's 2d1aa54)
+
+def test_connecting_has_a_timeout_of_its_own_beside_the_long_wait_for_a_reply():
+    from davibemanager.llm.client import CONNECT_TIMEOUT
+
+    assert CONNECT_TIMEOUT <= 15
+    timeout = LLMClient("http://192.168.1.50:11434/v1", None)._client.timeout
+    assert timeout.connect == CONNECT_TIMEOUT and timeout.read == 300
+
+
+async def test_a_model_server_that_never_answers_the_connection_fails_soon(monkeypatch):
+    """A machine that is switched off takes no connection and refuses none. Here: a listening socket
+    that accepts nothing, its queue filled, so the next connection waits for ever."""
+    import socket
+
+    from davibemanager.llm import client as client_module
+
+    monkeypatch.setattr(client_module, "CONNECT_TIMEOUT", 0.3)
+    listener = socket.socket()
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(0)
+    port = listener.getsockname()[1]
+    held = []
+    try:
+        for _ in range(4):                       # more than the queue holds: these are never accepted
+            s = socket.socket()
+            s.setblocking(False)
+            s.connect_ex(("127.0.0.1", port))
+            held.append(s)
+        client = LLMClient(f"http://127.0.0.1:{port}/v1", None)
+        client._client = client._client.with_options(max_retries=0)
+        with pytest.raises(Exception, match="(?i)timed out|timeout"):
+            await asyncio.wait_for(client.complete("m", USER), 5)       # 300 s without the connect timeout
+    finally:
+        for s in held + [listener]:
+            s.close()

@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 from typing import AsyncIterator
 from urllib.parse import urlparse
 
-from openai import APIError, AsyncOpenAI, DefaultAsyncHttpxClient
+from openai import APIError, AsyncOpenAI, DefaultAsyncHttpxClient, Timeout
 from openai.types.chat import ChatCompletionChunk
 
 from ..netpolicy import check_key, check_url, is_local_host, shown
@@ -27,6 +27,12 @@ SENSITIVITY_TIERS = {
     "confidential": {"e2ee", "local"},
     "sovereign": {"local"},
 }
+
+
+# How long a model server gets to accept the connection, beside the minutes a reply may take to come
+# (300 s between its pieces). The two were one number until Nov 2026, so a local model server that was
+# switched off showed "thinking" for ten minutes and more (two attempts) before it failed (DA Toolkit's 2d1aa54).
+CONNECT_TIMEOUT = 10
 
 
 def is_private_mode(model_id: str) -> bool:
@@ -98,6 +104,34 @@ class TurnResult:
     body_hash: str | None = None
 
 
+def only_what_it_was_given(sdk_client) -> None:
+    """OpenAI's SDK client, made to send only what this app gave it.
+
+    The SDK reads OpenAI's environment variables whenever a client is built, whatever address it is
+    for: OPENAI_ORG_ID and OPENAI_PROJECT_ID become headers of every request, and OPENAI_CUSTOM_HEADERS
+    adds any header at all, an Authorization that replaces the provider's key among them. Those were
+    set for OpenAI's own service, by another tool or in the user's shell; a provider here is an address
+    and a key from Settings, so none of it goes to NanoGPT or a local server (DA Toolkit's 624a4be).
+    (The key and the address are always passed, so the variables for those are never read.) The SDK
+    takes no argument that says so: what it read is cleared from the client as it is built, by a
+    subclass, so that a copy the SDK makes of it (`with_options`), built the same way, is cleared too.
+    This app passes no default header, so none is lost."""
+    for name in ("organization", "project"):
+        if hasattr(sdk_client, name):
+            setattr(sdk_client, name, None)
+    sdk_client._custom_headers = {}
+    if hasattr(sdk_client, "_ambient_authorizations"):      # the Authorization values OPENAI_CUSTOM_HEADERS held
+        sdk_client._ambient_authorizations = frozenset()
+
+
+class _OpenAI(AsyncOpenAI):
+    """OpenAI's client, sending only what it was given here (only_what_it_was_given)."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        only_what_it_was_given(self)
+
+
 class LLMClient:
     def __init__(self, base_url: str, api_key: str | None, http_client=None):
         check_url(base_url, "The provider's base URL")
@@ -105,10 +139,13 @@ class LLMClient:
         # Local servers often need no key, but the SDK insists on a value. A redirect is never followed
         # (the SDK's own client would): the request, the user's words in it, would go wherever the
         # provider points, plain http included (as the gateway's forwarder, which refuses them too). And a
-        # server on this computer or its network is reached directly, whatever proxy the environment names
-        self._client = AsyncOpenAI(base_url=base_url, api_key=api_key or "not-needed", max_retries=1, timeout=300,
-                                   http_client=http_client or DefaultAsyncHttpxClient(
-                                       follow_redirects=False, **local_http_options(base_url)))
+        # server on this computer or its network is reached directly, whatever proxy the environment names.
+        # Nothing the environment holds for OpenAI's own service goes with it (_OpenAI), and a server that
+        # takes no connection fails in seconds (CONNECT_TIMEOUT), not after the minutes a reply may take
+        self._client = _OpenAI(base_url=base_url, api_key=api_key or "not-needed", max_retries=1,
+                               timeout=Timeout(300, connect=CONNECT_TIMEOUT),
+                               http_client=http_client or DefaultAsyncHttpxClient(
+                                   follow_redirects=False, **local_http_options(base_url)))
 
     async def list_models(self) -> list[str]:
         page = await self._client.models.list()
