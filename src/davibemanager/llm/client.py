@@ -14,7 +14,7 @@ from openai import APIError, AsyncOpenAI, DefaultAsyncHttpxClient
 from openai.types.chat import ChatCompletionChunk
 
 from ..netpolicy import check_key, check_url, is_local_host, shown
-from .secure_http import ProviderError
+from .secure_http import ProviderError, local_http_options
 
 # standard: plaintext to a cloud provider. tee: runs in an enclave, but the prompt passes the
 # provider's gateway in the clear. e2ee: sealed on this machine to an attested enclave's key
@@ -104,9 +104,11 @@ class LLMClient:
         check_key(api_key, urlparse(base_url).hostname or "the provider")     # one no header can carry: nothing sent
         # Local servers often need no key, but the SDK insists on a value. A redirect is never followed
         # (the SDK's own client would): the request, the user's words in it, would go wherever the
-        # provider points, plain http included (as the gateway's forwarder, which refuses them too)
+        # provider points, plain http included (as the gateway's forwarder, which refuses them too). And a
+        # server on this computer or its network is reached directly, whatever proxy the environment names
         self._client = AsyncOpenAI(base_url=base_url, api_key=api_key or "not-needed", max_retries=1, timeout=300,
-                                   http_client=http_client or DefaultAsyncHttpxClient(follow_redirects=False))
+                                   http_client=http_client or DefaultAsyncHttpxClient(
+                                       follow_redirects=False, **local_http_options(base_url)))
 
     async def list_models(self) -> list[str]:
         page = await self._client.models.list()

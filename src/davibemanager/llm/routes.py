@@ -30,6 +30,7 @@ import httpx
 from ..netpolicy import check_url
 from .client import detect_tier
 from .private_mode import offers_private_mode
+from .secure_http import local_http_options
 
 PRIORITIES = ("subscription", "speed", "latency", "throughput", "price", "host")
 LABELS = {
@@ -159,7 +160,7 @@ def parse_hosts(model: str, data: Mapping[str, Any]) -> dict:
 async def fetch_hosts(base_url: str, model: str, http: httpx.AsyncClient | None = None) -> dict:
     """NanoGPT's public listing: it needs no key, so none is sent, nor anything but the model's name."""
     url = check_url(hosts_url(base_url, model), "NanoGPT's list of hosts")
-    client = http or httpx.AsyncClient(timeout=30)
+    client = http or httpx.AsyncClient(timeout=30, **local_http_options(url))
     try:
         r = await client.get(url)          # never a redirect followed: httpx's default
         r.raise_for_status()

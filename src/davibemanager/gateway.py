@@ -35,6 +35,7 @@ import httpx
 from .llm import anthropic_bridge as bridge
 from .llm import routes
 from .llm.client import is_private_mode
+from .llm.secure_http import is_local, local_http_options
 from .llm.params import effort_unsupported, efforts_named, fit_claude, nearest_effort, with_effort
 from . import netpolicy
 from .netpolicy import InsecureURL, check_url, is_global_ip, is_secure, key_problem, own_networks, scrubbed, shown
@@ -347,6 +348,7 @@ class Gateway:
     _uvicorn: object | None = None
     _uvicorn_task: asyncio.Task | None = None
     _own_http: bool = False
+    _local_http: httpx.AsyncClient | None = None     # for a provider on this computer or its network
     _images: bridge.ImageDescriber | None = None
     # what models said when they refused an effort: model -> the efforts it takes (() for none at all)
     _efforts: dict = field(default_factory=dict)
@@ -407,6 +409,9 @@ class Gateway:
         if self._own_http and self.http is not None:
             await self.http.aclose()
             self.http, self._own_http = None, False
+        if self._local_http is not None:
+            await self._local_http.aclose()
+            self._local_http = None
         for sock in (self.model_socket, self.proxy_socket):
             sock.unlink(missing_ok=True)
 
@@ -501,7 +506,7 @@ class Gateway:
             else:
                 headers["authorization"] = f"Bearer {key}"
             url = upstream_url(base, path, request.url.query)
-            client = self._client()
+            client = self._client(url)
             started = time.monotonic()
             req = client.build_request(request.method, url, content=body, headers=headers)
             try:
@@ -734,17 +739,27 @@ class Gateway:
                     prm = with_effort(prm, instead)
         return events()
 
-    def _client(self) -> httpx.AsyncClient:
+    def _client(self, url: str = "") -> httpx.AsyncClient:
+        """The client for a request to `url`: one of the gateway's own, or the one it was given (tests). A
+        provider on this computer or its network gets one that never goes through a proxy the environment
+        names (secure_http.local_http_options): the key and the conversation went to it."""
+        async def refuse_insecure(response: httpx.Response) -> None:
+            loc = response.headers.get("location")
+            if response.is_redirect and loc and not is_secure(str(response.url.join(loc))):
+                raise httpx.HTTPError(f"redirect to insecure {loc[:100]!r} refused")
+
+        def make(**options) -> httpx.AsyncClient:
+            return httpx.AsyncClient(timeout=httpx.Timeout(600, connect=30), follow_redirects=False,
+                                     event_hooks={"response": [refuse_insecure]}, **options)
+        if self.http is not None and not self._own_http:
+            return self.http
+        if url and is_local(url):
+            if self._local_http is None:
+                self._local_http = make(**local_http_options(url))
+            return self._local_http
         if self.http is None:
             self._own_http = True
-
-            async def refuse_insecure(response: httpx.Response) -> None:
-                loc = response.headers.get("location")
-                if response.is_redirect and loc and not is_secure(str(response.url.join(loc))):
-                    raise httpx.HTTPError(f"redirect to insecure {loc[:100]!r} refused")
-
-            self.http = httpx.AsyncClient(timeout=httpx.Timeout(600, connect=30), follow_redirects=False,
-                                          event_hooks={"response": [refuse_insecure]})
+            self.http = make()
         return self.http
 
     # ---------------------------------------------------------------- the HTTPS proxy

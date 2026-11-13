@@ -12,6 +12,7 @@ import re
 import httpx
 
 from ..netpolicy import check_key, check_url
+from .secure_http import local_http_options
 
 EFFORTS = ["none", "minimal", "low", "medium", "high", "xhigh", "max"]
 
@@ -69,7 +70,8 @@ def cost(caps: dict | None, usage: dict) -> float | None:
 async def fetch_nanogpt(base_url: str, api_key: str | None, http: httpx.AsyncClient | None = None) -> dict[str, dict]:
     check_url(base_url, "The provider's base URL")          # the key goes with it
     check_key(api_key, "NanoGPT")                           # and only one a header can carry
-    client = http or httpx.AsyncClient(timeout=30)
+    # as every client built for a provider's address: a local one is reached directly
+    client = http or httpx.AsyncClient(timeout=30, **local_http_options(base_url))
     try:
         r = await client.get(base_url.rstrip("/") + "/models", params={"detailed": "true"},
                              headers={"Authorization": f"Bearer {api_key}"} if api_key else {})
