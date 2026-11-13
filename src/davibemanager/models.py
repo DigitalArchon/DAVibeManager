@@ -458,8 +458,16 @@ class Models:
                 client = make(prov.base_url, self.key(prov) or "", model)
             except (InsecureURL, UnusableKey) as e:
                 raise UserError(f"{model}'s enclave wasn't asked to attest, so nothing was sent to it: {e}") from None
+            # the client gives the whole attempt tee.ATTEMPT_SECONDS; one request's timeout after that it is
+            # given up here whatever it is doing (Intel's or NVIDIA's service answering a byte at a time), as a
+            # refusal: nothing waits on "attesting" longer (DA Toolkit's review, Nov 2026)
+            limit = tee_mod.ATTEMPT_SECONDS + tee_mod.TIMEOUT_SECONDS
             try:
-                att = await asyncio.to_thread(client.attest)
+                try:
+                    att = await asyncio.wait_for(asyncio.to_thread(client.attest), limit)
+                except TimeoutError:
+                    raise tee_mod.TeeRefused(f"the attestation wasn't done within {limit / 60:g} minutes, and was "
+                                             "given up; this may pass if tried again") from None
             except Exception as e:  # noqa: BLE001
                 client.close()
                 # shown on the card, logged and told the assistant: on one line, short, without what can't be

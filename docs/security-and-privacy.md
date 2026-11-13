@@ -97,8 +97,9 @@ a private model's, which only the attested enclave can open.
 
 When a TEE model is attested: Intel's public certificates, revocation lists and ratings of the
 platform's firmware, to check the enclave's quote up to Intel's root. The request names the platform
-family the quote is from; nothing of yours goes, and no key. A private model's enclave on Intel
-hardware is checked against the same service.
+family the quote is from; nothing of yours goes, and no key. What comes back is kept for an hour once
+it has been read and its signatures checked (an answer that isn't Intel's is asked for again the next
+time). A private model's enclave on Intel hardware is checked against the same service.
 
 ### NVIDIA (nras.attestation.nvidia.com)
 
@@ -275,8 +276,9 @@ fresh random number of its own, and checks:
   of the platform's firmware;
 - that NVIDIA's signed verdict on the GPUs is for the app's number, and passes.
 
-Anything forged, revoked or made for another number is refused, and nothing is sent. What couldn't
-be checked, or isn't current, makes the attestation **partial**: the request still goes, and the app
+Anything forged, revoked or made for another number is refused, and nothing is sent; so is evidence
+the app can't read, and an attestation not done within three minutes. What couldn't be checked,
+or isn't current, makes the attestation **partial**: the request still goes, and the app
 says so once for each model, naming each shortfall, with what was attested:
 
 - **RedPill's TEE gateway**, for most of NanoGPT's TEE models: "TEE gateway attested". The gateway

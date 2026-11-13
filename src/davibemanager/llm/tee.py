@@ -95,6 +95,14 @@ TIMEOUT_SECONDS = 30.0
 # Chutes' evidence can take about a minute (nano-gpt, Nov 10 2026; SealedLore measured 25 s for
 # TEE/gemma4-31b:thinking's 40 instances).
 ATTESTATION_TIMEOUT_SECONDS = 90.0
+# One attestation, all of it, is given this long: a request of it waits for what is left, and none
+# is begun once it has passed (`TeeClient._left`), nor is Intel's or NVIDIA's check. The endpoints
+# may live under three paths, each asked in turn, for the gateway's report and then the model's own:
+# with 90 seconds each to answer, an address that never did kept a model "attesting" for nine
+# minutes (DA Toolkit's review, Nov 2026). Three minutes is a gateway's report, a model's own that
+# timed out upstream (a 504, about a minute) asked for once more, and Intel's and NVIDIA's checks,
+# with room to spare. Models.tee_guard stops waiting soon after, whatever the attempt is doing.
+ATTEMPT_SECONDS = 180.0
 # A stream's receipt is complete just after the stream ends (nano-gpt's own
 # example waits up to about 20 seconds).
 RECEIPT_WAIT_SECONDS = 20.0
@@ -594,10 +602,27 @@ class TeeClient:
         # The two verifiers, replaceable so tests can stand in for Intel and NVIDIA.
         self._intel = intel or dcap.verify
         self._nvidia = nvidia or nras.verify
+        # When the attestation under way must be over (time.monotonic; `ATTEMPT_SECONDS`), else None.
+        self._deadline: float | None = None
 
     def close(self) -> None:
         if self._owns:
             self._client.close()
+
+    def _left(self, wanted: float = TIMEOUT_SECONDS) -> float:
+        """How long a request of the attestation under way may wait: `wanted`, or what is left of
+        `ATTEMPT_SECONDS` when that is less. Refuses once it has passed: asked before each
+        request, and before Intel's and NVIDIA's checks. Outside an attestation (a reply's
+        check), `wanted`."""
+        if self._deadline is None:
+            return wanted
+        left = self._deadline - time.monotonic()
+        if left <= 0:
+            raise TeeRefused(
+                f"{self.model}'s attestation wasn't done within {ATTEMPT_SECONDS / 60:g} minutes, "
+                "and was given up; this may pass if tried again"
+            )
+        return min(wanted, left)
 
     def _get(
         self,
@@ -616,6 +641,9 @@ class TeeClient:
             headers["X-TEE-Verification-Route"] = route
         last: str = ""
         for base in [self._base] if self._base else _bases(self.base_url):
+            if self._deadline is not None:
+                # of an attestation: each address waits only for what is left of its time
+                timeout = self._left(TIMEOUT_SECONDS if timeout is None else timeout)
             try:
                 response = self._client.get(
                     f"{base}{path}",
@@ -695,7 +723,9 @@ class TeeClient:
         other that doesn't hold, as a TeeRefused that says it couldn't be read, the
         error it raised its cause: until Nov 2026 that error itself (an
         AttributeError, a TypeError) reached the top bar (DA Toolkit's review).
+        And the whole of it is given `ATTEMPT_SECONDS`.
         """
+        self._deadline = time.monotonic() + ATTEMPT_SECONDS
         try:
             return self._attest()
         except (ProviderError, ImportError):     # a refusal already; or no cryptography, which says so itself
@@ -705,6 +735,8 @@ class TeeClient:
                 f"{self.model}'s attestation couldn't be read: what its provider sent isn't in the "
                 f"shape it should be ({type(exc).__name__})"
             ) from exc
+        finally:
+            self._deadline = None
 
     def _attest(self) -> Attestation:
         """`attest`'s checks, in their order."""
@@ -723,6 +755,8 @@ class TeeClient:
                 # for any failure here, and a rate limit (429, seen live) or an outage would
                 # then send a model Chutes answers first to instances not attested this time.
                 return self._attest_gateway_alone(gateway, "its own attestation timed out")
+            if isinstance(exc, TeeRefused):      # out of time (`_left`): said as it is
+                raise
             raise self._refused(exc) from exc
         if isinstance(body.get("evidence"), list):
             return self._attest_instances(body, nonce, gateway, unheard)
@@ -1107,6 +1141,7 @@ class TeeClient:
         verification raised anything else: it couldn't be read. Why is said short and on one
         line (`relay_said`): a refusal can name a certificate of the quote's own chain, which
         its sender wrote."""
+        self._left()
         try:
             intel = self._intel(raw, self._client)
         except dcap.DcapError as exc:
@@ -1174,7 +1209,7 @@ class TeeClient:
         reached. HTTP 4xx is NVIDIA refusing the evidence: that refuses. (It used
         to read "rejected" for an outage too.)"""
         try:
-            response = self._client.post(NRAS_URL, json=payload)
+            response = self._client.post(NRAS_URL, json=payload, timeout=self._left())
         except httpx.HTTPError:
             return None
         if response.status_code >= 500:

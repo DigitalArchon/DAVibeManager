@@ -185,9 +185,10 @@ sleeps):
   neither revoked nor a debug enclave, and Intel rates the machine's firmware;
 - NVIDIA's signed verdict on the GPUs must be for the app's number, and pass.
 
-Anything forged, revoked or made for another number is refused, and nothing is sent. What couldn't be
-checked (no GPU evidence offered, GPUs the quote doesn't commit to, Intel's or NVIDIA's service out of
-reach, a rating below up to date) makes the attestation partial, and the app says so, once a model,
+Anything forged, revoked or made for another number is refused, and nothing is sent; so is evidence
+the app can't read, and an attestation not done within three minutes (it may pass if tried again).
+What couldn't be checked (no GPU evidence offered, GPUs the quote doesn't commit to, Intel's or
+NVIDIA's service out of reach, a rating below up to date) makes the attestation partial, and the app says so, once a model,
 with what was attested and what that leaves to someone's word:
 
 - **RedPill's TEE gateway**, for most of NanoGPT's TEE models: the note says "TEE gateway attested".
