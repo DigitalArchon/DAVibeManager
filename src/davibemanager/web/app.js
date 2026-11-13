@@ -1938,7 +1938,8 @@ const REVIEW_WHAT = { second_opinion: "second opinion", shared_app_review: "revi
 function markChecked(network, check) {
   const req = network.find((e) => e.kind !== "tee_reply" && e.id && e.id === check.of);
   if (req) Object.assign(req, { tee: check.tee }, check.detail ? { tee_detail: check.detail } : {},
-    check.upstream ? { tee_upstream: check.upstream } : {});
+    check.upstream ? { tee_upstream: check.upstream } : {},
+    typeof check.receipt === "boolean" ? { tee_receipt: check.receipt } : {});
   return req;
 }
 
@@ -1954,7 +1955,22 @@ function teeMark(e) {
   if (!mark) return null;
   const up = ["verified", "signed"].includes(e.tee) ? e.tee_upstream : null;
   return [mark[0] + (up?.name ? ` · run by ${up.label || up.name}` : ""), mark[1],
-    TEE_TIPS[e.tee] + (e.tee_detail ? ` (${e.tee_detail})` : "") + (up?.words ? `\n\n${up.words}` : "")];
+    teeTip(e) + (e.tee_detail ? ` (${e.tee_detail})` : "") + (up?.words ? `\n\n${up.words}` : "")];
+}
+
+// Whether the reply's receipt was read under the attested keys and held (e.tee_receipt: models.reply_check): a
+// model attested itself is verified by its own key's signature, with or without one, and the tooltip said a
+// receipt was read either way (DA Toolkit's review, Nov 2026). Without one it says so, and what the signature
+// alone shows; a row saved before Nov 13 2026 doesn't say whether one was read, and its tooltip says that.
+function teeTip(e) {
+  if (!["verified", "signed"].includes(e.tee) || e.tee_receipt === true) return TEE_TIPS[e.tee];
+  if (e.tee_receipt !== false) return `${TEE_TIPS[e.tee]} Whether a receipt was read for this reply wasn't kept with it (it was saved by an earlier version).`;
+  const compared = e.tee === "verified" ? "and the record is for the exact text that came back"
+    : "but the reply's text can't be compared with it (NanoGPT rebuilds this model's replies), so a change on the way here wouldn't show";
+  return `Checked against the attested signing key: that key signed this reply's record, ${compared}. No receipt was read `
+    + "(none came with the record, or the attestation kept no receipt keys to read one by). So for a model RedPill serves, "
+    + "nothing here says the machine running the model was verified: the signature shows the reply passed through the "
+    + "attested gateway." + TEE_CLEAR;
 }
 
 function privacyMark(e) {

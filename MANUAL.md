@@ -221,9 +221,10 @@ verified**; **TEE signed, text not compared** (NanoGPT rebuilds that model's rep
 not verified** (no record of it could be read, so nothing shows it came from the attested enclave);
 or **TEE ⚠ check failed**: the reply doesn't match its record. Then the app says so, once for as long
 as that model's replies keep failing, and attests the model again before anything more goes to it.
-Hovering over a mark says what it means, what in it is the gateway's word, and that what was sent
-passed NanoGPT in the clear. The check never holds up or changes what the assistant, or you, are
-given. Chutes signs no replies, so a reply it answers is marked not verified; one RedPill's gateway
+Hovering over a mark says what it means, what in it is the gateway's word, whether the reply's receipt
+was read (a model attested by its own key is verified by that key's signature, with a receipt or
+without), and that what was sent passed NanoGPT in the clear. The check never holds up or changes what
+the assistant, or you, are given. Chutes signs no replies, so a reply it answers is marked not verified; one RedPill's gateway
 answers instead is checked as any other.
 
 **Settings → TEE models → Name the provider behind each TEE reply** (off by default) says who ran the

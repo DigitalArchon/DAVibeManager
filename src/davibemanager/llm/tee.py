@@ -215,11 +215,26 @@ class TeeUpstream:
 
 @dataclass(frozen=True)
 class ReplyCheck:
-    """What `TeeClient.check` found of a reply: its mark ("verified", "signed", "failed"), and who ran its
-    model, when asked to look."""
+    """What `TeeClient.check` found of a reply: its mark ("verified", "signed", "failed"), who
+    ran its model, when asked to look, and whether its receipt was read under the attested keys
+    and held (`receipt`). A model attested itself is verified without one (its own key signed the
+    record), so the mark alone doesn't say: the mark's tooltip does, from this."""
 
     mark: str
     upstream: TeeUpstream | None = None
+    receipt: bool = False
+
+
+class Mark(str):
+    """A reply's mark as `TeeClient.check_reply` gives it: the word, which also knows whether the
+    reply's receipt was read and held (`receipt`, as ReplyCheck's)."""
+
+    receipt: bool
+
+    def __new__(cls, mark: str, receipt: bool = False) -> Mark:
+        made = super().__new__(cls, mark)
+        made.receipt = receipt
+        return made
 
 
 @dataclass(frozen=True)
@@ -1244,9 +1259,11 @@ class TeeClient:
         receipt_id: str | None = None,
         body_hash: str | None = None,
         route: str | None = None,
-    ) -> str:
-        """`check`'s mark alone, nothing more looked up."""
-        return self.check(response_id, receipt_id=receipt_id, body_hash=body_hash, route=route).mark
+    ) -> Mark:
+        """`check`'s mark alone, nothing more looked up: the word, which says too whether the
+        reply's receipt was read and held (`Mark.receipt`)."""
+        found = self.check(response_id, receipt_id=receipt_id, body_hash=body_hash, route=route)
+        return Mark(found.mark, found.receipt)
 
     def check(
         self,
@@ -1281,7 +1298,12 @@ class TeeClient:
 
         `name_upstream`: for a reply that checks out with its receipt read,
         who ran its model too (`served_by`: a lookup on api.redpill.ai). It
-        never changes the mark."""
+        never changes the mark.
+
+        With the mark, whether the reply's receipt was read under the attested
+        keys and held (`ReplyCheck.receipt`): the mark's tooltip says so, since
+        a model attested itself is verified without one (DA Toolkit's review,
+        Nov 2026: the tooltip said a receipt was read either way)."""
         lookup = receipt_id or response_id
         if not lookup:
             raise ProviderError("the reply carried no id to check")
@@ -1319,14 +1341,14 @@ class TeeClient:
             )
         mark = "verified" if compared else "signed"
         if not name_upstream:
-            return ReplyCheck(mark)
+            return ReplyCheck(mark, receipt=checked)
         if not checked:
             # A session named by a receipt that wasn't read under the
             # attested keys is anyone's word.
             return ReplyCheck(
                 mark, TeeUpstream(note="its receipt wasn't read under the attested keys")
             )
-        return ReplyCheck(mark, self.served_by(receipt))
+        return ReplyCheck(mark, self.served_by(receipt), True)
 
     def served_by(self, receipt: dict[str, Any]) -> TeeUpstream:
         """Who ran the model of a reply whose receipt held (`check`), by

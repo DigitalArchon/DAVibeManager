@@ -298,6 +298,64 @@ async def test_an_attestation_that_doesnt_end_is_given_up_and_nothing_sent(monke
         gate.set()
 
 
+# --- what a reply's mark claims of its receipt (DA Toolkit 5b8bcb4) ------------------------------
+
+
+def test_a_reply_says_whether_its_receipt_was_read_and_held():
+    """A model attested itself is verified by its own key's signature, with a receipt or without
+    (SealedLore's rule): what was read is said with the mark, for its tooltip."""
+    from test_tee import receipt_client, streamed
+
+    with_one = receipt_client(tied="statement")
+    found = with_one.check("req_9", receipt_id="rcpt-1", body_hash=streamed())
+    assert (found.mark, found.receipt) == ("verified", True)
+    mark = with_one.check_reply("req_9", receipt_id="rcpt-1", body_hash=streamed())
+    assert mark == "verified" and mark.receipt is True and type(str(mark)) is str
+    assert with_one.check("req_9", receipt_id="rcpt-1", body_hash=streamed(), name_upstream=True).receipt is True
+    without = receipt_client(tied="statement", with_receipt=False)
+    found = without.check("req_9", receipt_id="rcpt-1", body_hash=streamed())
+    assert (found.mark, found.receipt) == ("verified", False)          # verified all the same
+    mark = without.check_reply("req_9", receipt_id="rcpt-1", body_hash=streamed())
+    assert mark == "verified" and mark.receipt is False
+    assert without.check("req_9", receipt_id="rcpt-1", body_hash=streamed(), name_upstream=True).receipt is False
+    unread = receipt_client(tied="none")                               # a receipt came, with no keys kept to read it by
+    assert unread.check("req_9", receipt_id="rcpt-1", body_hash=streamed()).receipt is False
+    rebuilt = receipt_client("TEE/gemma-4-31b-it", tied="statement")
+    found = rebuilt.check("req_9", receipt_id="rcpt-1", body_hash=streamed(b"other bytes"))
+    assert (found.mark, found.receipt) == ("signed", True)
+
+
+async def test_the_reply_events_mark_says_whether_a_receipt_was_read(tmp_path):
+    """Through the gateway, the assistant's request is marked with what its check found, receipt too; a reply that
+    names no completion id and no receipt is checked all the same, and is unchecked."""
+    from test_tee import STREAM, _ask_through_gateway, _stream_of, _tee_models
+
+    for server, receipt, expected in ((dict(tied="statement"), "rcpt-1", ("verified", True)),
+                                      (dict(tied="statement", with_receipt=False), "rcpt-1", ("verified", False)),
+                                      (dict(), None, ("unchecked", None))):
+        seen, told, logged = [], [], []
+        models, prov = _tee_models(seen, told, logged, **server)
+        stream = STREAM if receipt else STREAM.replace(b'"id": "req_9", ', b"")     # names nothing at all
+        factory, _asked = _stream_of(stream, receipt=receipt)
+        _said, log = await _ask_through_gateway(tmp_path, models, prov, factory)
+        check = next(e for e in log if e["kind"] == "tee_reply")
+        assert (check["tee"], check.get("receipt")) == expected, check
+
+
+@pytest.mark.parametrize("with_receipt", [True, False])
+async def test_the_engines_row_keeps_whether_a_receipt_was_read(env, with_receipt):
+    """The window's rows on a reload are the engine's (Engine.network), not those markChecked marked live."""
+    from davibemanager.llm import prompts
+    from test_tee import _settled, _tee_reviewer
+
+    engine, fake, events = env
+    engine.cfg.settings.review_model = "Fake|TEE/glm-5.3-flash"
+    _tee_reviewer(engine, [], tied="statement", with_receipt=with_receipt)
+    await engine._review(prompts.REVIEW_PROMPT, "ls", "second_opinion")
+    (done,) = await _settled(engine, "review", 1)
+    assert done["tee"] == "verified" and done["tee_receipt"] is with_receipt
+
+
 def test_an_answer_of_nvidias_that_cant_be_read_is_no_verdict():
     """Past the checks that name what is wrong: a GPU's token that is no text raised AttributeError."""
     session = httpx.Client(transport=httpx.MockTransport(lambda request: httpx.Response(503)))   # no keys either

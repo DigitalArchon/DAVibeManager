@@ -1502,7 +1502,7 @@ async def test_a_tee_reply_is_checked_to_its_exact_bytes_once_it_has_gone_on(tmp
     assert request["tee"] == "checking" and check["of"] == request["id"] and check["tee"] == "verified"
     lookups = [str(r.url) for r in seen if "/tee/signature/" in str(r.url)]
     assert lookups and "rcpt-1" in lookups[-1]                     # by the receipt its stream named
-    assert ("tee_reply_checked", {"model": "TEE/glm-5.3-flash", "tee": "verified"}) in logged
+    assert ("tee_reply_checked", {"model": "TEE/glm-5.3-flash", "tee": "verified", "receipt": True}) in logged
     assert not [d for kind, d in told if kind == "toast" and d.get("level") == "error"]
 
 

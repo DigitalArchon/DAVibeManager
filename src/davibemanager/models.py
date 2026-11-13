@@ -496,6 +496,10 @@ class Models:
         | "unchecked", "detail"?, "upstream"?} that never raises (llm/tee.py check_reply), or None when none is
         kept. "upstream" (upstream_view) is who ran the model, by RedPill's record, when Settings asks for it.
 
+        With a "verified" or "signed" mark, "receipt": whether the reply's receipt was read under the attested
+        keys and held. A model attested itself is verified by its own key's signature without one, so the mark's
+        tooltip says which (DA Toolkit's review, Nov 2026).
+
         The outcome goes in the log; a reply that failed (not signed by the attested key, or not the text it
         signed) is said to the user, and its model attested again before its next request. One that couldn't
         be checked ("unchecked": a provider that signs no replies, a record not found) is no reason to
@@ -516,8 +520,12 @@ class Models:
                 if named:
                     done = await asyncio.to_thread(client.check, getattr(reply, "id", None), **record, name_upstream=True)
                     found = {"tee": done.mark, **({"upstream": upstream_view(done.upstream)} if done.upstream else {})}
+                    receipt = getattr(done, "receipt", None)
                 else:
-                    found = {"tee": await asyncio.to_thread(client.check_reply, getattr(reply, "id", None), **record)}
+                    mark = await asyncio.to_thread(client.check_reply, getattr(reply, "id", None), **record)
+                    found, receipt = {"tee": str(mark)}, getattr(mark, "receipt", None)
+                if found["tee"] in ("verified", "signed") and isinstance(receipt, bool):
+                    found["receipt"] = receipt
             except Exception as e:  # noqa: BLE001 - an unreachable check is not a failed one
                 found = {"tee": "unchecked", "detail": str(e)[:300]}
             self._log("tee_reply_checked", model=model, **found)

@@ -201,7 +201,7 @@ const test = (check) => {
 
 def tee_mark() -> str:
     """A TEE reply's mark as Sandbox activity shows it (teeMark): [words, colour, tooltip], or null."""
-    return script("TEE_MARKS", "TEE_CLEAR", "TEE_TIPS", "teeMark") + "\nconst test = (e) => teeMark(e);"
+    return script("TEE_MARKS", "TEE_CLEAR", "TEE_TIPS", "teeMark", "teeTip") + "\nconst test = (e) => teeMark(e);"
 
 
 def test_a_tee_replys_mark_says_what_is_the_gateways_word_and_that_it_passed_in_the_clear():
@@ -262,6 +262,29 @@ def test_naming_a_tee_replys_provider_is_a_choice_that_says_where_it_goes():
     panel = re.search(r"^function settingsPanel\(\) \{.*?^}$", text, re.M | re.S).group(0)
     assert 'checked: !!s.tee_name_upstreams' in panel and "save({ tee_name_upstreams: e.target.checked }" in panel
     assert '"Name the provider behind each TEE reply"' in panel and "TEE_UPSTREAMS_NOTE" in panel
+
+
+def test_a_tee_marks_tooltip_says_whether_a_receipt_was_read():
+    """A model attested itself is verified by its own key's signature, with a receipt or without, yet the tooltip
+    said "the gateway's signed receipt, read too" either way (DA Toolkit's review, Nov 2026). The check says which
+    (receipt), its row keeps it (tee_receipt), and a row saved before says that wasn't kept."""
+    carried = script("markChecked") + """
+const test = (check) => { const rows = [{ kind: "model", id: "a", tee: "checking" }]; markChecked(rows, check);
+  return rows[0].tee_receipt === undefined ? null : rows[0].tee_receipt; };"""
+    assert run(carried, [{"of": "a", "tee": "verified", "receipt": True}, {"of": "a", "tee": "verified", "receipt": False},
+                         {"of": "a", "tee": "unchecked"}]) == [True, False, None]
+    read, unread, old, signed_unread, unchecked = run(tee_mark(), [
+        {"tee": "verified", "tee_receipt": True}, {"tee": "verified", "tee_receipt": False}, {"tee": "verified"},
+        {"tee": "signed", "tee_receipt": False}, {"tee": "unchecked", "tee_receipt": False}])
+    assert "the gateway's signed receipt, read too" in read[2]
+    assert read[0] == unread[0] == old[0] == "TEE verified"                 # which replies count as verified doesn't change
+    assert "receipt, read too" not in unread[2] and "No receipt was read" in unread[2]
+    assert "exact text that came back" in unread[2] and "nothing here says the machine running the model was verified" in unread[2]
+    assert "wasn't kept with it" in old[2]
+    assert "No receipt was read" in signed_unread[2] and "can't be compared" in signed_unread[2]
+    assert "No receipt" not in unchecked[2]
+    for tip in (unread[2], old[2], signed_unread[2]):
+        assert "passed NanoGPT's servers in the clear" in tip
 
 
 def test_a_tee_request_with_no_reply_to_check_is_never_said_to_be_checking():

@@ -2165,6 +2165,8 @@ class Engine:
                         old["tee_detail"] = ev["detail"]
                     if ev.get("upstream"):
                         old["tee_upstream"] = ev["upstream"]      # who ran its model, where that was asked
+                    if isinstance(ev.get("receipt"), bool):
+                        old["tee_receipt"] = ev["receipt"]        # whether its receipt was read (the mark's tooltip)
                     break
         else:
             self._count_tokens(ev)

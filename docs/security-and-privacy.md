@@ -315,7 +315,9 @@ the app's own requests' as well as the assistant's, and **☰ → Sandbox activi
 - **TEE ⚠ check failed**: the reply doesn't match its record. The app says so, and attests the model
   again before anything more is sent to it.
 
-Hovering over a mark says what it means, what in it is the gateway's word, and that what was sent
+Hovering over a mark says what it means, what in it is the gateway's word, whether the reply's receipt
+was read (a model attested by its own key is verified by that key's signature, with a receipt or
+without; without one, nothing says the machine running the model was verified), and that what was sent
 passed NanoGPT in the clear. The check never holds up or changes what the assistant, or you, are
 given. Your own messages carry no mark: each of them leads to many requests of the assistant's, and
 each of those is marked.
