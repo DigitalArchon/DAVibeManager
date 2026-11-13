@@ -137,6 +137,10 @@ class Models:
                 creds.set_secret("provider", name, api_key)
             except creds.KeyringUnavailable as e:
                 raise UserError(f"{e}. Unlock your keyring (GNOME Keyring or KWallet) and try again.") from None
+        if old and (renamed or api_key or old.base_url != prov.base_url):
+            # its TEE models' attestations were made with the key and at the address it had: their clients look
+            # up each reply's signature with that key, there. Attested again at the next request instead
+            self._forget_tee(old.name)
         if old:
             self.cfg.providers[self.cfg.providers.index(old)] = prov
         else:
@@ -148,6 +152,7 @@ class Models:
         self._changed()
 
     def delete_provider(self, name: str) -> None:
+        self._forget_tee(name)
         self.cfg.providers = [p for p in self.cfg.providers if p.name != name]
         creds.delete_secret("provider", name)
         for attr in ("base_url", "builder_url"):
@@ -162,6 +167,19 @@ class Models:
             s.review_model = ""
         self._save_config(self.cfg)
         self._changed()
+
+    def _forget_tee(self, name: str) -> None:
+        """Drop, and close, the attested TEE clients kept for provider `name`: they were made with its key and
+        at its address as they were (DA Toolkit's review, Nov 2026: a new key went unused by the checks until
+        the attestation aged out). Its models are attested again before anything more is sent to them."""
+        for key in [k for k in self._tee if k[0] == name]:
+            client = self._tee.pop(key)[0]
+            self._doubted.discard(key)
+            self._told_failed.discard(key)
+            try:
+                client.close()
+            except Exception:  # noqa: BLE001 - it is forgotten all the same
+                pass
 
     def provider(self, name: str) -> Provider:
         prov = self.cfg.provider(name)

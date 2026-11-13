@@ -356,6 +356,110 @@ async def test_the_engines_row_keeps_whether_a_receipt_was_read(env, with_receip
     assert done["tee"] == "verified" and done["tee_receipt"] is with_receipt
 
 
+# --- an attestation belongs to its provider's address and key (DA Toolkit 18de910, 4317f61) ------
+
+
+class _Kept:
+    """A TeeClient stood in for: attested at once, and its closing seen."""
+
+    def __init__(self, base, key, model, made: list):
+        self.base, self.key, self.closed = base, key, False
+        made.append(self)
+
+    def attest(self):
+        from davibemanager.llm.tee import Attestation
+
+        return Attestation(verified=True, level="full", signing_address="0x00", nonce_ok=True)
+
+    def close(self):
+        self.closed = True
+
+
+def _kept_models(tmp_path, monkeypatch):
+    from davibemanager import config as config_mod
+    from davibemanager import creds
+    from davibemanager.config import Config, Provider
+    from davibemanager.models import Models
+
+    keys = {}
+    monkeypatch.setattr(creds, "set_secret", lambda kind, name, value: keys.__setitem__(name, value))
+    monkeypatch.setattr(creds, "get_secret", lambda kind, name: keys.get(name))
+    monkeypatch.setattr(creds, "delete_secret", lambda kind, name: keys.pop(name, None))
+    monkeypatch.setattr(config_mod, "keep_password", lambda *a, **k: None)
+    monkeypatch.setattr(config_mod, "forget_password", lambda *a, **k: None)
+    cfg = Config(providers=[Provider("NanoGPT", "https://nano-gpt.com/api/v1"), Provider("Other", "https://other.example/v1")])
+    m = Models(cfg, save_config=lambda c: None, emit=lambda kind, **d: None, log=lambda event, **d: None)
+    m.key = lambda prov: keys.get(prov.name, "k")
+    made: list = []
+    m.tee_factory = lambda base, key, model: _Kept(base, key, model, made)
+    return m, made
+
+
+async def test_a_new_key_drops_the_attestations_made_with_the_old_one(tmp_path, monkeypatch):
+    """The kept client looks up its replies' signatures with the key it was made with: with a new key saved at
+    the same address, the checks went on with the old one until the attestation aged out."""
+    models, made = _kept_models(tmp_path, monkeypatch)
+    prov = models.provider("NanoGPT")
+    await models.tee_guard(prov, "TEE/glm-5.3-flash")
+    await models.tee_guard(models.provider("Other"), "TEE/glm-5.3-flash")
+    first, other = made
+    models.save_provider({"name": "NanoGPT", "base_url": prov.base_url})                     # no new key: kept
+    models.save_provider({"name": "Other", "base_url": "https://other.example/v1"}, api_key="sk-other-2")
+    assert not first.closed and models.reply_check(models.provider("NanoGPT"), "TEE/glm-5.3-flash") is not None
+    assert other.closed and models.reply_check(models.provider("Other"), "TEE/glm-5.3-flash") is None
+    models.save_provider({"name": "NanoGPT", "base_url": prov.base_url}, api_key="sk-new-key-1")
+    assert first.closed and models.reply_check(models.provider("NanoGPT"), "TEE/glm-5.3-flash") is None
+    await models.tee_guard(models.provider("NanoGPT"), "TEE/glm-5.3-flash")
+    assert made[-1].key == "sk-new-key-1"                                                    # attested again with it
+
+
+async def test_an_attestation_is_of_its_address_and_goes_with_a_provider_deleted_or_renamed(tmp_path, monkeypatch):
+    models, made = _kept_models(tmp_path, monkeypatch)
+    old = models.provider("NanoGPT")
+    await models.tee_guard(old, "TEE/glm-5.3-flash")
+    models.save_provider({"name": "NanoGPT", "base_url": "https://relay.example/api/v1"})
+    moved = models.provider("NanoGPT")
+    assert models.reply_check(moved, "TEE/glm-5.3-flash") is None                            # not the new address's
+    assert made[0].closed                                                                    # and not kept either
+    await models.tee_guard(moved, "TEE/glm-5.3-flash")
+    assert made[-1].base == "https://relay.example/api/v1" and len(made) == 2
+    models.save_provider({"name": "Renamed", "base_url": moved.base_url}, original_name="NanoGPT")
+    assert made[1].closed and not models._tee
+    await models.tee_guard(models.provider("Renamed"), "TEE/glm-5.3-flash")
+    models.delete_provider("Renamed")
+    assert made[2].closed and not models._tee
+
+
+async def test_a_request_waits_for_an_attestation_under_way_and_goes_by_what_it_found(tmp_path, monkeypatch):
+    """A request that comes while its model is being attested waits for that attestation and is refused with it:
+    it never goes out under the one before."""
+    import asyncio
+    import threading
+
+    from davibemanager.models import UserError
+
+    models, made = _kept_models(tmp_path, monkeypatch)
+    prov = models.provider("NanoGPT")
+    await models.tee_guard(prov, "TEE/glm-5.3-flash")
+    models._doubted.add((prov.name, prov.base_url, "TEE/glm-5.3-flash"))        # a reply failed its check
+    gate = threading.Event()
+
+    def refused(self):
+        gate.wait(5)
+        raise TeeRefused("the quote doesn't bind our nonce")
+
+    monkeypatch.setattr(_Kept, "attest", refused)
+    first = asyncio.ensure_future(models.tee_guard(prov, "TEE/glm-5.3-flash"))
+    await asyncio.sleep(0.05)
+    second = asyncio.ensure_future(models.tee_guard(prov, "TEE/glm-5.3-flash"))
+    await asyncio.sleep(0.05)
+    assert not second.done()                                                     # held behind the attestation
+    gate.set()
+    for task in (first, second):
+        with pytest.raises(UserError, match="didn't hold, so nothing was sent"):
+            await task
+
+
 def test_an_answer_of_nvidias_that_cant_be_read_is_no_verdict():
     """Past the checks that name what is wrong: a GPU's token that is no text raised AttributeError."""
     session = httpx.Client(transport=httpx.MockTransport(lambda request: httpx.Response(503)))   # no keys either
