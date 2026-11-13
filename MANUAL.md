@@ -470,6 +470,9 @@ itself.** Every service the app talks to, what it keeps and what it can't protec
     in plain words, and the exact command.
   - Nothing runs until you click **Run it**. Administrator commands go through your desktop's
     own password prompt, and **Stop** stops them too.
+  - Its heading says whether it only looks or changes something, by the app's own rules: only a
+    command they know as one that only reads is shown as looking. If the assistant called it
+    read-only and the rules don't know it, the card says so: check what it does before you run it.
   - What a command printed is shown to you first, with passwords and keys blanked out. You
     send it or keep it private. (Settings can switch this to automatic. Anything that looks
     private still waits for you, and so does output with text in it aimed at the assistant,

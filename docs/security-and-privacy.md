@@ -186,7 +186,13 @@ then fetches from your distribution's own servers, as it always does.
   (Tinfoil's and Sigstore's) follow one only to HTTPS, and never from a server on the internet into
   this computer or your network: one they may not follow fails the attestation, and nothing is sent.
 - **Proxies.** The app has no proxy setting of its own: its requests use your system's proxy
-  settings (`HTTPS_PROXY` and the like), as most programs do. Sync goes through Tor.
+  settings (`HTTPS_PROXY` and the like), as most programs do, except a request to a model server
+  on this computer or your network, which never goes through a proxy. Sync goes through Tor.
+- **Nothing else from your environment.** A model provider gets the key you gave the app and
+  nothing that OpenAI's library would take from your environment (`OPENAI_ORG_ID`,
+  `OPENAI_PROJECT_ID`, `OPENAI_CUSTOM_HEADERS`). A model server that takes no connection fails in
+  ten seconds, not after the minutes a reply may take; a reply whose stream stops before the
+  provider says it's complete is an error, and nothing in it (a half-written command) is used.
 - **The sandbox** reaches nothing but public internet addresses, over HTTPS, through the app
   ([below](#the-sandbox)).
 - **Links in a reply.** A link that isn't secure (plain `http://` to anywhere but this computer or
@@ -368,8 +374,10 @@ shows a card: what it wants to find out, and the exact command.
   your desktop's own password prompt: the app never sees the password, and **Stop** stops it too.
 - **Risk rules.** The assistant says how risky each command is; the app's own rules (in code) can
   only raise that, never lower it: deleting, formatting, changing packages or the system, rebooting,
-  killing processes. A command that could interrupt what you're doing, lose data or lock you out
-  asks once more before it runs.
+  killing processes. Read-only is the rules' word, not the assistant's: only a command they know as
+  one that only reads is shown as read-only, and any other as a change (the card says when the
+  assistant called it read-only and the rules don't know it). A command that could interrupt what
+  you're doing, lose data or lock you out asks once more before it runs.
 - **Sensitive reads.** A command that would read or print a secret (password hashes, a private key,
   a `.env` file, a process's environment, `~/.ssh` or `~/.gnupg`), or that carries one in its own
   text, is flagged before it runs.
@@ -377,6 +385,13 @@ shows a card: what it wants to find out, and the exact command.
   goes to the assistant only when you send it, or not at all. With Settings set to send it
   automatically, anything that looks private still waits for you, and so does text aimed at the
   assistant, even text you can't see.
+- **It can't speak for the app.** The app's own notes to the assistant begin "[DA Vibe Manager".
+  In anything it passes on from elsewhere (a command's output, search results, a picture's
+  description, a build's log, a shared app's change titles) that marker is rewritten as
+  `[untrusted "DA Vibe Manager"`, which the assistant is told is never the app.
+- **Your environment stays yours.** Commands run in your own environment, without what the AppImage
+  sets for the app itself (its CA bundle settings, `SSL_CERT_FILE` and `REQUESTS_CA_BUNDLE`, among
+  them): a tool there trusts what it would in any other terminal.
 - **Second opinions.** A separate AI, outside the sandbox, reads commands that change things before
   you decide (Settings: every command, or only when you ask). It is GLM 5.3 unless you choose another;
   with a private assistant it must be private too.
