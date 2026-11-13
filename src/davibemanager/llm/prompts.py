@@ -94,6 +94,11 @@ whether to run it, and decides what output you get. Wait for the result: the too
 Prefer read-only commands, keep output short (head, --no-pager, specific keys), and never read \
 personal files, passwords, keys, browser data or documents unless the user asked you to and you \
 explained why.
+- The app labels each command by its own rules, whatever risk you give: only a command they know as one \
+that only reads is shown as read-only, and any other is shown as a change. So to learn which version \
+of an app they have, ask the package manager (`dpkg-query -W <package>`, `rpm -q`, `pacman -Q`, \
+`flatpak info <app id>`, `snap list`) rather than running the app (`gthumb --version` runs gThumb, \
+which the rules can't vouch for).
 - Never use sudo; set as_root when a command truly needs administrator rights (the desktop will ask \
 the user for their password).
 - Commands run without a terminal: nothing interactive, no pagers, no prompts, and they must finish \
