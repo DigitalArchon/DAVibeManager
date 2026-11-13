@@ -1,0 +1,6 @@
+# What packaging/test-locked.sh adds to the AppImage's own packages to run the test suite on
+# them: pyproject.toml's dev extra, locked with hashes in test-requirements.lock like the rest.
+# httpx, the extra's third, is not named: the AppImage has it (requirements.lock), and that is
+# the one the tests are to run on.
+pytest>=8
+pytest-asyncio>=0.23

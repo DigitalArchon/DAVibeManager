@@ -1,6 +1,6 @@
 #!/bin/bash
 # Runs inside the build container (see Containerfile); started by packaging/build-appimage.sh.
-#   build.sh build   /src.tar (git archive of the commit) -> /out/DAVibeManager-<version>-x86_64.AppImage
+#   build.sh build   /src.tar (the commit's files, as committed) -> /out/DAVibeManager-<version>-x86_64.AppImage
 #   build.sh lock    re-resolve the *.lock files into /out (review, then commit them)
 # Inputs are pinned (pins.sh, *.lock with hashes) and every timestamp is SOURCE_DATE_EPOCH, so the
 # same commit gives the same AppImage, byte for byte.
@@ -54,14 +54,14 @@ if [ "$mode" = lock ]; then
     # pip-compile keeps the pins of a lock it is writing over: so a floor or a package added is
     # locked without moving everything else to whatever is newest today. UPGRADE=1 re-resolves the
     # lot, the lock tools' own lock with them.
-    for name in requirements build-requirements sdists lock-requirements; do
+    for name in requirements build-requirements sdists lock-requirements test-requirements; do
         if [ "${UPGRADE:-0}" != 1 ] && [ -f "$name.lock" ]; then
             cp "$name.lock" "/out/$name.lock"
         fi
     done
     "$V/pip-compile" -q --generate-hashes --allow-unsafe --no-strip-extras --output-file /out/requirements.lock \
         "$W/src/pyproject.toml"
-    for name in build-requirements sdists lock-requirements; do
+    for name in build-requirements sdists lock-requirements test-requirements; do
         "$V/pip-compile" -q --generate-hashes --allow-unsafe --output-file "/out/$name.lock" "$name.in"
     done
     sed -i "s#$W/src/#./#g; s#/out/#packaging/appimage/#g" /out/*.lock
@@ -131,8 +131,9 @@ done
 "$W/buildpy/bin/python3" - "$P/requirements.lock" "$W/binary.lock" $SDIST_ONLY <<'PY'
 import re, sys
 text, skip = open(sys.argv[1]).read(), set(sys.argv[3:])
-blocks = re.split(r"(?m)^(?=[\w.-]+==)", text)
-open(sys.argv[2], "w").write("".join(b for b in blocks if b.split("==", 1)[0] not in skip))
+# a block per requirement, extras included (name[extra]==...: else it joins the block before)
+blocks = re.split(r"(?m)^(?=[\w.-]+(?:\[[^\]]*\])?==)", text)
+open(sys.argv[2], "w").write("".join(b for b in blocks if re.split(r"[\[=]", b, maxsplit=1)[0] not in skip))
 PY
 
 # the AppImage's Python: locked wheels only (hash-checked), then the ones built here
@@ -178,6 +179,14 @@ for t in $(dpkg -L gir1.2-freedesktop | grep '\.typelib$'); do
 done
 find "$W/AppDir" -name direct_url.json -delete    # build paths
 find "$W/AppDir" -name __pycache__ -type d -prune -exec rm -rf {} +
+# Each package's RECORD still listed what was taken out above (direct_url.json, the console
+# scripts, Pillow's font module and its libraries). direct_url.json's line was more than untidy: it
+# carries the hash of a file that holds the hash of the wheel archive pip installed from, and for
+# the packages built here (PyGObject, pycairo, proxy-tools, DA Vibe Manager) that archive is made in
+# this container, so the image depended on the bytes of a zip that is in none of its files.
+# records.py drops the lines of files that are gone and gives a changed file the hash and size it
+# has, leaving every other line as it was: RECORD says what is in the image. (DA Toolkit's 266a002.)
+"$W/buildpy/bin/python3" "$P/records.py" "$W"/AppDir/usr/python/lib/python3.*/site-packages
 # Bytecode that stores the source's hash where its date would go, unchecked: Python loads it without
 # looking at the source again, which on a read-only mount nobody can change, and it comes out the same
 # from every build. -s/-p name each source as it is inside the image (/usr/python/lib/...), not as it is

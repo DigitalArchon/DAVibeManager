@@ -161,8 +161,10 @@ def test_the_commit_is_built_as_committed_whatever_gits_settings(tmp_path):
     instead, and sets their modes itself whatever the umask."""
     if not shutil.which("git"):
         pytest.skip("no git")
-    start = WRAPPER.index('EPOCH="$(git log -1 --format=%ct HEAD)"')
-    export = WRAPPER[start:WRAPPER.index("-- *)\n", start) + 5]
+    assert 'EPOCH="$(git log -1 --format=%ct HEAD)"' in WRAPPER
+    found = re.search(r"^export_head\(\) \{.*?^\}\n", WRAPPER, re.S | re.M)
+    assert found, "export_head is not where this test looks for it"
+    export = found.group(0)
     repo = tmp_path / "repo"
     (tmp_path / "attributes").write_text("*.txt filter=pear\n")
     (tmp_path / "gitconfig").write_text(f"[core]\n\tautocrlf = true\n\tattributesFile = {tmp_path}/attributes\n"
@@ -192,7 +194,8 @@ def test_the_commit_is_built_as_committed_whatever_gits_settings(tmp_path):
     assert unpack(tmp_path / "archive.tar")[0] != committed        # what git archive would have built
     work = tmp_path / "work"
     work.mkdir()
-    run_export = ["bash", "-c", f"set -euo pipefail\numask 077\nWORK={shlex.quote(str(work))}\n{export}"]
+    run_export = ["bash", "-c", f"set -euo pipefail\numask 077\nWORK={shlex.quote(str(work))}\n"
+                                f'EPOCH="$(git log -1 --format=%ct HEAD)"\n{export}\nexport_head']
     subprocess.run(run_export, cwd=repo, env=env, check=True, capture_output=True)
     files, modes = unpack(work / "src.tar")
     assert files == committed and modes == {"notes.txt": 0o644, "tools/run.sh": 0o755}
