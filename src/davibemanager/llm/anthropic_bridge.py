@@ -314,6 +314,10 @@ def anthropic_usage(usage: dict | None, input_estimate: int) -> dict:
             "cache_read_input_tokens": cached, "output_tokens": output}
 
 
+# the model's events ended without their result: what came of the reply is not all of it, and is not handed
+# over as if it were (its tool calls with half their input, an answer cut in the middle)
+_ENDED_EARLY = "the reply stopped before it was finished; nothing in it was taken. Asking again may work."
+
 _STOP = {"stop": "end_turn", "tool_calls": "tool_use", "length": "max_tokens", "content_filter": "end_turn"}
 
 
@@ -327,6 +331,9 @@ def _calls_and_stop(result) -> tuple[list, str]:
     over as one with no input (run with nothing it fails, and the model, never told why, writes it again)."""
     if result is None:
         return [], "end_turn"
+    # no finish reason: the stream said "[DONE]" (one it didn't say either is refused before it gets here,
+    # client.LLMClient._read and private_mode's stream; and sse and message refuse a stream that ended
+    # without its result): some servers send no reason
     finish = result.finish_reason or "stop"
     calls = list(result.tool_calls or [])
     if finish == "length":
@@ -458,6 +465,8 @@ async def sse(events: AsyncIterator[tuple[str, object]], model: str, input_estim
                     result = val
                 elif time.monotonic() - last_ping > ping_every:
                     yield ping()
+        if result is None:
+            raise RuntimeError(_ENDED_EARLY)
     except Exception as e:  # noqa: BLE001 - told to the CLI the way Anthropic tells errors mid-stream
         stats["error"] = str(e)
         yield _sse("error", {"type": "error", "error": {"type": "api_error", "message": f"{model}: {e}"}})
@@ -494,6 +503,8 @@ async def message(events: AsyncIterator[tuple[str, object]], model: str, input_e
             reasoning += val
         elif kind == "done":
             result = val
+    if result is None:
+        raise RuntimeError(_ENDED_EARLY)
     content: list[dict] = [{"type": "thinking", "thinking": reasoning, "signature": SIGNATURE}] \
         if thinking and reasoning else []
     content += [{"type": "text", "text": text}] if text else []

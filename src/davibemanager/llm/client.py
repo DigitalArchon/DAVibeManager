@@ -144,8 +144,9 @@ class LLMClient:
         web page answering 200 where the API was expected, or an empty body, ended the assistant's
         turn with an empty reply and no reason (SealedLore's e947938). A body with data lines is read
         whatever its content type says, and one that says nothing but "[DONE]" is the empty reply its
-        endpoint sent. Stopped or cancelled, the connection is dropped, so the provider stops
-        generating."""
+        endpoint sent. A stream that ends with neither a finish reason nor "[DONE]" was cut off
+        (`_cut_off`): what arrived is no reply. Stopped or cancelled, the connection is dropped, so the
+        provider stops generating."""
         digest = hashlib.sha256()
         async with self._client.chat.completions.with_streaming_response.create(**kwargs) as response:
             if exact:
@@ -177,6 +178,9 @@ class LLMClient:
                     yield event
             if not seen:
                 raise _no_stream(response)
+            if not done and acc.result.finish_reason is None:
+                # it ended saying neither why nor that it had: the connection closed mid-answer
+                raise _cut_off(response)
         if exact:
             acc.result.body_hash = "sha256:" + digest.hexdigest()
 
@@ -214,6 +218,20 @@ def _no_stream(response) -> ProviderError:
         f"{shown(str(response.http_request.url))} answered HTTP {response.status_code} ({kind[:80]}) with no reply "
         "in it, not the stream a chat endpoint sends: a web page answers like this where the API was expected (an "
         "address without its /v1, say).",
+        status_code=response.status_code,
+    )
+
+
+def _cut_off(response) -> ProviderError:
+    """A stream that ended without the provider saying the reply was done (no finish reason and no "[DONE]"),
+    as the error to raise: the connection closed mid-answer, at a proxy's time limit or a server that crashed.
+    What had arrived was taken for the whole reply: a command cut short in the middle, a tool call with half
+    its arguments (DA Toolkit's 87f270f). A reply the provider ended itself ("length", "content_filter") is
+    not this: it is whole as far as it goes, and says why it stopped."""
+    return ProviderError(
+        "the reply stopped before it was finished: the connection closed mid-answer, and "
+        f"{shown(str(response.http_request.url))} never said the reply was complete. What arrived of it is not a "
+        "whole reply, so nothing in it was taken; asking again may work.",
         status_code=response.status_code,
     )
 

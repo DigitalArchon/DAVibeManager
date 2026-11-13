@@ -906,3 +906,70 @@ async def test_the_assistant_is_told_of_an_answer_with_no_stream_in_it_not_given
     # asked whole, it is refused by what it is, and not asked again: the address is wrong, not busy
     assert whole.status_code == 502 and "with no reply in it" in whole.json()["error"]["message"]
     assert whole.headers.get("x-should-retry") == "false"
+
+
+# --- a stream cut off mid-answer is an error, not a reply (DA Toolkit's 87f270f) ------------------------------------
+
+def _chunk(delta=None, finish=None) -> str:
+    return json.dumps({"id": "c1", "object": "chat.completion.chunk", "created": 0, "model": "m",
+                       "choices": [{"index": 0, "delta": delta or {}, "finish_reason": finish}]})
+
+
+def _stream_of(*chunks, done=True) -> bytes:
+    return ("".join(f"data: {c}\n\n" for c in chunks) + ("data: [DONE]\n\n" if done else "")).encode()
+
+
+_HALF_CALL = _chunk({"tool_calls": [{"index": 0, "id": "call_1", "type": "function",
+                                     "function": {"name": "Bash", "arguments": '{"command": "rm -rf /tmp/bu'}}]})
+
+
+@pytest.mark.parametrize("body", [
+    _stream_of(_chunk({"content": "Run sudo rm -rf /var/lib/"}), done=False),           # cut in the text
+    _stream_of(_chunk({"content": "Let me look."}), _HALF_CALL, done=False),            # cut in a tool call
+    _stream_of(_chunk({"content": "one"}), _chunk({"content": " two"}), done=False),    # between chunks
+])
+@pytest.mark.parametrize("exact", [False, True])
+async def test_a_stream_that_ends_without_saying_it_is_done_is_an_error(body, exact):
+    from davibemanager.llm.secure_http import ProviderError
+
+    client, seen = _answering(200, body, {"content-type": "text/event-stream"})
+    with pytest.raises(ProviderError, match="the reply stopped before it was finished") as info:
+        await _streamed(client, exact)
+    assert "https://example.test/v1/chat/completions never said the reply was complete" in str(info.value)
+    assert len(seen) == 1
+
+
+@pytest.mark.parametrize(("body", "finish"), [
+    (_stream_of(_chunk({"content": "whole"}, "stop"), done=False), "stop"),             # a reason, no [DONE]
+    (_stream_of(_chunk({"content": "whole"})), None),                                    # [DONE], no reason
+    (_stream_of(_chunk({"content": "as far as it goes"}, "length")), "length"),
+    (_stream_of(_chunk({"content": "filtered"}, "content_filter"), done=False), "content_filter"),
+])
+async def test_a_reply_the_provider_ended_is_a_reply_with_its_reason(body, finish):
+    client, _ = _answering(200, body, {"content-type": "text/event-stream"})
+    events = await _streamed(client)
+    assert events[-1][0] == "done" and events[-1][1].finish_reason == finish
+
+
+async def test_the_assistant_gets_no_half_written_call_from_a_stream_cut_off(tmp_path):
+    body = _stream_of(_chunk({"content": "Let me clean up."}), _HALF_CALL, done=False)
+    client, _ = _answering(200, body, {"content-type": "text/event-stream"})
+    async with translating(tmp_path, client, models=("z-ai/glm-5.3",)) as (g, log):
+        r = await _post(g, {**ASK, "model": "z-ai/glm-5.3"})
+        whole = await _post(g, {**ASK, "stream": False, "model": "z-ai/glm-5.3"})
+    evs = parse(r.content)
+    assert not [d for n, d in evs if n == "content_block_start" and d["content_block"]["type"] == "tool_use"]
+    assert not [d for n, d in evs if n == "message_delta"], "no stop reason: the reply isn't ended as if whole"
+    said = [d for n, d in evs if n == "error"][0]["error"]["message"]
+    assert "the reply stopped before it was finished" in said
+    assert whole.status_code >= 500 and "the reply stopped before it was finished" in whole.json()["error"]["message"]
+
+
+async def test_events_that_end_without_their_result_are_no_reply():
+    async def events():
+        yield "open", None
+        yield "text", "half"
+    out = b"".join([c async for c in bridge.sse(events(), "m", 10)]).decode()
+    assert "event: error" in out and "stopped before it was finished" in out and "message_stop" not in out
+    with pytest.raises(RuntimeError, match="stopped before it was finished"):
+        await bridge.message(events(), "m", 10)
