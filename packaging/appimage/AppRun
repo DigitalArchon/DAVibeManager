@@ -6,21 +6,35 @@ HERE="$(dirname "$(readlink -f "$0")")"
 # the eMudhra root, Oct 2026) stand for httpx and the openai client (SSL_CERT_FILE) and for
 # requests, which tinfoil's attestation uses (REQUESTS_CA_BUNDLE); the bundled certifi is the
 # fallback. The bundled Python's own ssl module looks in /etc/ssl already.
-# Where Debian and its kin, Fedora and RHEL, openSUSE and the rest keep it (DA Assistant's AppRun looks in
-# the same five; packaging/build-appimage.sh too, for the builder's apt).
+# Where Debian and its kin, Fedora and RHEL, openSUSE and the rest keep it, in this order (DA Assistant's
+# AppRun looks in the same five; packaging/build-appimage.sh too, for the builder's apt).
+# What is set here is for DA Vibe Manager itself, not for the user's commands and the programs it
+# starts: DVM_APPRUN_SET names the variables this script set, and the app leaves them out of what it
+# hands on (hostenv.py).
+DVM_APPRUN_SET=""
 if [ -z "${SSL_CERT_FILE:-}" ]; then
-    for bundle in /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/certs/ca-bundle.crt /etc/ssl/ca-bundle.pem \
-                  /etc/pki/tls/cert.pem /etc/ssl/cert.pem; do
+    for bundle in \
+        /etc/ssl/certs/ca-certificates.crt \
+        /etc/pki/tls/certs/ca-bundle.crt \
+        /etc/ssl/ca-bundle.pem \
+        /etc/pki/tls/cert.pem \
+        /etc/ssl/cert.pem; do
         if [ -r "$bundle" ]; then
             export SSL_CERT_FILE="$bundle"
+            DVM_APPRUN_SET="SSL_CERT_FILE"
             break
         fi
     done
 fi
 if [ -n "${SSL_CERT_FILE:-}" ] && [ -z "${REQUESTS_CA_BUNDLE:-}" ]; then
     export REQUESTS_CA_BUNDLE="$SSL_CERT_FILE"
+    DVM_APPRUN_SET="${DVM_APPRUN_SET:+$DVM_APPRUN_SET }REQUESTS_CA_BUNDLE"
 fi
 # The tor sync runs (the Tor Expert Bundle's, in usr/lib/tor): the app gives it its own folder as its
 # library path and nothing else of this environment (sync/tor.py tor_environment).
-export DVM_TOR="${DVM_TOR:-$HERE/usr/lib/tor/tor}"
+if [ -z "${DVM_TOR:-}" ]; then
+    export DVM_TOR="$HERE/usr/lib/tor/tor"
+    DVM_APPRUN_SET="${DVM_APPRUN_SET:+$DVM_APPRUN_SET }DVM_TOR"
+fi
+export DVM_APPRUN_SET
 exec "$HERE/usr/python/bin/python3" -I -m davibemanager "$@"
