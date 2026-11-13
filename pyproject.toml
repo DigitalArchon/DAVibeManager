@@ -13,7 +13,15 @@ requires-python = ">=3.11"
 dependencies = [
     "openai>=1.50",
     "fastapi>=0.110",
-    "uvicorn[standard]>=0.29",
+    # uvicorn with the two packages of its "standard" extra that it uses here: websockets (the
+    # window's events socket) and httptools (which it picks up when it is there). The extra's
+    # others are for what DA Vibe Manager never does: python-dotenv, pyyaml and watchfiles for env
+    # files, YAML log configs and --reload, and uvloop for a loop it never runs on (app.server_config
+    # sets asyncio's: uvloop's fork handler hung the window on Ubuntu 26.04; the gateway's server runs
+    # on the app's own loop). Until Nov 2026 the AppImage carried all four (DA Toolkit's 83426fc).
+    "uvicorn>=0.29",
+    "websockets>=12",
+    "httptools>=0.6",
     "pywebview>=5",
     "keyring>=25",
     "tomli-w>=1.0",

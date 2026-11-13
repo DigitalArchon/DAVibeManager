@@ -433,3 +433,20 @@ def test_an_appimage_of_another_commit_or_no_lock_is_not_tested(locked_repo, tmp
     assert done.returncode == 1 and "passed" not in done.stdout
     assert "test-requirements.lock is not there" in done.stderr and "build-appimage.sh lock" in done.stderr
 
+
+# ---------------------------------------------------------------- what ships of uvicorn (DA Toolkit's 83426fc)
+
+def test_uvicorn_ships_with_only_the_parts_of_its_extra_the_app_uses():
+    """uvicorn[standard] brought python-dotenv, pyyaml, watchfiles and uvloop into the AppImage: env
+    files, YAML log configs, --reload, and a loop the app never runs on (app.server_config sets
+    asyncio's; uvloop's fork handler hung the window on Ubuntu 26.04)."""
+    import tomllib
+
+    deps = tomllib.loads((ROOT / "pyproject.toml").read_text())["project"]["dependencies"]
+    named = {re.match(r"[\w.\[\]-]+", dep).group(0).lower() for dep in deps}
+    assert {"uvicorn", "websockets", "httptools"} <= named and not any(n.startswith("uvicorn[") for n in named)
+    lock = (PACKAGING / "requirements.lock").read_text()
+    shipped = {_key(name) for name in re.findall(r"(?m)^([\w.-]+)(?:\[[^\]]*\])?==", lock)}
+    assert {"uvicorn", "websockets", "httptools", "h11"} <= shipped
+    assert not {"python-dotenv", "pyyaml", "watchfiles", "uvloop"} & shipped and "uvicorn[" not in lock
+    assert 'loop="asyncio"' in (ROOT / "src" / "davibemanager" / "app.py").read_text()
