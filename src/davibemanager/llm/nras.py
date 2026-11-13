@@ -38,7 +38,7 @@ from typing import Any
 import httpx
 
 from .dcap import since_boot
-from .secure_http import make_client
+from .secure_http import ProviderError, make_client
 
 JWKS_URL = "https://nras.attestation.nvidia.com/.well-known/jwks.json"
 ISSUER = "https://nras.attestation.nvidia.com"
@@ -110,6 +110,8 @@ def verify_token(token: str, session: httpx.Client, nonce: str, now: float, sign
         signature = _b64(signature_part)
     except (ValueError, AttributeError):
         raise NrasError("NVIDIA's answer held a malformed token") from None
+    if not isinstance(header, dict) or not isinstance(claims, dict):
+        raise NrasError("NVIDIA's answer held a malformed token")
     if header.get("alg") != "ES384" or len(signature) != 96:
         raise NrasError(f"a token is signed with {header.get('alg')}, not ES384")
     if not signed:
@@ -135,7 +137,11 @@ def verify_token(token: str, session: httpx.Client, nonce: str, now: float, sign
 def _claims_hold(claims: dict[str, Any], nonce: str, now: float) -> dict[str, Any]:
     if claims.get("iss") != ISSUER:
         raise NrasError(f"a token was issued by {claims.get('iss')}, not NVIDIA's service")
-    if not (claims.get("nbf", 0) - LEEWAY_SECONDS <= now <= claims.get("exp", 0) + LEEWAY_SECONDS):
+    try:
+        current = claims.get("nbf", 0) - LEEWAY_SECONDS <= now <= claims.get("exp", 0) + LEEWAY_SECONDS
+    except TypeError:
+        raise NrasError("a token's validity window is not given as times") from None
+    if not current:
         raise NrasError("a token is outside its validity window")
     if claims.get("eat_nonce") != nonce:
         raise NrasError("NVIDIA's verdict was not made for this request's nonce")
@@ -160,6 +166,13 @@ def verify(
             # a GPU failing, is refused), and only the signature is left unchecked
             _verify(answer, nonce, session, now, signed=False)
             raise
+    except (NrasError, KeysUnavailable, ProviderError, ImportError):
+        raise
+    except Exception as e:  # noqa: BLE001
+        # An answer, a token or a key shaped so that reading it raises something else (a token that
+        # is no text, a key without its coordinates) is no verdict, and is refused as that: until
+        # Nov 2026 the error itself went up.
+        raise NrasError(f"NVIDIA's answer could not be read ({type(e).__name__})") from e
     finally:
         if own:
             session.close()

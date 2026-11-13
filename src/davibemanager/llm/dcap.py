@@ -62,7 +62,7 @@ from urllib.parse import unquote
 
 import httpx
 
-from .secure_http import make_client
+from .secure_http import ProviderError, make_client
 
 # Intel SGX Root CA, as Intel publishes it at
 # https://certificates.trustedservices.intel.com/Intel_SGX_Provisioning_Certification_RootCA.cer
@@ -631,6 +631,13 @@ def verify(raw: bytes, session: httpx.Client | None = None, now: datetime | None
     now = now or datetime.now(UTC)
     try:
         return _verify(raw, session, now)
+    except (DcapError, ProviderError, ImportError):
+        raise
+    except Exception as e:  # noqa: BLE001
+        # A quote, a certificate in it or collateral shaped so that reading it raises something
+        # else (a key of another kind, an extension cut short, JSON nested past reading) is not
+        # verified, and is refused as what it is: until Nov 2026 the error itself went up.
+        raise DcapError(f"the quote or Intel's collateral could not be read ({type(e).__name__})") from e
     finally:
         if own:
             session.close()
@@ -644,7 +651,10 @@ def _verify(raw: bytes, session: httpx.Client, now: datetime) -> Result:
         raise DcapError("it is a debug TD, whose memory the host can read")
 
     root = intel_root()
-    certs = x509.load_pem_x509_certificates(quote.pck_chain_pem)
+    try:
+        certs = x509.load_pem_x509_certificates(quote.pck_chain_pem)
+    except ValueError as e:
+        raise DcapError("the quote's PCK chain could not be read") from e
     if len(certs) < 2:
         raise DcapError("the quote's PCK chain is incomplete")
     pck, ca = certs[0], certs[1]

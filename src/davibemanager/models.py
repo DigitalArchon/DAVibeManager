@@ -24,7 +24,8 @@ from .llm import params as params_mod
 from .llm import routes as routes_mod
 from .llm import tee as tee_mod
 from .llm.client import LLMClient, detect_tier, is_private_mode
-from .llm.private_mode import Enclave, PrivateModeClient, list_private_models, offers_private_mode, relay_url
+from .llm.private_mode import (Enclave, PrivateModeClient, list_private_models, offers_private_mode, relay_said,
+                               relay_url)
 from .netpolicy import InsecureURL, UnusableKey, check_url, key_problem, scrubbed, shown
 
 # A TEE model's attestation is made again, with a fresh nonce, before a send once it is this old: on a
@@ -461,8 +462,11 @@ class Models:
                 att = await asyncio.to_thread(client.attest)
             except Exception as e:  # noqa: BLE001
                 client.close()
-                self._log("enclave_attestation_failed", model=model, error=scrubbed(e))
-                raise UserError(f"{model}'s TEE attestation didn't hold, so nothing was sent to it: {scrubbed(e)}") from e
+                # shown on the card, logged and told the assistant: on one line, short, without what can't be
+                # seen (relay_said), whoever wrote it (DA Toolkit's review, Nov 2026)
+                said = relay_said(scrubbed(e), 700)
+                self._log("enclave_attestation_failed", model=model, error=said)
+                raise UserError(f"{model}'s TEE attestation didn't hold, so nothing was sent to it: {said}") from e
             self._tee[key] = (client, dcap.since_boot(), att.to_dict())
             self._doubted.discard(key)
             self._log("enclave_attested", model=model, **att.to_dict())
