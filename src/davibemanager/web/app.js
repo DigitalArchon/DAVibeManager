@@ -857,6 +857,9 @@ function requestCard(r) {
   if (r.edited) card.append(h("div", { class: "small muted" }, "You changed this command."));
   if (r.hidden?.length) card.append(h("div", { class: "warnbox" }, `Hidden characters were removed from this command (${r.hidden.join("; ")}). Coming from an AI, that's suspicious: read it carefully.`));
   if (r.rollback && r.risk !== "read_only") card.append(h("div", { class: "small muted" }, "To undo it later: ", h("code", {}, r.rollback)));
+  // the AI called it read-only, but the local rules don't know it as a command that only reads:
+  // it's shown as a change, and the card says why rather than leaving it to look like the AI's mistake
+  else if (r.unconfirmed) card.append(h("div", { class: "small muted" }, "The AI calls this read-only; the local rules don't know the command, so check what it does."));
   const rv = reviewEl(r.review);
   if (rv) card.append(rv);
 

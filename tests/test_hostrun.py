@@ -19,6 +19,20 @@ def test_a_request_is_classified_by_local_rules_whatever_the_ai_says():
     assert r.sensitive
 
 
+def test_read_only_stands_only_for_a_command_the_rules_know_as_a_reader():
+    known = HostRequest.create(1, {"command": "ls -la ~/.config", "purpose": "x", "risk": "read_only"})
+    assert known.risk == "read_only" and not known.unconfirmed
+    # the AI calls it read-only and no rule names it: shown as a change, and said to be unknown
+    r = HostRequest.create(2, {"command": "frobnicate --now", "purpose": "x", "risk": "read_only"})
+    assert r.risk == "modifying" and r.unconfirmed and r.to_dict()["unconfirmed"]
+    # one the AI itself calls a change is a change, not an unknown
+    r = HostRequest.create(3, {"command": "frobnicate --now", "purpose": "x", "risk": "modifying"})
+    assert r.risk == "modifying" and not r.unconfirmed
+    # a variable as the command is read as the command it holds (bash, not PowerShell)
+    r = HostRequest.create(4, {"command": "x=reboot; $x", "purpose": "x", "risk": "read_only"})
+    assert r.risk != "read_only"
+
+
 def test_sudo_is_refused_in_favour_of_as_root_and_hidden_characters_are_removed():
     with pytest.raises(ValueError, match="as_root"):
         HostRequest.create(1, {"command": "sudo apt update", "purpose": "x", "risk": "modifying"})

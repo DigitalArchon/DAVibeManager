@@ -101,9 +101,17 @@ class HostRequest:
     def edited(self) -> bool:
         return self.command != self.original_command
 
+    @property
+    def unconfirmed(self) -> bool:
+        """The AI called it read-only and nothing in the local rules says otherwise, but they don't
+        know it as a command that only reads (risk.UNKNOWN): it is shown as a change, and what the
+        card says of it is that, not that a change came without a way to undo it."""
+        return self.model_risk == "read_only" and self.risk_reasons == [risk.UNKNOWN]
+
     def to_dict(self) -> dict:
         d = asdict(self)
         d["edited"] = self.edited
+        d["unconfirmed"] = self.unconfirmed
         if len(d["output"]) > 200_000:
             d["output"] = d["output"][:100_000] + "\n…\n" + d["output"][-100_000:]
         return d
