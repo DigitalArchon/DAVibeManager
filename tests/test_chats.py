@@ -50,7 +50,7 @@ async def test_each_kind_of_chat_has_its_own_prompt_and_tools(builder_env):
     assert {"mcp__host__deliver", "mcp__host__offer_build"} <= set(opts.allowed_tools)
     assert "mcp__host__suggest_app_chat" not in opts.allowed_tools
     # told which app, with what it comes from and the changes it has, once
-    assert clients[-1].sent.startswith("[From the app, for you: this chat is about the user's app gThumb (id gthumb).]")
+    assert clients[-1].sent.startswith("[DA Vibe Manager, for you: this chat is about the user's app gThumb (id gthumb).]")
     assert GTHUMB in clients[-1].sent and "drag-zoom: Drag a box to zoom" in clients[-1].sent
     assert clients[-1].sent.endswith("Make it zoom faster too")
     engine.send("Thanks")
@@ -138,7 +138,7 @@ async def test_a_chat_about_getting_an_app_working_here_is_told_about_it_and_han
     engine.send("gThumb doesn't start")
     await wait_for(lambda: out and not engine.busy, "the turn")
     sent = clients[-1].sent
-    assert sent.startswith("[From the app, for you: this chat is about getting the user's app gThumb (id gthumb) working")
+    assert sent.startswith("[DA Vibe Manager, for you: this chat is about getting the user's app gThumb (id gthumb) working")
     assert "not built yet" in sent and GTHUMB in sent and "drag-zoom: Drag a box to zoom" in sent and sent.endswith("gThumb doesn't start")
     card = next(p for p in engine.conv.chat[-1]["parts"] if p["t"] == "findings")
     assert card == {"t": "findings", "app": "gThumb", "app_id": "gthumb",

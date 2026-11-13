@@ -524,7 +524,7 @@ async def test_resetting_waits_for_builds_and_then_carries_on_as_if_nothing_happ
     engine.workspace = {"state": "running", "image": "localhost/davibemanager-workspace:test"}
     engine.conv = again
     note = await engine._after_reset()
-    assert note.startswith("[From the app: the user reset your sandbox") and "You remember this chat" in note
+    assert note.startswith("[DA Vibe Manager: the user reset your sandbox") and "You remember this chat" in note
     assert sb.files[f"{backup.SESSIONS}/-work/s-kept.jsonl"] == b'{"kept": true}\n'
     assert sb.files["/work/.dvm/from-user/notes.txt"] == b"step one\n"
     assert not (data_dir() / "restored-sessions").exists()

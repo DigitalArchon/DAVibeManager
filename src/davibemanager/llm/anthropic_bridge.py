@@ -37,6 +37,8 @@ import time
 from contextlib import aclosing
 from typing import AsyncIterator, Awaitable, Callable
 
+from ..safety.inject import defang
+
 VISION_PROMPT = """\
 You are the eyes of an AI assistant that cannot see images. It is building and testing software \
 in a sandbox, and has just looked at this image. Describe what it needs to know to carry on: \
@@ -119,7 +121,8 @@ class ImageDescriber:
                 raise
             except Exception as e:  # noqa: BLE001 - the assistant should know, and can carry on without it
                 return f"[An image was here, but the vision helper couldn't describe it: {e}]"
-        return f"[Image, described for you by a vision model ({self.model}):]\n{self._cache[digest]}"
+        # what a picture shows is anyone's text (a page, a window's title): not the app's notes
+        return f"[Image, described for you by a vision model ({self.model}):]\n{defang(self._cache[digest])}"
 
 
 # the signature on a thinking block of DA Vibe Manager's (another model's reasoning, shown as Claude

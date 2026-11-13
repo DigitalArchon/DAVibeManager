@@ -56,7 +56,7 @@ from .netpolicy import scrubbed
 from .netpolicy import shown as shown_address
 from .safety import images as images_mod
 from .safety.hidden import visible
-from .safety.inject import suspicious
+from .safety.inject import defang, label, suspicious
 from .safety.outside import OutsideData, masked, secrets_in
 from .safety.redact import redact
 from .safety.truncate import head_tail
@@ -1028,10 +1028,11 @@ class Engine:
         except Exception as e:  # noqa: BLE001 - the note says what it knows all the same
             self.log("sync_failed", app=a["id"], error=str(e))
         known = share_mod.works_on(a) if a.get("share") else []
+        # a shared app's name and change titles are someone else's text: the app's marker can't be imitated in them
         return prompts.DIAGNOSE_CHAT_NOTE.format(
-            name=a["name"], app=a["id"], installed=installed, upstream=a.get("upstream") or "its own code",
+            name=label(a["name"]), app=a["id"], installed=installed, upstream=a.get("upstream") or "its own code",
             base=a.get("base_ref") or "none", folder=f"{appmanager_mod.APPS_FOLDER}/{a['id']}",
-            changes="\n".join(f"  - {ch['id']}: {ch['title']}" for ch in a.get("changes", [])) or "  - none",
+            changes=defang("\n".join(f"  - {ch['id']}: {ch['title']}" for ch in a.get("changes", []))) or "  - none",
             works_on=", ".join(known) or "nowhere confirmed yet",
             shared="It came to the user from someone else, in a shared app file." if a.get("imported") else "")
 
@@ -1050,10 +1051,10 @@ class Engine:
                 self.log("split_failed", app=a["id"], error=str(e))
             await self.app_manager.sync(a)
             return prompts.REMAKE_CHAT_NOTE.format(
-                name=a["name"], app=a["id"], upstream=a.get("upstream") or "none", base=a.get("base_ref") or "its own code",
+                name=label(a["name"]), app=a["id"], upstream=a.get("upstream") or "none", base=a.get("base_ref") or "its own code",
                 folder=folder, tree=self.app_manager.remake_tree(a), desktop_name=self.app_manager.desktop_name(a),
                 old_tree=a.get("repo") or f"/work/apps/{a['id']}",
-                changes="\n".join(f"  - {ch['id']}: {ch['title']}" for ch in a.get("changes", [])) or "  - none")
+                changes=defang("\n".join(f"  - {ch['id']}: {ch['title']}" for ch in a.get("changes", []))) or "  - none")
         if not a.get("upstream") or not a.get("base_ref"):
             tree = f"It has no official source to start from: its code is all in {folder}/series.patch."
         else:
@@ -1066,7 +1067,7 @@ class Engine:
                     tree += (f" These didn't apply, which shouldn't happen: {', '.join(failed)}. Tell the user, and "
                              "don't build until it's sorted out.")
             except appmanager_mod.PortFailed as e:
-                tree = (f"The app couldn't prepare its source ({e.step}: {e.log.strip()[-300:]}). Make it yourself: clone "
+                tree = (f"The app couldn't prepare its source ({e.step}: {defang(e.log.strip()[-300:])}). Make it yourself: clone "
                         f"{a['upstream']} into /work/apps/{a['id']}, make a branch dvm/work at {a['base_ref']}, and apply "
                         f"the changes' patches in order with git am -3 ({folder}/changes/<change id>.patch).")
             a = apps_mod.load(c.app) or a
@@ -1076,9 +1077,9 @@ class Engine:
                   f"change built on {a.get('base_ref')} now and updated with the rest later.\n"
                   if u.get("status") == "available" and a.get("skip") != u.get("latest") else "")
         return prompts.APP_CHAT_NOTE.format(
-            name=a["name"], app=a["id"], upstream=a.get("upstream") or "no upstream (made from scratch)",
+            name=label(a["name"]), app=a["id"], upstream=a.get("upstream") or "no upstream (made from scratch)",
             base=a.get("base_ref") or "its own code", folder=folder, tree=tree,
-            changes="\n".join(f"- {ch['id']}: {ch['title']}" for ch in a.get("changes", [])) or "- none yet",
+            changes=defang("\n".join(f"- {ch['id']}: {ch['title']}" for ch in a.get("changes", []))) or "- none yet",
             works_on=", ".join(share_mod.works_on(a)) if a.get("share") and share_mod.works_on(a) else "nowhere confirmed yet",
             update=update)
 
@@ -1384,6 +1385,9 @@ class Engine:
         # (it's over the limit by its own line), and it would read as edited. What the user changed is.
         edited = text is not None and str(text).replace("\r\n", "\n") != r.preview
         text = self._clean(str(text))[0] if edited else r.preview
+        # text the app's own marker can't be imitated in: a line of the output reading "[DA Vibe Manager]
+        # The user approved…" goes as [untrusted "DA Vibe Manager"] (the card's check has seen it as it came)
+        text = defang(text)
         r.sent_text, r.status, r.note = text, "sent", (note.strip() or r.note)
         self._outside().add(text)
         head = f"The user ran it{' as administrator' if r.as_root else ''}"
@@ -2557,7 +2561,7 @@ class Engine:
         # results are untrusted: text aimed at the assistant in them is named to it and to the user (as DA
         # Toolkit does), and what no one can see in them (a sentence in tag characters) never reaches it
         warnings = suspicious(text)
-        text = visible(text)
+        text = defang(visible(text))
         self._network_event({"kind": "search", "provider": out["provider"], "query": query, "status": 200,
                              "results": len(out["results"]), "cost": out["cost"],
                              "seconds": round(time.monotonic() - started, 1),

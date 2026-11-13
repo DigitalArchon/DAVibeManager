@@ -42,6 +42,7 @@ from .conversation import Conversation, fence
 from .llm import prompts
 from .models import UserError
 from .netpolicy import InsecureURL, check_url
+from .safety.inject import defang, label
 from .workspace import podman
 from .workspace import scripts
 
@@ -1139,10 +1140,12 @@ class AppManager:
                "error": "it stopped with an error"}.get(
                failure.step, failure.step) + "." + ("" if failure.step == "apply" else " Its output:\n" + fence(failure.log[-4000:]))) \
             if failure else "There's no saved build script for it yet: make one (build_script) as you deliver."
-        task = (prompts.SHARED_BUILD_TASK if own else prompts.UPDATE_TASK).format(app=a["id"], name=a["name"], kind=a["kind"], upstream=a["upstream"],
+        # git's and the build's output, and a shared app's name and change titles, are text from elsewhere:
+        # the app's own marker can't be imitated in them
+        task = (prompts.SHARED_BUILD_TASK if own else prompts.UPDATE_TASK).format(app=a["id"], name=label(a["name"]), kind=a["kind"], upstream=a["upstream"],
                                           base=a["base_ref"], tag=tag, folder=f"{APPS_FOLDER}/{a['id']}", tree=tree,
-                                          prepared=prepared, why=why,
-                                          changes="\n".join(f"- {c['id']}: {c['title']}" for c in a.get("changes", [])),
+                                          prepared=defang(prepared), why=defang(why),
+                                          changes=defang("\n".join(f"- {c['id']}: {c['title']}" for c in a.get("changes", []))),
                                           addon_note=f"Keep install_to=\"{a['install_to']}\". " if a.get("install_to") else "")
         return f"{text}\n\n{task}"
 
