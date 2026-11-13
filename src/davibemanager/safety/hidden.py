@@ -54,15 +54,22 @@ def clean(command: str) -> tuple[str, list[str]]:
     """Return (command as it will be shown and typed, what was changed). The list is empty
     when nothing was."""
     text = command.replace("\r\n", "\n").replace("\r", "\n")
-    out, removed, spaces = [], {}, {}
-    for ch in text:
+    removed, spaces = {}, {}
+
+    def seen(m: re.Match) -> str:
+        ch = m.group()
         if _hidden(ch):
             removed[ch] = removed.get(ch, 0) + 1
-        elif ch != " " and unicodedata.category(ch) == "Zs":
+            return ""
+        if unicodedata.category(ch) == "Zs":
             spaces[ch] = spaces.get(ch, 0) + 1
-            out.append(" ")
-        else:
-            out.append(ch)
+            return " "
+        return ch
+
+    # Only what is not printable ASCII, a tab or a line break is looked at one by one: a command can be
+    # megabytes of base64 (a tool sent over WinRM), and looking at each of its characters took seconds
+    # on the app's one event loop
+    text = _MAYBE_HIDDEN.sub(seen, text)
     notes = [f"removed {n}× {_name(ch)}" for ch, n in removed.items()]
     notes += [f"{n}× {_name(ch)} made a plain space" for ch, n in spaces.items()]
-    return "".join(out), notes
+    return text, notes

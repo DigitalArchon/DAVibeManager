@@ -20,7 +20,7 @@ def test_read_only(cmd):
 @pytest.mark.parametrize("cmd", [
     "sudo apt install htop", "sed -i 's/a/b/' /etc/x.conf", "echo hi > /etc/motd", "sudo systemctl start nginx",
     "Set-Service -Name Spooler -StartupType Manual", "configure terminal", "write memory", "clear counters",
-    "mkdir /tmp/x", "docker restart web", "ipconfig /flushdns",
+    "mkdir /tmp/x", "docker pull nginx", "ipconfig /flushdns",
     "sudo passwd root", "echo x | passwd --stdin bob", "/usr/bin/passwd -l bob",
 ])
 def test_modifying(cmd):
@@ -31,7 +31,7 @@ def test_modifying(cmd):
     "rm -rf /var/lib/foo", "sudo reboot", "shutdown -h now", "systemctl restart nginx", "mkfs.ext4 /dev/sdb1",
     "dd if=/dev/zero of=/dev/sda", "Restart-Computer -Force", "Stop-Service Spooler", "reload",
     "iptables -F", "Remove-Item C:\\temp -Recurse", "/system reboot", "diskpart", "kill -9 1234",
-    "ls; sudo shutdown -r now",
+    "ls; sudo shutdown -r now", "docker restart web",
 ])
 def test_disruptive(cmd):
     assert classify(cmd)[0] == "disruptive"
