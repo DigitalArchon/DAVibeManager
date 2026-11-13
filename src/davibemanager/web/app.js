@@ -45,14 +45,37 @@ function applyTheme(theme) {
 try { applyTheme(localStorage.getItem("dvm-theme") || "dark"); } catch { applyTheme("dark"); }
 
 const S = { state: null, live: null, liveText: "", thinking: false, panel: null, imgs: new Map(), editing: null, files: [] };
-const $ = (sel, root = document) => root.querySelector(sel);
 
+// The page's own elements, found once, as this script starts: before anything the assistant, a web
+// page or an app's notes wrote is on the page. A lookup by id is answered from here, so an element
+// that came later with the same id (none should: md() makes none) can never stand in for the chat
+// box, the panel or the dialogs. $("#input") is one of them and $("#panel-body [data-section=sync]")
+// is looked for inside one; $(selector, root) looks inside an element the caller holds. Nothing is
+// looked for across the whole page, where the chat comes before the box to type in, the panel and
+// the dialogs. (Until Nov 2026 a lookup was document.querySelector, which a reply's
+// <textarea id="input"> answered first: Send sent the reply's words. DA Toolkit's bdbd4ce.)
+const FIXED = new Map([...document.querySelectorAll("[id]")].map((el) => [el.id, el]));
+function $(sel, root) {
+  if (root) return root.querySelector(sel);
+  const m = /^#([\w-]+)(?:\s+(\S.*))?$/.exec(sel);
+  if (!m) throw new Error(`$(${JSON.stringify(sel)}): a lookup with no element to look in starts from one of the page's own, by id`);
+  const el = FIXED.get(m[1]) || null;
+  return el && m[2] ? el.querySelector(m[2]) : el;
+}
+
+// What the page keeps of a box the user types in or a <details> they open, across a redraw, is
+// known by the key it was made with here (h's "data-key"), not by what is written on an element: a
+// key only an element the page made has.
+const KEYS = new WeakMap();         // element -> its data-key
+const keyed = (root, sel) => [...root.querySelectorAll(sel)].filter((el) => KEYS.has(el));
+
+// Text only: an element's HTML is written in one place, rendered(), from md().
 function h(tag, attrs = {}, ...children) {
   const el = document.createElement(tag);
   for (const [k, v] of Object.entries(attrs || {})) {
     if (v === undefined || v === null || v === false) continue;
     if (k === "class") el.className = v;
-    else if (k === "html") el.innerHTML = v;
+    else if (k === "data-key") { el.setAttribute(k, v); KEYS.set(el, String(v)); }
     else if (k.startsWith("on")) el.addEventListener(k.slice(2), v);
     else if (k === "value") el.value = v;
     else if (v === true) el.setAttribute(k, "");
@@ -97,18 +120,71 @@ async function guarded(fn) {
   try { return await fn(); } catch (e) { toast(e.message, "error"); }
 }
 
-// AI output is untrusted (it can be steered by what it reads), so it may not load anything:
-// no images or embeds in its markdown, and links open outside.
+// AI output is untrusted (it can be steered by what it reads), and so are an app's notes and
+// release notes, which come from elsewhere: it is Markdown, never HTML. Two layers hold it to that,
+// each enough alone (DA Toolkit's bdbd4ce, Nov 2026).
+//
+// The first is the Markdown renderer. HTML written in the text is not read as HTML at all (marked's
+// two tokenizers for it are off, and a token of that kind would be written out escaped), so
+// "<your-app>" shows as typed and no element comes from the text: only the ones Markdown itself
+// stands for. A link is made for an http(s) or mailto address and for nothing else, an image is
+// shown as a link to it (nothing is loaded from elsewhere), a task list's box is a character.
+// (Until Nov 2026 marked passed HTML through: "<your-app>" vanished, and a reply's
+// <textarea id="input"> was an element of the page.)
+const escapeHtml = (s) => String(s ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+  .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+const LINKABLE = /^(?:https?|mailto):/i;
+const MARKDOWN = new marked.Marked({
+  breaks: true,
+  tokenizer: { html() { return undefined; }, tag() { return undefined; } },
+  renderer: {
+    html(token) { return escapeHtml(token.raw ?? token.text); },
+    link(token) {
+      const text = this.parser.parseInline(token.tokens);
+      if (!LINKABLE.test(String(token.href ?? "").trim())) return text;
+      return `<a href="${escapeHtml(token.href)}"${token.title ? ` title="${escapeHtml(token.title)}"` : ""}>${text}</a>`;
+    },
+    image(token) {
+      const text = escapeHtml(token.text || token.href);
+      return LINKABLE.test(String(token.href ?? "").trim()) ? `<a href="${escapeHtml(token.href)}">${text}</a>` : text;
+    },
+    checkbox(token) { return token.checked ? "☑" : "☐"; },
+  },
+});
+
+// The second is DOMPurify, over what the renderer wrote: the elements and attributes Markdown stands
+// for and no others. No id, class or name (the page finds and styles its own by those), no data-*
+// (the page's own marks), no form controls or dialogs, nothing that loads a remote resource; links
+// are http(s) or mailto and open outside. The lists of what is forbidden stand behind the lists of
+// what is allowed, should those ever grow.
 const MD_OPTS = {
-  FORBID_TAGS: ["img", "picture", "source", "svg", "math", "video", "audio", "iframe", "object", "embed", "form", "input", "button", "style", "link", "meta", "base"],
-  FORBID_ATTR: ["style", "srcset", "poster", "background", "ping", "formaction"],
-  ALLOWED_URI_REGEXP: /^(?:https?|mailto):/i,
+  ALLOWED_TAGS: ["p", "br", "hr", "strong", "em", "del", "code", "pre", "blockquote", "ul", "ol", "li",
+    "h1", "h2", "h3", "h4", "h5", "h6", "table", "thead", "tbody", "tr", "th", "td", "a"],
+  ALLOWED_ATTR: ["href", "title", "start", "align"],
+  ALLOW_DATA_ATTR: false,
+  ALLOW_ARIA_ATTR: false,
+  FORBID_TAGS: ["img", "picture", "source", "svg", "math", "video", "audio", "iframe", "object", "embed", "form", "input", "button", "style", "link", "meta", "base",
+    "textarea", "select", "option", "optgroup", "datalist", "dialog", "label", "fieldset", "legend", "output", "marquee", "map", "area", "template", "slot"],
+  FORBID_ATTR: ["style", "srcset", "poster", "background", "ping", "formaction",
+    "id", "class", "name", "for", "form", "hidden", "slot", "is", "tabindex", "contenteditable", "draggable", "popover", "inert", "role"],
+  ALLOWED_URI_REGEXP: LINKABLE,
+  // with a URI pattern of its own, DOMPurify checks every attribute not marked URI-safe against
+  // it: numbered steps split by code blocks would all start at 1, table columns lose alignment
+  ADD_URI_SAFE_ATTR: ["start", "align"],
 };
 DOMPurify.addHook("afterSanitizeAttributes", (node) => {
   if (node.tagName === "A") { node.setAttribute("target", "_blank"); node.setAttribute("rel", "noopener noreferrer"); }
-  node.classList?.remove(INSECURE_CLASS);                     // only the app makes the mark (markInsecure)
 });
-const md = (text) => markInsecure(DOMPurify.sanitize(marked.parse(text || "", { breaks: true }), MD_OPTS));
+const md = (text) => markInsecure(DOMPurify.sanitize(MARKDOWN.parse(String(text || "")), MD_OPTS));
+
+// Text the assistant, a web page or an app's notes wrote, shown as the Markdown it is: the one place
+// on the page where HTML is given to an element, and all of it is md()'s. Everything else such text
+// reaches is a text node.
+function rendered(text, attrs = { class: "md" }, tag = "div") {
+  const el = h(tag, attrs);
+  el.innerHTML = md(text);
+  return el;
+}
 
 // ---- a link that isn't secure: marked where it is shown, and asked about before it opens
 // (DA Assistant's linkwarning, 214b26c, Nov 2026). Plain http to anywhere but this computer or its network
@@ -318,7 +394,7 @@ function handle(ev) {
     case "activity": {
       // every few seconds while it works: updated in place, so the chat isn't redrawn under the user
       S.activity = ev.activity;
-      const old = document.querySelector("#chat .activity");
+      const old = S.activityEl?.isConnected ? S.activityEl : null;
       const now = S.activity ? activityEl(S.activity, S.live || {}) : null;
       if (old && now) old.replaceWith(now);
       else if (old || now) scheduleRender();
@@ -480,9 +556,9 @@ function typingInPanel() {
 
 // a redraw keeps the <details> the user has opened (those with a data-key) open
 function keepOpen(root, redraw) {
-  const open = new Set([...root.querySelectorAll("details[data-key][open]")].map((d) => d.dataset.key));
+  const open = new Set(keyed(root, "details[open]").map((d) => KEYS.get(d)));
   redraw();
-  if (open.size) for (const d of root.querySelectorAll("details[data-key]")) if (open.has(d.dataset.key)) d.open = true;
+  if (open.size) for (const d of keyed(root, "details")) if (open.has(KEYS.get(d))) d.open = true;
 }
 
 // ------------------------------------------------------------------ chat
@@ -505,9 +581,9 @@ function renderChat(scroll) {
   const st = S.state;
   // a re-render must not lose what the user is typing into a card
   const focus = document.activeElement;
-  const keep = focus?.closest?.("#chat") && focus.dataset.key ? { key: focus.dataset.key, value: focus.value, pos: focus.selectionStart } : null;
+  const keep = focus && box.contains(focus) && KEYS.has(focus) ? { key: KEYS.get(focus), value: focus.value, pos: focus.selectionStart } : null;
   const typed = {};
-  for (const el of box.querySelectorAll("input[data-key], textarea[data-key]")) typed[el.dataset.key] = el.value;
+  for (const el of keyed(box, "input, textarea")) typed[KEYS.get(el)] = el.value;
   if (!st.ready) { box.replaceChildren(st.keyring_wait ? keyringScreen() : setupScreen()); $("#composer").classList.add("hidden"); return; }
   $("#composer").classList.remove("hidden");
   const items = st.chat.map((e, i) => entryEl(e, false, i));
@@ -518,9 +594,9 @@ function renderChat(scroll) {
   const trouble = sandboxBox(st.workspace || {});
   keepOpen(box, () => box.replaceChildren(...(st.podman ? [podmanBox(st.podman)] : []), ...(trouble ? [trouble] : []),
     ...(items.length ? items : [welcome()])));
-  for (const el of box.querySelectorAll("input[data-key], textarea[data-key]")) if (el.dataset.key in typed) el.value = typed[el.dataset.key];
+  for (const el of keyed(box, "input, textarea")) if (KEYS.get(el) in typed) el.value = typed[KEYS.get(el)];
   if (keep) {
-    const el = box.querySelector(`[data-key="${keep.key}"]`);
+    const el = keyed(box, "input, textarea").find((x) => KEYS.get(x) === keep.key);
     if (el) { el.value = keep.value; el.focus(); try { el.selectionStart = el.selectionEnd = keep.pos; } catch { /* not text */ } }
   }
   if (stick) box.scrollTop = box.scrollHeight;
@@ -695,10 +771,10 @@ function entryEl(e, live, idx = "") {
       out.push(h("div", { class: "msg user" }, p.text || null, filesEl(p.files)));
       box = h("div", { class: "msg assistant" });
     }
-    else if (p.t === "text") box.append(h("div", { class: "md", html: md(p.text) }));
+    else if (p.t === "text") box.append(rendered(p.text, { class: "md" }));
     // the model's thinking, shown as it goes (faint): Claude Code asks Opus to write it as progress
     // updates for the reader, and folded away it hid what Opus had to say
-    else if (p.t === "thinking") box.append(h("div", { class: "reasoning md", title: "Its thinking", html: md(p.text) }));
+    else if (p.t === "thinking") box.append(rendered(p.text, { class: "reasoning md", title: "Its thinking" }));
     else if (p.t === "steps") box.append(stepsEl(p.items, live && last, `steps-${idx}-${i}`));
     else if (p.t === "request") { const r = S.state.requests[p.id]; if (r) box.append(requestCard(r)); }
     else if (p.t === "question") { const q = S.state.questions[p.id]; if (q) box.append(questionCard(q)); }
@@ -714,7 +790,7 @@ function entryEl(e, live, idx = "") {
       ` Having trouble reaching the AI (try ${e.retry.attempt} of ${e.retry.max}): ${why}`));
   }
   if (live) {
-    if (S.liveText) box.append(h("div", { class: "md" }, h("span", { html: md(S.liveText) }), h("span", { class: "caret" })));
+    if (S.liveText) box.append(h("div", { class: "md" }, rendered(S.liveText, {}, "span"), h("span", { class: "caret" })));
     else if (parts[parts.length - 1]?.t === "user" && runningStep(e)) {
       // what the user wrote waits for the step it's on, not for it to think
       box.append(h("div", { class: "muted small" }, "It reads your message when its current step is done (a long one goes on in the background after a minute)."));
@@ -766,6 +842,7 @@ const runningStep = (entry) => (entry.parts || []).some((p) => p.t === "steps" &
 function activityEl(a, entry) {
   const now = Date.now() / 1000;
   const box = h("div", { class: "activity small" });
+  S.activityEl = box;               // the one in the chat, updated in place (handle's "activity"), held by reference
   const running = (entry.parts || []).filter((p) => p.t === "steps").flatMap((p) => p.items).filter((i) => i.status === "running");
   const cur = running[running.length - 1];
   if (a.check) {
@@ -1039,7 +1116,7 @@ function deliveryCard(d) {
       d.identical_to ? h("span", { class: "chip ok", title: "Your changes carried over exactly: the same patch you had before" }, "same change") : null,
       h("span", { class: "chip" }, KIND_LABEL[d.kind] || d.kind)),
     h("div", { class: "name" }, `${d.name} ${d.version}`),
-    d.summary ? h("div", { class: "md", html: md(d.summary) }) : null,
+    d.summary ? rendered(d.summary, { class: "md" }) : null,
     DEPTH_WARNING[d.integration] && !replaced ? h("div", { class: "warnbox depth" }, h("b", {}, DEPTH_WARNING[d.integration][0]), " ", DEPTH_WARNING[d.integration][1]) : null,
     replaced ? null : reportEl(d),
     replaced ? null : tryEl(d),
@@ -1194,7 +1271,7 @@ function sharedReviewEl(r, compact) {
     r.binaries?.length ? h("div", { class: "small" }, h("b", {}, `${r.binaries.length} binary file${r.binaries.length > 1 ? "s" : ""} the reviewer can't read: `),
       r.binaries.map((b) => `${b.file.split("/").pop()} (${b.bytes != null ? fmtBytes(b.bytes) : "?"})`).join(", "),
       ". Check they're what the change needs (pictures, sounds, test data), not programs.") : null,
-    !compact && r.text ? h("details", { class: "small" }, h("summary", {}, "What the reviewer said"), h("div", { class: "md", html: md(r.text) })) : null);
+    !compact && r.text ? h("details", { class: "small" }, h("summary", {}, "What the reviewer said"), rendered(r.text, { class: "md" })) : null);
 }
 
 // the systems this version of the app is known to work on, and a way to say it works here
@@ -1291,7 +1368,7 @@ async function compareVersions(a, item) {
   let m;
   const choose = (keep) => guarded(async () => { await api("POST", `/api/sync/apps/${a.id}/resolve`, { item, keep }); m.close(); });
   const side = (label, v, keep, button) => h("div", { class: "compare-side" }, h("h3", {}, label),
-    v.notes ? h("div", { class: "md small", html: md(v.notes) }) : null,
+    v.notes ? rendered(v.notes, { class: "md small" }) : null,
     h("pre", { class: "outview small" }, v.text || "(empty)"),
     h("div", { class: "actions" }, h("button", { class: "small", onclick: () => choose(keep) }, button)));
   m = modal({ title: x.title, buttons: [{ label: "Close" }], body: h("div", {},
@@ -1397,7 +1474,7 @@ function importView(v) {
     h("div", { class: "small muted" }, "Check that this is the project's official source, not a copy of it: it's what the app is built from and updated from."),
     h("h3", {}, `Its change${a.changes.length > 1 ? "s" : ""}`),
     ...a.changes.map((c) => h("details", { class: "change" }, h("summary", {}, c.title, h("span", { class: "small muted" }, ` · ${c.lines} lines`)),
-      c.notes ? h("div", { class: "md small", html: md(c.notes) }) : h("div", { class: "small muted" }, "It has no notes."), patchEl(c.patch))),
+      c.notes ? rendered(c.notes, { class: "md small" }) : h("div", { class: "small muted" }, "It has no notes."), patchEl(c.patch))),
     h("details", { class: "small" }, h("summary", {}, "How it's built (in the sandbox)"), h("pre", { class: "outview small" }, v.build_script)),
     h("h3", {}, "A second opinion"), reviewBox,
     h("h3", {}, "Import it"), ...copyNotes, choices);
@@ -1422,7 +1499,7 @@ async function showChange(a, c) {
   const x = await api("GET", `/api/apps/${a.id}/changes/${encodeURIComponent(c.id)}`);
   modal({ title: c.title, buttons: [{ label: "Close" }], body: h("div", {},
     h("p", { class: "small muted" }, `Your change to ${a.name}${x.base_ref ? `, against its official ${x.base_ref}` : ""}${c.added ? `, first made ${fmtDay(c.added)}` : ""}. It's carried over to each new version.`),
-    x.feature ? h("details", { open: true }, h("summary", { class: "small" }, "What it is"), h("div", { class: "md", html: md(x.feature) })) : null,
+    x.feature ? h("details", { open: true }, h("summary", { class: "small" }, "What it is"), rendered(x.feature, { class: "md" })) : null,
     x.patch ? h("details", {}, h("summary", { class: "small" }, "The change to the code"), h("pre", { class: "outview small" }, x.patch)) : null) });
 }
 
@@ -1486,7 +1563,7 @@ async function showChangelog(a) {
     // the source's link is (sourceEl)
     /^https:\/\//i.test(log.page || "") ? h("p", { class: "small" }, h("a", { href: log.page, target: "_blank", rel: "noopener noreferrer" }, "The official release page ↗")) : null,
     u.security_lines?.length ? h("div", { class: "warnbox" }, h("b", {}, "Lines about security: "), h("ul", {}, u.security_lines.map((l) => h("li", {}, l)))) : null,
-    log.notes ? h("div", {}, h("h3", {}, "Release notes"), h("div", { class: "md", html: md(log.notes) })) : null,
+    log.notes ? h("div", {}, h("h3", {}, "Release notes"), rendered(log.notes, { class: "md" })) : null,
     ...Object.entries(log.news || {}).map(([name, text]) => h("div", {}, h("h3", {}, `New in ${name}`), h("pre", { class: "outview small" }, text))),
     log.commits?.length ? h("details", {}, h("summary", { class: "small" }, `Every change (${log.commits.length})`), h("pre", { class: "outview small" }, log.commits.join("\n"))) : null,
     !log.notes && !Object.keys(log.news || {}).length && !log.commits?.length ? h("p", {}, "The project didn't say what changed.") : null);
@@ -1567,7 +1644,7 @@ async function showDelivery(did) {
   const d = await api("GET", `/api/deliveries/${did}`);
   const pane = h("div", {});
   const views = {
-    feature: () => h("div", { class: "md", html: md(d.feature) }),
+    feature: () => rendered(d.feature, { class: "md" }),
     files: () => h("div", {}, h("pre", { class: "small" }, d.diffstat), h("pre", { class: "small muted" }, d.commits),
       h("p", { class: "small muted" }, d.base_ref ? `Based on ${d.upstream || "the official source"} at ${d.base_ref}.` : "Made from scratch: the change is all of it."),
       d.sha256 ? h("p", { class: "small mono" }, `sha256 ${d.sha256} · ${fmtBytes(d.size)}`) : null,
@@ -1637,7 +1714,7 @@ function sandboxBox(w) {
     h("div", { class: "small muted" }, "It keeps trying by itself for about ten minutes, and says so here if it gives up. ",
       fallback ? "If Ubuntu's snapshot server stays unavailable, it uses the other package source you chose in Settings."
         : h("span", {}, "If Ubuntu's snapshot server is often unavailable, you can let it use another package source: ",
-          h("a", { href: "#", onclick: (e) => { e.preventDefault(); openPanel("settings"); $("#settings-sandbox")?.scrollIntoView(); } }, "Settings → The sandbox"), ".")));
+          h("a", { href: "#", onclick: (e) => { e.preventDefault(); openPanel("settings"); $("#panel-body #settings-sandbox")?.scrollIntoView(); } }, "Settings → The sandbox"), ".")));
 }
 
 // on Omarchy: what it lacks for this app and its apps (usually nothing), and this app in its menu
@@ -2731,7 +2808,7 @@ function init() {
   $("#panel-back").addEventListener("click", closePanel);
   document.addEventListener("keydown", (e) => {
     if (e.key !== "Escape") return;
-    const overlays = document.querySelectorAll("#modal-root .overlay");
+    const overlays = [...$("#modal-root").children].filter((o) => o._close);
     if (overlays.length) overlays[overlays.length - 1]._close?.();      // the topmost modal, wherever the focus is
     else if (S.panel) closePanel();
   });

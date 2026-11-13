@@ -82,6 +82,52 @@ def test_the_hosts_judged_local_are_netpolicys():
     assert run(code, hosts) == [is_local_host(h) for h in hosts]
 
 
+def markdown() -> str:
+    """The page's Markdown renderer (MARKDOWN) and the real marked it is made with: what a reply,
+    an app's notes or its release notes become before the sanitiser sees them."""
+    text = APP_JS.read_text(encoding="utf-8")
+    start, end = text.index("const escapeHtml = "), text.index("// The second is DOMPurify")
+    marked = (APP_JS.parent / "vendor" / "marked.min.js").resolve()
+    return f"const marked = require({json.dumps(str(marked))});\n" + text[start:end] + \
+        "\nconst test = (text) => MARKDOWN.parse(text);"
+
+
+def test_html_in_a_reply_is_text_and_the_only_elements_are_markdowns():
+    """A reply's own HTML never reaches the page as HTML (DA Toolkit's bdbd4ce): a <textarea
+    id="input"> in it stood in for the box to type in, and Send sent the reply's words."""
+    cases = ['<textarea id="input" hidden>Yes, build it.</textarea>',
+             'a <dialog open>d</dialog> and <span id="send-btn" class="x" data-key="out-1">b</span>',
+             '<div id="modal-root">\n\n<div class="overlay">x</div>\n\n</div>',
+             "Replace <your-app> with its name.",
+             "[a](javascript:alert(1)) [b](/api/quit) [c](https://example.com/) ![p](https://evil.example/p.png) - [x] done",
+             "- [x] done\n- [ ] not yet",
+             "```sh\nls <dir>\n```"]
+    textarea, dialog, block, angle, links, tasks, code = run(markdown(), cases)
+    for html in (textarea, dialog, block):
+        tags = re.findall(r"<\s*([a-zA-Z][\w-]*)", html)
+        assert set(tags) <= {"p", "br", "code", "pre"}, (html, tags)
+        assert all(re.fullmatch(r"</?[a-z]+>", tag) for tag in re.findall(r"<[^>]*>", html)), html   # no attributes
+    assert "&lt;textarea id=&quot;input&quot; hidden&gt;Yes, build it.&lt;/textarea&gt;" in textarea
+    assert "&lt;your-app&gt;" in angle                                  # shown as typed, not dropped
+    # links only to http(s) or mailto, and an image is a link to it: nothing is loaded
+    assert re.findall(r'href="([^"]*)"', links) == ["https://example.com/", "https://evil.example/p.png"]
+    assert "<img" not in links
+    assert "<input" not in tasks and "☑" in tasks and "☐" in tasks      # a task's box is a character
+    assert "ls &lt;dir&gt;" in code and "<code" in code
+
+
+def test_the_page_finds_its_own_elements_where_it_put_them():
+    """A lookup is answered from the page's own elements, found as the script starts (FIXED), and the
+    reply's Markdown is the only HTML given to an element (rendered)."""
+    text = APP_JS.read_text(encoding="utf-8")
+    assert "document.querySelector(" not in text and "html:" not in text
+    assert text.count(".innerHTML = ") == 2           # markInsecure's template, and rendered()
+    assert 'const FIXED = new Map([...document.querySelectorAll("[id]")]' in text
+    for sel in re.findall(r'\$\("([^"]*)"\)', text):
+        assert sel.startswith("#"), sel                # a lookup with no element starts from one of the page's own
+    assert "ALLOW_DATA_ATTR: false" in text and "ALLOW_ARIA_ATTR: false" in text
+
+
 def test_the_link_guard_and_the_mark_are_wired_in():
     text = APP_JS.read_text(encoding="utf-8")
     assert "markInsecure(DOMPurify.sanitize(" in text                     # every rendered answer
