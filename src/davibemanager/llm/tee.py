@@ -137,6 +137,52 @@ GATEWAY_UNCHECKED = "RedPill's gateway unchecked"
 # where RedPill's own record of its upstream (NEAR AI) has none (SealedLore 9af15c1, Nov 11 2026). A
 # Chutes instance's quote binds its GPU evidence's nonce, so its GPUs are its own.
 GPUS_LOOSE = "GPUs not tied to the quote"
+# What each shortfall costs, as wherever an attestation is shown says it (the cross-app standard, Nov 14
+# 2026: every shortfall has a tooltip saying what it costs; SealedLore's SHORTFALL_TIPS). An Intel TCB
+# status other than these reads as Intel rating the machine below up to date (`shortfall_cost`).
+SHORTFALL_COSTS = {
+    OWN_ENCLAVE_UNCHECKED: (
+        "The model's own enclave unchecked: what is attested is RedPill's TEE gateway, which passes each "
+        "request on to the machine that runs the model. That machine isn't attested here: that it is a "
+        "verified TEE is the gateway's word, in each reply's signed receipt. For an enclave attested "
+        "itself, end to end, use a private/ model."),
+    GATEWAY_UNCHECKED: (
+        "RedPill's gateway unchecked: NanoGPT gave no report of the gateway just now (a rate limit, an "
+        "outage, or an answer that couldn't be read, not that the gateway doesn't serve this model), and "
+        "the gateway answers some of this provider's models now and then: a reply it answers can't be "
+        "checked. Attesting again may find it."),
+    RECEIPT_KEYS_LOOSE: (
+        "Receipt keys not in the quote: NanoGPT had no gateway report for this model, so the hardware's "
+        "quote binds the key that signs each reply's record, not the keys of the gateway's receipts, and "
+        "a receipt's word that the model was verified rests on NanoGPT's relay."),
+    "receipt keys expired": (
+        "Receipt keys expired: the gateway's keyset names no time its keys hold until that can be read, so "
+        "its receipts aren't read and no reply is verified by one. (Keys past their time are refused.)"),
+    "no GPU evidence": (
+        "No GPU evidence: none was offered, so no GPU was checked. For a model attested through RedPill's "
+        "gateway, each reply's receipt carries the gateway's word that the model was verified."),
+    GPUS_LOOSE: (
+        "GPUs not tied to the quote: NVIDIA vouches for these GPUs, for this check, but the attested "
+        "machine's quote doesn't commit to their evidence, so they may be another machine's (the one "
+        "running the model, say), passed on."),
+    "GPUs unverified": "GPUs unverified: NVIDIA's attestation service couldn't be reached, so no GPU was checked.",
+    "NVIDIA signature unchecked": (
+        "NVIDIA signature unchecked: NVIDIA's keys couldn't be fetched to check its signature; what its "
+        "verdict says (our nonce, every GPU's result) was checked."),
+    "Intel TCB unchecked": (
+        "Intel TCB unchecked: Intel's revocation lists and ratings couldn't be fetched, so whether the "
+        "machine's firmware is up to date isn't known."),
+}
+
+
+def shortfall_cost(what: str) -> str:
+    """What a shortfall costs, for its tooltip: SHORTFALL_COSTS', or Intel's rating said plainly."""
+    if what in SHORTFALL_COSTS:
+        return SHORTFALL_COSTS[what]
+    if what.startswith("Intel TCB "):
+        return (f"{what}: Intel rates the machine's firmware or microcode below up to date: a fix it lacks "
+                "may let its enclave be read.")
+    return what
 # RedPill's public records of its gateway's sessions with the machines that run the models (Settings
 # → Model, "Name the provider behind each TEE reply", off by default: `TeeClient.served_by`). Each
 # receipt's `upstream.verified` names its session by the sha256 of the record's RFC 8785 JSON, so the
@@ -212,9 +258,14 @@ class Attestation:
             "partially verified: " + ", ".join(self.shortfalls))
         return head + (f" ({', '.join(parts)})" if parts else "")
 
+    @property
+    def costs(self) -> list[str]:
+        """What each shortfall costs, in order (`shortfall_cost`): every one has its words."""
+        return [shortfall_cost(what) for what in self.shortfalls]
+
     def to_dict(self) -> dict:
         return {**asdict(self), "summary": self.summary, "headline": self.headline,
-                "what": what_was_attested(self)}
+                "what": what_was_attested(self), "costs": self.costs}
 
 
 def what_was_attested(attestation: Attestation) -> str:

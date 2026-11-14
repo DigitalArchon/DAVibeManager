@@ -563,7 +563,10 @@ class Models:
                 self._emit("toast", level="info", text=(
                     f"{model}: {what}, only in part ({', '.join(att.shortfalls)}). "
                     + (tee_mod.what_was_attested(att)
-                       or "What goes to it isn't sealed end to end: for that, choose a private model.")))
+                       or "What goes to it isn't sealed end to end: for that, choose a private model.")),
+                    # what each shortfall costs, as the toast's tooltip (llm/tee.py SHORTFALL_COSTS: the standard every
+                    # DA app keeps, Nov 14 2026)
+                    detail="\n\n".join(att.costs))
             return att.to_dict()
 
     def reply_check(self, prov: Provider, model: str):

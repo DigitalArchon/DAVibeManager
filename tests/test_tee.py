@@ -1650,6 +1650,10 @@ async def test_a_model_attested_through_the_gateway_alone_is_said_in_part_and_it
     assert [e["tee"] for e in log if e["kind"] == "tee_reply"] == ["verified"]
     partial = [d["text"] for kind, d in told if kind == "toast" and "attested, only in part" in d.get("text", "")]
     assert len(partial) == 1 and "no GPU evidence" in partial[0] and "own enclave unchecked" in partial[0]
+    # what each shortfall costs, as its tooltip (the cross-app standard, Nov 14 2026)
+    from davibemanager.llm.tee import OWN_ENCLAVE_UNCHECKED, SHORTFALL_COSTS
+    detail = next(d["detail"] for kind, d in told if kind == "toast" and "attested, only in part" in d.get("text", ""))
+    assert SHORTFALL_COSTS["no GPU evidence"] in detail and SHORTFALL_COSTS[OWN_ENCLAVE_UNCHECKED] in detail
     # what was attested is said, and what that leaves to the gateway's word (SealedLore's, Nov 11 2026)
     assert partial[0].startswith("TEE/glm-5.3-flash: TEE gateway attested, only in part (")
     assert "That machine isn't attested by DA Vibe Manager" in partial[0] and "in the clear" in partial[0]
@@ -2272,3 +2276,20 @@ def test_a_keyset_whose_time_isnt_an_integer_is_unused_never_refused_as_expired(
     assert client.keyset is None and "receipt keys expired" in result.shortfalls
     with pytest.raises(TeeRefused, match="attested keys expired"):
         receipt_client(tied="statement", not_after=1_000_000_000)
+
+
+def test_every_shortfall_says_what_it_costs():
+    """Every shortfall the attestation can name has its own words saying what it costs (the cross-app
+    standard, Nov 14 2026: each one's tooltip), carried in the attestation as it is shown (DA Toolkit's copy)."""
+    import re
+    from pathlib import Path
+
+    from davibemanager.llm import tee
+
+    named = set(re.findall(r'fall_short\("([^"{]+)"\)', Path(tee.__file__).read_text()))
+    named |= {tee.OWN_ENCLAVE_UNCHECKED, tee.GATEWAY_UNCHECKED, tee.RECEIPT_KEYS_LOOSE, tee.GPUS_LOOSE}
+    for what in named:
+        assert what in tee.SHORTFALL_COSTS and len(tee.SHORTFALL_COSTS[what]) > len(what) + 30, what
+    assert "below up to date" in tee.shortfall_cost("Intel TCB OutOfDate")
+    att = tee.Attestation(shortfalls=[tee.GPUS_LOOSE, "receipt keys expired"])
+    assert att.to_dict()["costs"] == [tee.SHORTFALL_COSTS[tee.GPUS_LOOSE], tee.SHORTFALL_COSTS["receipt keys expired"]]

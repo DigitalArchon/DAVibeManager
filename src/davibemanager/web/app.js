@@ -99,8 +99,11 @@ async function api(method, path, body) {
   return data;
 }
 
-function toast(text, kind = "info", ms = 6000) {
-  const el = h("div", { class: `toast ${kind}` }, text);
+// `title`: more of what it says, as its tooltip (a partial TEE attestation's: what each shortfall costs), and
+// then it stays a while longer to be read
+function toast(text, kind = "info", ms = 6000, title = "") {
+  const el = h("div", { class: `toast ${kind}`, ...(title ? { title } : {}) }, text);
+  if (title) ms = Math.max(ms, 20000);
   $("#toasts").append(el);
   setTimeout(() => el.remove(), ms);
 }
@@ -459,7 +462,7 @@ function handle(ev) {
       renderStatus();
       break;
     case "toast":
-      toast(ev.text, ev.level || "info", 9000);
+      toast(ev.text, ev.level || "info", 9000, ev.detail || "");
       break;
   }
 }

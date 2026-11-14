@@ -189,7 +189,7 @@ Anything forged, revoked or made for another number is refused, and nothing is s
 the app can't read, and an attestation not done within three minutes (it may pass if tried again).
 What couldn't be checked (no GPU evidence offered, GPUs the quote doesn't commit to, Intel's or
 NVIDIA's service out of reach, a rating below up to date) makes the attestation partial, and the app says so, once a model,
-with what was attested and what that leaves to someone's word:
+with what was attested and what that leaves to someone's word (hover over the notice for what each shortfall costs):
 
 - **RedPill's TEE gateway**, for most of NanoGPT's TEE models: the note says "TEE gateway attested".
   The gateway passes each request on to the machine that runs the model (in November 2026 Phala's,

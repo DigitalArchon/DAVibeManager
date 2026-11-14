@@ -305,7 +305,8 @@ fresh random number of its own, and checks:
 Anything forged, revoked or made for another number is refused, and nothing is sent; so is evidence
 the app can't read, and an attestation not done within three minutes. What couldn't be checked,
 or isn't current, makes the attestation **partial**: the request still goes, and the app
-says so once for each model, naming each shortfall, with what was attested:
+says so once for each model, naming each shortfall (the notice's tooltip says what each one costs),
+with what was attested:
 
 - **RedPill's TEE gateway**, for most of NanoGPT's TEE models: "TEE gateway attested". The gateway
   passes each request on to the machine that runs the model (in November 2026 Phala's, Fortanix's,
