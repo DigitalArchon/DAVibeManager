@@ -529,8 +529,9 @@ class Models:
         client = hit[0]
 
         async def check(reply) -> dict:
+            # and when its request went: a receipt served before that is another request's, handed back
             record = {"receipt_id": getattr(reply, "receipt_id", None), "body_hash": getattr(reply, "body_hash", None),
-                      "route": getattr(reply, "tee_route", None)}
+                      "route": getattr(reply, "tee_route", None), "sent_at": getattr(reply, "sent_at", None)}
             # who ran its model too, where the user asked for it (Settings, off by default: it asks api.redpill.ai,
             # llm/tee.py served_by); never the mark's concern
             named = self.cfg.settings.tee_name_upstreams and callable(getattr(client, "check", None))

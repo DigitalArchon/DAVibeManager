@@ -213,8 +213,10 @@ have a private version, which is attested its own way.
 
 After each reply has reached the assistant, the app fetches the record NanoGPT keeps of it, signed by
 an attested key, and checks it is for the exact text that came back; where the gateway kept a signed
-receipt, that too, saying the machine the reply came from was verified. That last part is the
-gateway's word. The app's own requests to a TEE model are checked the same way: a second opinion, the
+receipt, that too: for the same reply, served after this request was sent (so not an earlier reply
+handed back), and saying the machine the reply came from was verified. That last part is the
+gateway's word. The receipt's time is held to this computer's clock, give or take five minutes, so a
+clock that is far out makes replies fail their check. The app's own requests to a TEE model are checked the same way: a second opinion, the
 summary of what's new in an update, the review of an app you import, and a picture described for the
 assistant. **☰ → Sandbox activity** lists them beside the assistant's requests and marks each: **TEE
 verified**; **TEE signed, text not compared** (NanoGPT rebuilds that model's replies); **TEE ⚠ reply

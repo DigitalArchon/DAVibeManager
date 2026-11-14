@@ -107,6 +107,12 @@ ATTEMPT_SECONDS = 180.0
 # example waits up to about 20 seconds).
 RECEIPT_WAIT_SECONDS = 20.0
 RECEIPT_RETRY_SECONDS = 2.0
+# A receipt is this request's only if the gateway served it between the
+# request being sent and now: the response hash alone ties a receipt to a
+# stream, and a relay could hand back an earlier signed stream with its
+# receipt. This much leeway either way, for this computer's clock and the
+# gateway's not quite agreeing (SealedLore's, Nov 12 2026).
+RECEIPT_CLOCK_SKEW_SECONDS = 5 * 60
 # Models whose streams nano-gpt rebuilds from the upstream's, so their bytes
 # never match the receipt's hash (nano-gpt, Nov 2026).
 REBUILT_STREAMS = frozenset({"TEE/gemma-4-31b-it"})
@@ -592,6 +598,7 @@ class TeeClient:
         client: httpx.Client | None = None,
         intel: Callable[..., dcap.Result] | None = None,
         nvidia: Callable[..., int] | None = None,
+        wall: Callable[[], float] = time.time,
     ) -> None:
         check_url(base_url, "The provider's base URL")      # https, or a local address: the key goes there
         check_key(api_key, urlparse(base_url).hostname or "the provider")
@@ -619,6 +626,8 @@ class TeeClient:
         self._nvidia = nvidia or nras.verify
         # When the attestation under way must be over (time.monotonic; `ATTEMPT_SECONDS`), else None.
         self._deadline: float | None = None
+        # The time of day, which receipts are dated in (`served_at`, Unix seconds); replaceable for tests.
+        self._wall = wall
 
     def close(self) -> None:
         if self._owns:
@@ -655,6 +664,7 @@ class TeeClient:
             # Nov 10 2026), so attesting with an earlier reply's route could only refuse.
             headers["X-TEE-Verification-Route"] = route
         last: str = ""
+        last_status: int | None = None
         for base in [self._base] if self._base else _bases(self.base_url):
             if self._deadline is not None:
                 # of an attestation: each address waits only for what is left of its time
@@ -667,10 +677,10 @@ class TeeClient:
                     **({"timeout": timeout} if timeout is not None else {}),
                 )
             except httpx.HTTPError as exc:
-                last = scrubbed(exc)
+                last, last_status = scrubbed(exc), None
                 continue
             if response.status_code == 404:
-                last = f"{shown(base + path)}: 404"
+                last, last_status = f"{shown(base + path)}: 404", 404
                 continue
             if response.status_code >= 400:
                 # nano-gpt's own words, when it gives any: "Unable to reach RedPill
@@ -690,7 +700,7 @@ class TeeClient:
                 raise ProviderError(f"{shown(base + path)} returned {type(body).__name__}")
             self._base = base
             return body
-        raise ProviderError(f"no TEE endpoint answered ({last})")
+        raise ProviderError(f"no TEE endpoint answered ({last})", status_code=last_status)
 
     def attest(self) -> Attestation:
         """Check the enclave now, with a fresh nonce (network; a worker thread).
@@ -1245,10 +1255,13 @@ class TeeClient:
         receipt_id: str | None = None,
         body_hash: str | None = None,
         route: str | None = None,
+        sent_at: float | None = None,
     ) -> bool:
         """`check_reply` as a yes or no: anything but "failed" is a yes."""
         return (
-            self.check_reply(response_id, receipt_id=receipt_id, body_hash=body_hash, route=route)
+            self.check_reply(
+                response_id, receipt_id=receipt_id, body_hash=body_hash, route=route, sent_at=sent_at
+            )
             != "failed"
         )
 
@@ -1259,10 +1272,13 @@ class TeeClient:
         receipt_id: str | None = None,
         body_hash: str | None = None,
         route: str | None = None,
+        sent_at: float | None = None,
     ) -> Mark:
         """`check`'s mark alone, nothing more looked up: the word, which says too whether the
         reply's receipt was read and held (`Mark.receipt`)."""
-        found = self.check(response_id, receipt_id=receipt_id, body_hash=body_hash, route=route)
+        found = self.check(
+            response_id, receipt_id=receipt_id, body_hash=body_hash, route=route, sent_at=sent_at
+        )
         return Mark(found.mark, found.receipt)
 
     def check(
@@ -1272,6 +1288,7 @@ class TeeClient:
         receipt_id: str | None = None,
         body_hash: str | None = None,
         route: str | None = None,
+        sent_at: float | None = None,
         name_upstream: bool = False,
     ) -> ReplyCheck:
         """Was this reply the attested enclave's, as received? "verified":
@@ -1291,7 +1308,11 @@ class TeeClient:
           (`REBUILT_STREAMS`) or a reply wasn't streamed;
         - the receipt, signed (Ed25519) by a key of the attested keyset
           (`_take_keyset`), naming the same two hashes, and that its upstream
-          was verified, as nano-gpt now requires.
+          was verified, as nano-gpt now requires;
+        - served after `sent_at` (when the request went, time.time()), so it
+          is this request's and not an earlier exchange's handed back: one
+          served before is "failed", and with no `sent_at` a receipt can't be
+          dated, so the reply is unchecked.
 
         A stream's receipt is complete just after it ends: a lookup that
         finds none yet is tried again for a while.
@@ -1329,7 +1350,7 @@ class TeeClient:
             return ReplyCheck("failed")
         receipt = body.get("receipt")
         checked = isinstance(receipt, dict) and self.keyset is not None
-        if checked and not self._receipt_holds(receipt, request_hash, response_hash):
+        if checked and not self._receipt_holds(receipt, request_hash, response_hash, sent_at):
             return ReplyCheck("failed")
         if self.receipt_required and not checked:
             # Attested through the gateway alone, the gateway's signature says
@@ -1405,18 +1426,26 @@ class TeeClient:
             try:
                 return self._get(path, params, route=route)
             except ProviderError as exc:
-                ready_later = exc.status_code in (502, 503) or "404" in str(exc)
+                # By the status, never the words: an error that merely says
+                # "404" (a receipt id, the gateway's own message) isn't one.
+                ready_later = exc.status_code in (404, 502, 503)
                 if not ready_later or time.monotonic() >= deadline:
                     # Live: some TEE/ models' providers keep no signature for a reply.
                     raise ProviderError("the provider has no signature for this reply") from exc
             time.sleep(RECEIPT_RETRY_SECONDS)
 
     def _receipt_holds(
-        self, receipt: dict[str, Any], request_hash: str, response_hash: str
+        self,
+        receipt: dict[str, Any],
+        request_hash: str,
+        response_hash: str,
+        sent_at: float | None,
     ) -> bool:
         """The receipt was signed by a key of the attested keyset, under that
-        keyset, for this exchange (the hashes the attested key signed), and
-        its upstream was verified, as nano-gpt requires."""
+        keyset, for this exchange (the hashes the attested key signed), its
+        upstream was verified, as nano-gpt requires, and it was served for
+        this request, after it was sent (RECEIPT_CLOCK_SKEW_SECONDS either
+        way). Raises ProviderError when that can't be told."""
         from cryptography.exceptions import InvalidSignature
         from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
@@ -1457,4 +1486,17 @@ class TeeClient:
         if hashes != (f"sha256:{request_hash.lower()}", f"sha256:{response_hash.lower()}"):
             return False
         upstream = events.get("upstream.verified", {})
-        return upstream.get("result") == "verified" and upstream.get("required") is True
+        if upstream.get("result") != "verified" or upstream.get("required") is not True:
+            return False
+        if sent_at is None:
+            # Nothing dates the record's text, and the receipt can't be held to
+            # a request whose time isn't known.
+            raise ProviderError("when this reply's request was sent isn't known")
+        # An exchange the attested gateway says it served before this request
+        # went (or long after now) isn't this request's: a relay handing back
+        # an earlier signed stream, its bytes and hashes all as they were.
+        return (
+            sent_at - RECEIPT_CLOCK_SKEW_SECONDS
+            <= served
+            <= self._wall() + RECEIPT_CLOCK_SKEW_SECONDS
+        )

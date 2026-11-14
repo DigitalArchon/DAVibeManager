@@ -966,6 +966,11 @@ STREAM = (
     b'data: {"id": "req_9", "choices": [{"delta": {}, "finish_reason": "stop"}]}\n\n'
     b"data: [DONE]\n\n"
 )
+# When the gateway served the reply (its receipt's `served_at`), when the request was sent, and the time the check is
+# made, by the client's clock (SealedLore's 1a61096).
+SERVED = 1_800_000_000
+SENT = SERVED - 2.0
+CHECKED = SERVED + 3.0
 
 
 def _public(private_key: int) -> str:
@@ -998,6 +1003,8 @@ def receipt_server(
     session_status: int = 200,
     session_headers: dict | None = None,
     guarded: bool = False,
+    served_at: int | None = SERVED,
+    signature_error: tuple[int, str] | None = None,
 ):
     """nano-gpt as live (Nov 4 2026): the attestation's quote binds the signing key; the keyset beside
     it lists that key as its e2ee key ("e2ee"), or the quote binds the keyset itself ("statement"), or
@@ -1012,7 +1019,11 @@ def receipt_server(
     `session`: RedPill's record of the gateway's session, which the receipt names by its sha256 and
     api.redpill.ai serves (as `session_body`, or with `session_status` / `session_headers`, when given).
     `guarded`: the client is built as the app builds the TEE client's (llm/secure_http.make_client: its
-    redirect guard), not a bare one."""
+    redirect guard), not a bare one.
+
+    `served_at`: when the receipt says the gateway served the reply; None, the moment the record is looked up (for a
+    request the app's own client sends, dated by this computer's clock). `signature_error`: (status, message) the
+    signature lookup answers instead."""
     import hashlib
 
     from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
@@ -1104,6 +1115,9 @@ def receipt_server(
                 },
             )
         if "/tee/signature/" in url:
+            if signature_error is not None:
+                status, message = signature_error
+                return httpx.Response(status, json={"error": message})
             if pending[0]:
                 pending[0] -= 1
                 return httpx.Response(404, json={"error": "not yet"})
@@ -1112,7 +1126,7 @@ def receipt_server(
                 "api_version": "aci/1",
                 "receipt_id": "rcpt-1",
                 "key_id": "dstack-kms-receipt-ed25519-v1",
-                "served_at": 1_800_000_000,
+                "served_at": int(time.time()) if served_at is None else served_at,
                 "workload_keyset_digest": digest or keyset_digest,
                 "event_log": [
                     {"type": "request.received", "body_hash": f"sha256:{request_hash}"},
@@ -1149,6 +1163,7 @@ def receipt_client(model: str = "TEE/glm-5.3-flash", **server) -> TeeClient:
         client=receipt_server(**server),
         intel=lambda raw, session: UP_TO_DATE,
         nvidia=lambda answer, nonce, session: 8,
+        wall=lambda: CHECKED,
     )
     client.attest()
     return client
@@ -1168,38 +1183,38 @@ def attested(seen: list) -> list:
 def test_a_streamed_reply_is_checked_to_its_exact_bytes_and_its_receipt():
     client = receipt_client()
     assert client.keyset is not None, "the keyset holds the attested key"
-    assert client.check_reply("req_9", receipt_id="rcpt-1", body_hash=streamed()) == "verified"
+    assert client.check_reply("req_9", sent_at=SENT, receipt_id="rcpt-1", body_hash=streamed()) == "verified"
 
 
 def test_bytes_other_than_those_signed_fail():
     client = receipt_client()
-    assert client.check_reply("req_9", body_hash=streamed(b"data: [DONE]\n\n")) == "failed"
+    assert client.check_reply("req_9", sent_at=SENT, body_hash=streamed(b"data: [DONE]\n\n")) == "failed"
 
 
 def test_a_record_signed_by_another_key_fails():
-    assert receipt_client(signer=1).check_reply("req_9", body_hash=streamed()) == "failed"
+    assert receipt_client(signer=1).check_reply("req_9", sent_at=SENT, body_hash=streamed()) == "failed"
 
 
 def test_a_model_whose_streams_nano_gpt_rebuilds_is_checked_by_signature_alone():
     client = receipt_client(model="TEE/gemma-4-31b-it")
-    assert client.check_reply("req_9", body_hash=streamed(b"rebuilt")) == "signed"
+    assert client.check_reply("req_9", sent_at=SENT, body_hash=streamed(b"rebuilt")) == "signed"
 
 
 def test_a_receipt_whose_upstream_wasnt_verified_fails():
-    assert receipt_client(upstream="failed").check_reply("req_9", body_hash=streamed()) == "failed"
+    assert receipt_client(upstream="failed").check_reply("req_9", sent_at=SENT, body_hash=streamed()) == "failed"
 
 
 def test_a_receipt_signed_by_another_key_fails():
     from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
     client = receipt_client(receipt_key=Ed25519PrivateKey.generate())
-    assert client.check_reply("req_9", body_hash=streamed()) == "failed"
+    assert client.check_reply("req_9", sent_at=SENT, body_hash=streamed()) == "failed"
 
 
 def test_a_receipt_under_keys_renewed_since_is_unchecked_not_failed():
     client = receipt_client(digest="sha256:" + "0" * 64)
     with pytest.raises(ProviderError, match="keys changed"):
-        client.check_reply("req_9", body_hash=streamed())
+        client.check_reply("req_9", sent_at=SENT, body_hash=streamed())
 
 
 def test_a_keyset_the_quote_binds_itself_is_taken_and_one_tied_neither_way_is_not():
@@ -1211,7 +1226,7 @@ def test_a_keyset_the_quote_binds_itself_is_taken_and_one_tied_neither_way_is_no
     loose = receipt_client(tied="none")
     assert loose.keyset is None
     # Still signed by the attested key, for these bytes: the receipt goes unread.
-    assert loose.check_reply("req_9", body_hash=streamed()) == "verified"
+    assert loose.check_reply("req_9", sent_at=SENT, body_hash=streamed()) == "verified"
 
 
 def test_a_stream_just_ended_waits_for_its_receipt(monkeypatch):
@@ -1220,7 +1235,7 @@ def test_a_stream_just_ended_waits_for_its_receipt(monkeypatch):
     monkeypatch.setattr(tee, "RECEIPT_RETRY_SECONDS", 0)
     seen: list = []
     client = receipt_client(not_ready=2, seen=seen)
-    assert client.check_reply("req_9", receipt_id="rcpt-1", body_hash=streamed(), route="r1") == "verified"
+    assert client.check_reply("req_9", sent_at=SENT, receipt_id="rcpt-1", body_hash=streamed(), route="r1") == "verified"
     lookups = [r for r in seen if "/tee/signature/" in str(r.url)]
     assert len(lookups) == 3 and "rcpt-1" in str(lookups[-1].url)
     assert all(r.headers.get("X-TEE-Verification-Route") == "r1" for r in lookups)
@@ -1233,16 +1248,91 @@ def test_a_reply_that_named_no_receipt_is_looked_up_once(monkeypatch):
     seen: list = []
     client = receipt_client(not_ready=1, seen=seen)
     with pytest.raises(ProviderError, match="no signature for this reply"):
-        client.check_reply("req_9", body_hash=streamed())
+        client.check_reply("req_9", sent_at=SENT, body_hash=streamed())
     assert len([r for r in seen if "/tee/signature/" in str(r.url)]) == 1
+
+
+def test_a_receipt_served_before_the_request_was_sent_fails():
+    """Only the response hash tied a receipt to the stream, and served_at was held to the keys' expiry alone: a relay
+    could hand back an earlier signed stream with its receipt, and it read "verified" (SealedLore's 1a61096)."""
+    from davibemanager.llm.tee import RECEIPT_CLOCK_SKEW_SECONDS as SKEW
+
+    def mark(served_at: int) -> str:
+        client = receipt_client(served_at=served_at)
+        return client.check_reply("req_9", sent_at=SENT, receipt_id="rcpt-1", body_hash=streamed())
+
+    assert mark(SERVED) == "verified"
+    assert mark(int(SENT - SKEW)) == "verified", "this computer's clock a little ahead"
+    assert mark(int(CHECKED + SKEW)) == "verified", "or a little behind"
+    assert mark(int(SENT) - 3600) == "failed", "an hour-old exchange handed back"
+    assert mark(int(SENT - SKEW) - 1) == "failed"
+    assert mark(int(CHECKED + SKEW) + 1) == "failed", "served after it was checked"
+
+
+def test_a_receipt_with_no_time_its_request_was_sent_is_unchecked():
+    client = receipt_client()
+    with pytest.raises(ProviderError, match="request was sent isn't known"):
+        client.check_reply("req_9", receipt_id="rcpt-1", body_hash=streamed())
+    # Nothing to date: a record with no receipt reads as before.
+    bare = receipt_client(with_receipt=False)
+    assert bare.check_reply("req_9", body_hash=streamed()) == "verified"
+
+
+async def test_a_stream_is_dated_by_when_its_request_went_and_its_receipt_held_to_it(tmp_path):
+    """The client the gateway and the app's own requests use dates each request as it goes, and the reply's check
+    holds its receipt to that: an exchange the attested gateway served an hour before is another request's, handed
+    back, and the model is attested again before anything more goes to it."""
+    from davibemanager.llm.client import LLMClient
+
+    http = httpx.AsyncClient(transport=httpx.MockTransport(lambda r: httpx.Response(
+        200, content=STREAM, headers={"content-type": "text/event-stream", "X-Receipt-Id": "rcpt-1"})))
+    before = time.time()
+    events = [e async for e in LLMClient("https://nano-gpt.com/api/v1", "k", http).stream(
+        "TEE/glm-5.3-flash", [{"role": "user", "content": "hi"}], exact=True)]
+    done = events[-1][1]
+    assert done.sent_at is not None and before <= done.sent_at <= time.time()
+
+    seen, told, logged = [], [], []
+    models, prov = _tee_models(seen, told, logged, served_at=int(time.time()) - 3600)
+    factory, asked = _stream_of(STREAM)
+    said, log = await _ask_through_gateway(tmp_path, models, prov, factory, times=2)
+    assert all('"ok"' in text for text in said)                    # nothing held back or changed
+    assert [e["tee"] for e in log if e["kind"] == "tee_reply"] == ["failed", "failed"]
+    errors = [d["text"] for kind, d in told if kind == "toast" and d.get("level") == "error"]
+    assert len(errors) == 1 and "attested again" in errors[0]
+    assert len(attested(seen)) == 2
+    # served as the request went: verified
+    seen, told, logged = [], [], []
+    models, prov = _tee_models(seen, told, logged)
+    said, log = await _ask_through_gateway(tmp_path, models, prov, factory)
+    assert [e["tee"] for e in log if e["kind"] == "tee_reply"] == ["verified"]
+
+
+def test_a_receipt_lookup_waits_on_its_status_not_its_words(monkeypatch):
+    """A lookup was tried again for twenty seconds whenever its error's words held "404": a 500 whose message named
+    one, say (SealedLore's 1a61096)."""
+    from davibemanager.llm import tee
+
+    monkeypatch.setattr(tee, "RECEIPT_RETRY_SECONDS", 0)
+    monkeypatch.setattr(tee, "RECEIPT_WAIT_SECONDS", 0.3)
+    seen: list = []
+    client = receipt_client(seen=seen, signature_error=(500, "the upstream answered 404"))
+    with pytest.raises(ProviderError, match="no signature for this reply"):
+        client.check_reply("req_9", sent_at=SENT, receipt_id="rcpt-1", body_hash=streamed())
+    assert len([r for r in seen if "/tee/signature/" in str(r.url)]) == 1
+    # a 404 is waited for, by its status
+    seen = []
+    client = receipt_client(seen=seen, not_ready=1)
+    assert client.check_reply("req_9", sent_at=SENT, receipt_id="rcpt-1", body_hash=streamed()) == "verified"
+    assert len([r for r in seen if "/tee/signature/" in str(r.url)]) == 2
 
 
 def test_a_reply_whose_bytes_cant_be_compared_is_signed_not_verified():
     client = receipt_client()
-    assert client.check_reply("req_9", body_hash=streamed()) == "verified"
-    assert client.check_reply("req_9") == "signed", "no bytes to compare"
-    assert client.verify_reply("req_9") is True
-    assert receipt_client(upstream="failed").verify_reply("req_9", body_hash=streamed()) is False
+    assert client.check_reply("req_9", sent_at=SENT, body_hash=streamed()) == "verified"
+    assert client.check_reply("req_9", sent_at=SENT) == "signed", "no bytes to compare"
+    assert client.verify_reply("req_9", sent_at=SENT) is True
+    assert receipt_client(upstream="failed").verify_reply("req_9", sent_at=SENT, body_hash=streamed()) is False
 
 
 def test_the_receipt_keys_are_named_short_whether_a_keyset_comes_or_not():
@@ -1277,7 +1367,7 @@ def test_the_gateways_report_binds_the_receipt_keys_and_only_the_model_behind_it
     assert "RedPill's TEE gateway" in what_was_attested(result)
     assert "gateway's word" in what_was_attested(result)
     assert client.keyset is not None
-    assert client.check_reply("req_9", receipt_id="rcpt-1", body_hash=streamed()) == "verified"
+    assert client.check_reply("req_9", sent_at=SENT, receipt_id="rcpt-1", body_hash=streamed()) == "verified"
     asked = [r for r in seen if "/tee/attestation" in str(r.url)]
     aci = [r for r in asked if r.url.params.get("report") == "aci"]
     assert aci and all(
@@ -1288,10 +1378,10 @@ def test_the_gateways_report_binds_the_receipt_keys_and_only_the_model_behind_it
 
 def test_a_reply_is_checked_against_every_key_the_gateways_quote_binds():
     """Any e2ee key of the keyset the gateway's quote binds may sign a record, and no other key."""
-    assert receipt_client(aci="bound", also=5, signer=5).check_reply("req_9", body_hash=streamed()) == "verified"
+    assert receipt_client(aci="bound", also=5, signer=5).check_reply("req_9", sent_at=SENT, body_hash=streamed()) == "verified"
     # without the gateway's report only the attested signing key counts
-    assert receipt_client(also=5, signer=5).check_reply("req_9", body_hash=streamed()) == "failed"
-    assert receipt_client(aci="bound", also=5, signer=6).check_reply("req_9", body_hash=streamed()) == "failed"
+    assert receipt_client(also=5, signer=5).check_reply("req_9", sent_at=SENT, body_hash=streamed()) == "failed"
+    assert receipt_client(aci="bound", also=5, signer=6).check_reply("req_9", sent_at=SENT, body_hash=streamed()) == "failed"
 
 
 def test_a_gateway_report_for_another_nonce_is_refused():
@@ -1332,7 +1422,7 @@ def test_the_gateway_stands_in_for_a_model_whose_own_evidence_was_relayed():
     assert result.level == "partial" and result.shortfalls == ["no GPU evidence", MODEL_ENCLAVE_UNCHECKED]
     assert "the gateway that answers it is attested instead" in result.detail
     assert result.attested == "gateway"
-    assert client.check_reply("req_9", receipt_id="rcpt-1", body_hash=streamed()) == "verified"
+    assert client.check_reply("req_9", sent_at=SENT, receipt_id="rcpt-1", body_hash=streamed()) == "verified"
     # Without the gateway, refused as before.
     with pytest.raises(TeeRefused, match="nonce the relay chose"):
         receipt_client(aci="400", plain=lambda nonce: (200, RELAYED))
@@ -1345,17 +1435,17 @@ def test_through_the_gateway_alone_a_reply_without_a_receipt_is_not_verified():
     bare = receipt_client(aci="bound", plain=lambda nonce: (200, RELAYED), with_receipt=False)
     assert bare.attest().shortfalls == ["no GPU evidence", MODEL_ENCLAVE_UNCHECKED]
     with pytest.raises(ProviderError, match="no receipt"):
-        bare.check_reply("req_9", receipt_id="rcpt-1", body_hash=streamed())
+        bare.check_reply("req_9", sent_at=SENT, receipt_id="rcpt-1", body_hash=streamed())
     # nor with a keyset too loose to read one under (it names no time it holds until): the receipt that came
     # isn't read, so it is no one's word that counts
     loose = receipt_client(aci="bound", not_after="undated", plain=lambda nonce: (200, RELAYED))
     assert loose.keyset is None and "receipt keys expired" in loose.attest().shortfalls
     with pytest.raises(ProviderError, match="no receipt"):
-        loose.check_reply("req_9", receipt_id="rcpt-1", body_hash=streamed())
+        loose.check_reply("req_9", sent_at=SENT, receipt_id="rcpt-1", body_hash=streamed())
     # A model attested itself needs none: its own key signed the reply.
     itself = receipt_client(with_receipt=False)
     assert not itself.receipt_required
-    assert itself.check_reply("req_9", body_hash=streamed()) == "verified"
+    assert itself.check_reply("req_9", sent_at=SENT, body_hash=streamed()) == "verified"
 
 
 def test_the_receipt_rule_is_cleared_when_the_model_is_attested_again(instances):
@@ -1414,21 +1504,21 @@ def test_a_chutes_model_with_the_gateway_checks_the_replies_redpill_answers(inst
     # a request may go through the gateway, whose host is its word: short of that, as any the gateway answers
     assert result.level == "partial" and result.instances and result.shortfalls == [MODEL_ENCLAVE_UNCHECKED]
     assert "host is the gateway's word" in result.detail
-    assert client.check_reply("req_9", receipt_id="rcpt-1", body_hash=streamed()) == "verified"
+    assert client.check_reply("req_9", sent_at=SENT, receipt_id="rcpt-1", body_hash=streamed()) == "verified"
     with pytest.raises(ProviderError, match="signs no replies"):
-        client.check_reply("req_9", body_hash=streamed())
+        client.check_reply("req_9", sent_at=SENT, body_hash=streamed())
     # Chutes alone (report=aci answers 400): whole and unsigned, as before.
     alone = receipt_client(model="TEE/kimi-k3", aci="400", plain=lambda nonce: (200, instances.body(nonce)))
     assert alone.attest().level == "full"
     with pytest.raises(ProviderError, match="signs no replies"):
-        alone.check_reply("req_9", receipt_id="rcpt-1", body_hash=streamed())
+        alone.check_reply("req_9", sent_at=SENT, receipt_id="rcpt-1", body_hash=streamed())
     # No report for another reason (a rate limit, as live): whether the gateway may answer isn't known, and an
     # outage never reads better than the report would
     unheard = receipt_client(model="TEE/glm-5.1", aci="429", plain=lambda nonce: (200, instances.body(nonce)))
     result = unheard.attest()
     assert result.level == "partial" and result.shortfalls == [GATEWAY_UNCHECKED] and "HTTP 429" in result.detail
     with pytest.raises(ProviderError, match="signs no replies"):
-        unheard.check_reply("req_9", receipt_id="rcpt-1", body_hash=streamed())
+        unheard.check_reply("req_9", sent_at=SENT, receipt_id="rcpt-1", body_hash=streamed())
 
 
 # --- every TEE reply through the gateway, checked once it has gone on ------------------------------
@@ -1456,6 +1546,7 @@ def _tee_models(seen: list, told: list, logged: list, **server):
     m = Models(cfg, save_config=lambda c: None, emit=lambda kind, **d: told.append((kind, d)),
                log=lambda event, **d: logged.append((event, d)))
     m.key = lambda prov: "k"
+    server.setdefault("served_at", None)        # the app's own request, dated by this computer's clock: served now
     m.tee_factory = lambda base, key, model: TeeClient(
         base, key, model, client=receipt_server(seen=seen, **server), intel=lambda raw, session: UP_TO_DATE,
         nvidia=lambda answer, nonce, session: 8)
@@ -1791,6 +1882,7 @@ async def test_only_a_tee_models_one_off_reply_is_streamed_to_be_checked():
 def _tee_reviewer(engine, seen: list, **server) -> list:
     """The engine's reviewer and picture describer a TEE model: attested against receipt_server, their replies
     streamed by _stream_of, and checked. What was asked of the model is returned."""
+    server.setdefault("served_at", None)        # the app's own request, dated by this computer's clock: served now
     engine.models.tee_factory = lambda base, key, model: TeeClient(
         base, key, model, client=receipt_server(seen=seen, **server), intel=lambda raw, session: UP_TO_DATE,
         nvidia=lambda answer, nonce, session: 8)
@@ -1946,7 +2038,7 @@ def test_a_reply_names_its_provider_by_redpills_record_read_once_a_session(no_re
 
     seen: list = []
     client = receipt_client(aci="bound", session=TINFOIL, seen=seen)
-    found = client.check("req_9", receipt_id="rcpt-1", body_hash=streamed(), name_upstream=True)
+    found = client.check("req_9", sent_at=SENT, receipt_id="rcpt-1", body_hash=streamed(), name_upstream=True)
     assert found.mark == "verified"
     upstream = found.upstream
     assert (upstream.name, upstream.scope, upstream.gpus, upstream.model) == ("tinfoil", "router", "unknown", "m")
@@ -1962,9 +2054,9 @@ def test_a_reply_names_its_provider_by_redpills_record_read_once_a_session(no_re
     assert "authorization" not in sent and "x-tee-verification-route" not in sent, "no key goes to RedPill"
     # The next reply in the same session reads no record again; one not asked to name its provider asks
     # nothing of RedPill at all.
-    again = client.check("req_9", receipt_id="rcpt-1", body_hash=streamed(), name_upstream=True)
+    again = client.check("req_9", sent_at=SENT, receipt_id="rcpt-1", body_hash=streamed(), name_upstream=True)
     assert again.upstream.name == "tinfoil"
-    assert client.check_reply("req_9", receipt_id="rcpt-1", body_hash=streamed()) == "verified"
+    assert client.check_reply("req_9", sent_at=SENT, receipt_id="rcpt-1", body_hash=streamed()) == "verified"
     assert len(redpill_asked(seen)) == 1
 
 
@@ -1994,7 +2086,7 @@ def test_a_record_that_cant_be_read_or_believed_names_nobody(no_records_kept, se
     """Never a failed reply: the mark is the gateway's check, and stands."""
     seen: list = []
     client = receipt_client(aci="bound", session=TINFOIL, seen=seen, **server)
-    found = client.check("req_9", receipt_id="rcpt-1", body_hash=streamed(), name_upstream=True)
+    found = client.check("req_9", sent_at=SENT, receipt_id="rcpt-1", body_hash=streamed(), name_upstream=True)
     assert found.mark == "verified"
     assert found.upstream.name == "" and note in found.upstream.note
     assert len(redpill_asked(seen)) == 1, "nothing followed, nothing asked again"
@@ -2006,7 +2098,7 @@ def test_redpills_record_is_fetched_by_the_tee_clients_own_rules(no_records_kept
     seen: list = []
     client = receipt_client(aci="bound", session=TINFOIL, seen=seen, guarded=True, session_status=302,
                             session_headers={"location": "http://redpill.example/v1/aci/sessions/x"})
-    found = client.check("req_9", receipt_id="rcpt-1", body_hash=streamed(), name_upstream=True)
+    found = client.check("req_9", sent_at=SENT, receipt_id="rcpt-1", body_hash=streamed(), name_upstream=True)
     assert found.mark == "verified" and found.upstream.name == ""
     assert "refusing to send over an insecure connection" in found.upstream.note
     assert len(redpill_asked(seen)) == 1
@@ -2015,7 +2107,7 @@ def test_redpills_record_is_fetched_by_the_tee_clients_own_rules(no_records_kept
 def test_a_reply_served_outside_the_session_its_receipt_names_names_nobody(no_records_kept):
     stale = {**TINFOIL, "expires_at": 1_799_999_500}
     client = receipt_client(aci="bound", session=stale)
-    found = client.check("req_9", receipt_id="rcpt-1", body_hash=streamed(), name_upstream=True)
+    found = client.check("req_9", sent_at=SENT, receipt_id="rcpt-1", body_hash=streamed(), name_upstream=True)
     assert found.mark == "verified" and "outside the session" in found.upstream.note
 
 
@@ -2025,7 +2117,7 @@ def test_a_model_chutes_serves_is_never_looked_up(no_records_kept, instances):
     seen: list = []
     client = receipt_client(model="TEE/glm-5.1", aci="bound", plain=lambda nonce: (200, instances.body(nonce)),
                             session=TINFOIL, seen=seen)
-    found = client.check("req_9", receipt_id="rcpt-1", body_hash=streamed(), name_upstream=True)
+    found = client.check("req_9", sent_at=SENT, receipt_id="rcpt-1", body_hash=streamed(), name_upstream=True)
     assert found.mark == "verified" and found.upstream.name == "" and "Chutes serves" in found.upstream.note
     assert redpill_asked(seen) == []
 
@@ -2033,7 +2125,7 @@ def test_a_model_chutes_serves_is_never_looked_up(no_records_kept, instances):
 def test_a_session_named_by_a_receipt_not_read_is_never_looked_up(no_records_kept):
     seen: list = []
     client = receipt_client(tied="none", session=TINFOIL, seen=seen)
-    found = client.check("req_9", receipt_id="rcpt-1", body_hash=streamed(), name_upstream=True)
+    found = client.check("req_9", sent_at=SENT, receipt_id="rcpt-1", body_hash=streamed(), name_upstream=True)
     assert found.mark == "verified" and "wasn't read under the attested keys" in found.upstream.note
     assert redpill_asked(seen) == []
 
@@ -2064,7 +2156,9 @@ async def test_a_reply_names_its_provider_only_when_settings_ask(tmp_path, no_re
     unless the user chose to. Every reply whose mark Sandbox activity shows is named once asked: the assistant's,
     here through the gateway."""
     seen, told, logged = [], [], []
-    models, prov = _tee_models(seen, told, logged, aci="bound", session=TINFOIL)
+    now = int(time.time())          # the app's own request is dated by this computer's clock, and served in this session
+    session = {**TINFOIL, "established_at": now - 1000, "expires_at": now + 2600}
+    models, prov = _tee_models(seen, told, logged, aci="bound", session=session)
     assert models.cfg.settings.tee_name_upstreams is False
     factory, asked = _stream_of(STREAM)
     said, log = await _ask_through_gateway(tmp_path, models, prov, factory)

@@ -304,24 +304,24 @@ async def test_an_attestation_that_doesnt_end_is_given_up_and_nothing_sent(monke
 def test_a_reply_says_whether_its_receipt_was_read_and_held():
     """A model attested itself is verified by its own key's signature, with a receipt or without
     (SealedLore's rule): what was read is said with the mark, for its tooltip."""
-    from test_tee import receipt_client, streamed
+    from test_tee import SENT, receipt_client, streamed
 
     with_one = receipt_client(tied="statement")
-    found = with_one.check("req_9", receipt_id="rcpt-1", body_hash=streamed())
+    found = with_one.check("req_9", sent_at=SENT, receipt_id="rcpt-1", body_hash=streamed())
     assert (found.mark, found.receipt) == ("verified", True)
-    mark = with_one.check_reply("req_9", receipt_id="rcpt-1", body_hash=streamed())
+    mark = with_one.check_reply("req_9", sent_at=SENT, receipt_id="rcpt-1", body_hash=streamed())
     assert mark == "verified" and mark.receipt is True and type(str(mark)) is str
-    assert with_one.check("req_9", receipt_id="rcpt-1", body_hash=streamed(), name_upstream=True).receipt is True
+    assert with_one.check("req_9", sent_at=SENT, receipt_id="rcpt-1", body_hash=streamed(), name_upstream=True).receipt is True
     without = receipt_client(tied="statement", with_receipt=False)
-    found = without.check("req_9", receipt_id="rcpt-1", body_hash=streamed())
+    found = without.check("req_9", sent_at=SENT, receipt_id="rcpt-1", body_hash=streamed())
     assert (found.mark, found.receipt) == ("verified", False)          # verified all the same
-    mark = without.check_reply("req_9", receipt_id="rcpt-1", body_hash=streamed())
+    mark = without.check_reply("req_9", sent_at=SENT, receipt_id="rcpt-1", body_hash=streamed())
     assert mark == "verified" and mark.receipt is False
-    assert without.check("req_9", receipt_id="rcpt-1", body_hash=streamed(), name_upstream=True).receipt is False
+    assert without.check("req_9", sent_at=SENT, receipt_id="rcpt-1", body_hash=streamed(), name_upstream=True).receipt is False
     unread = receipt_client(tied="none")                               # a receipt came, with no keys kept to read it by
-    assert unread.check("req_9", receipt_id="rcpt-1", body_hash=streamed()).receipt is False
+    assert unread.check("req_9", sent_at=SENT, receipt_id="rcpt-1", body_hash=streamed()).receipt is False
     rebuilt = receipt_client("TEE/gemma-4-31b-it", tied="statement")
-    found = rebuilt.check("req_9", receipt_id="rcpt-1", body_hash=streamed(b"other bytes"))
+    found = rebuilt.check("req_9", sent_at=SENT, receipt_id="rcpt-1", body_hash=streamed(b"other bytes"))
     assert (found.mark, found.receipt) == ("signed", True)
 
 
