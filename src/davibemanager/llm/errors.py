@@ -3,7 +3,7 @@
 openai 3.38 and later put only the body's "message" in an error's text ("Error code: 400 - This
 request is too long for the model's context window.") and nothing of a body that isn't JSON
 ("Error code: 400"): the code ("context_length_exceeded") and a plain-text answer ("prompt is too
-long: … tokens > … maximum") are in `.body` alone. 3.37 (the lock's) wrote the whole body into the
+long: … tokens > … maximum") are in `.body` alone. 3.37 and earlier wrote the whole body into the
 text, uncut; the Anthropic library still does. So every reader of an error's words goes through
 here: error_words to match them, shown_error to show them.
 """
