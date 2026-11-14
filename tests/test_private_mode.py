@@ -113,6 +113,30 @@ def test_detection():
     assert detect_tier("TEE/glm-5.3", BASE) == "tee"
 
 
+async def test_the_relays_address_carries_no_user_name_or_password_written_into_the_providers():
+    """httpx sends a user name and password written into an address as Basic authentication: the relay (the
+    preflight, the model list, the sealed request, the SDK's attestation fetches) was sent them with every request,
+    beside the key (DA Toolkit's private_mode.relay_url)."""
+    from davibemanager.config import Config, Provider
+    from davibemanager.models import Models
+
+    assert relay_url("https://alice:s3cret@nano-gpt.com/api/v1") == RELAY
+    assert relay_url("https://alice@nano-gpt.com:443/api/v1") == "https://nano-gpt.com:443/api/v1/private/tinfoil"
+    cfg = Config(providers=[Provider("NanoGPT", "https://alice:s3cret@nano-gpt.com/api/v1")])
+    m = Models(cfg, save_config=lambda c: None, emit=lambda *a, **k: None, log=lambda *a, **k: None)
+    m.key = lambda prov: "sk-test"
+    client = m.client(cfg.providers[0], "private/glm-5-3")
+    assert client.enclave.relay == RELAY and "s3cret" not in client.enclave.relay
+    seen = []
+
+    def relay(request):
+        seen.append(request)
+        return httpx.Response(200, json={"data": [{"id": "private/glm-5-3"}]})
+    client._plain = httpx.AsyncClient(transport=httpx.MockTransport(relay))
+    await client.check_offered("private/glm-5-3")
+    assert seen and all("authorization" not in r.headers and "s3cret" not in str(r.url) for r in seen)
+
+
 async def test_sealed_request_protocol():
     relay = Relay()
     client = relay.client()

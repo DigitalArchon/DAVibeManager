@@ -58,7 +58,7 @@ from urllib.parse import urlparse
 import httpx
 from openai.types.chat import ChatCompletionChunk
 
-from ..netpolicy import check_key, check_url, is_local_host
+from ..netpolicy import check_key, check_url, is_local_host, without_password
 from . import sdk_guard
 from .capabilities import norm_id
 from .client import StreamAccumulator, is_private_mode, read_lines
@@ -140,7 +140,10 @@ def offers_private_mode(base_url: str) -> bool:
 
 
 def relay_url(base_url: str) -> str:
-    parsed = urlparse(base_url)
+    """The relay's address, without a user name and password written into the provider's: NanoGPT's relay
+    takes the API key, never those, and httpx would have sent them as Basic authentication with every request
+    (the Tinfoil SDK's attestation fetches too), beside the key (DA Toolkit's private_mode.relay_url)."""
+    parsed = urlparse(without_password(base_url))
     return f"{parsed.scheme}://{parsed.netloc}{RELAY_PATH}"
 
 
