@@ -27,8 +27,11 @@ dependencies = [
     "tomli-w>=1.0",
     # attached images are re-encoded from pixels only (safety/images.py)
     "pillow>=10",
-    # TEE attestation (llm/tee.py, dcap.py, nras.py)
-    "cryptography>=42",
+    # TEE attestation (llm/tee.py, dcap.py, nras.py), and under Private Mode's seal (tinfoil,
+    # tinfoil-ehbp, pyhpke), sigstore and the keyring: 50.0.2, what the AppImage's lock ships, for a
+    # source install too, so a pip install never stands on an older one (the floor every DA app sets,
+    # Nov 2026; tests/test_appimage_packaging.py holds the lock to it)
+    "cryptography>=50.0.2",
     # TEE attestation requests, the gateway's model forwarder
     "httpx>=0.27",
     # NanoGPT sends brotli-compressed replies; the OpenAI SDK's HTTP layer needs Brotli >= 1.2

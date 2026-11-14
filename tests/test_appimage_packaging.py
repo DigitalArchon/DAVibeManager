@@ -89,7 +89,7 @@ def test_the_lock_meets_every_floor_pyproject_sets():
         return tuple(int(part) for part in re.findall(r"\d+", text))
     deps = tomllib.loads((ROOT / "pyproject.toml").read_text())["project"]["dependencies"]
     floors = [re.match(r"([A-Za-z0-9_.-]+)>=([0-9.]+)$", d).groups() for d in deps if re.match(r"[\w.-]+>=[\d.]+$", d)]
-    assert ("pyasn1", "0.6.5") in floors and ("dnspython", "2.9.0") in floors
+    assert ("pyasn1", "0.6.5") in floors and ("dnspython", "2.9.0") in floors and ("cryptography", "50.0.2") in floors
     pins = {re.sub(r"[-_.]+", "-", n).lower(): v for n, v in
             re.findall(r"^([A-Za-z0-9_.-]+)==([^\s\\]+)", (PACKAGING / "requirements.lock").read_text(), re.M)}
     for name, floor in floors:
