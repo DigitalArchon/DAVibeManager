@@ -3,19 +3,21 @@
 from __future__ import annotations
 
 import codecs
+import contextvars
 import hashlib
-import json
 import re
 import time
 from dataclasses import dataclass, field
 from typing import AsyncIterator
 from urllib.parse import urlparse
 
+import httpx
 from openai import APIError, AsyncOpenAI, DefaultAsyncHttpxClient, Timeout
 from openai.types.chat import ChatCompletionChunk
 
 from ..netpolicy import check_key, check_url, is_local_host, shown
-from .secure_http import ProviderError, local_http_options
+from .secure_http import (ACCEPT_ENCODING, MAX_BODY_BYTES, MAX_ERROR_BYTES, ProviderError, encoded, loads,
+                          local_http_options, too_much)
 
 # standard: plaintext to a cloud provider. tee: runs in an enclave, but the prompt passes the
 # provider's gateway in the clear. e2ee: sealed on this machine to an attested enclave's key
@@ -85,6 +87,40 @@ def _actual_tier(model_id: str, base_url: str) -> str:
     return "standard"
 
 
+# The fields of a chat completions message. A message in the conversation may carry more for
+# another API (an Anthropic turn's own content blocks, "native"; the state it was answered
+# under, "state_before": llm/anthropic_api.py), which an OpenAI-compatible provider never sees.
+OPENAI_MESSAGE_KEYS = ("role", "content", "tool_calls", "tool_call_id", "name")
+# The reply sent for a tool call the conversation never answered (a case saved before the
+# engine answered every call): a request with an unanswered call is refused.
+NO_RESULT = "(no result: the turn ended before this tool call was answered)"
+
+
+def openai_messages(messages: list[dict]) -> list[dict]:
+    """`messages` as chat completions takes them: anything another API keeps on them left out,
+    every tool call answered before the next message (as anthropic_api.render does), and no
+    tool message that answers no call."""
+    out: list[dict] = []
+    pending: list[str] = []          # tool call ids of the last assistant message not yet answered
+    for m in messages:
+        role = m.get("role")
+        if role == "tool":
+            if m.get("tool_call_id") not in pending:
+                # An answer to no call of the assistant message before it (a case saved mid-turn
+                # by an earlier version, its answers added after a later message): a provider
+                # refuses the whole request for one, so it is left out. The call itself was
+                # answered in its place, with NO_RESULT.
+                continue
+            pending.remove(m.get("tool_call_id"))
+        elif pending:
+            out += [{"role": "tool", "tool_call_id": i, "content": NO_RESULT} for i in pending]
+            pending = []
+        out.append(m if all(k in OPENAI_MESSAGE_KEYS for k in m) else {k: v for k, v in m.items() if k in OPENAI_MESSAGE_KEYS})
+        if role == "assistant":
+            pending = [c.get("id") for c in m.get("tool_calls") or []]
+    return out + [{"role": "tool", "tool_call_id": i, "content": NO_RESULT} for i in pending]
+
+
 @dataclass
 class ToolCall:
     id: str
@@ -92,7 +128,7 @@ class ToolCall:
     arguments: str  # raw JSON text as streamed
 
     def parsed(self) -> dict:
-        return json.loads(self.arguments or "{}")
+        return loads(self.arguments or "{}")
 
 
 @dataclass
@@ -133,6 +169,15 @@ def only_what_it_was_given(sdk_client) -> None:
         sdk_client._ambient_authorizations = frozenset()
 
 
+def reading_options(base_url: str) -> dict:
+    """`local_http_options`, and what every client reading a provider's answers takes (httpx's, or
+    an SDK's, which is httpx2's): only gzip and deflate asked for (secure_http.ACCEPT_ENCODING; httpx
+    asks for br too whenever brotli is installed, whose output per piece has no bound), and its
+    bodies read only so far (`capped_lines`)."""
+    return {"headers": {"Accept-Encoding": ACCEPT_ENCODING}, "event_hooks": {"response": [capped_lines]},
+            **local_http_options(base_url)}
+
+
 class _OpenAI(AsyncOpenAI):
     """OpenAI's client, sending only what it was given here (only_what_it_was_given)."""
 
@@ -154,7 +199,7 @@ class LLMClient:
         self._client = _OpenAI(base_url=base_url, api_key=api_key or "not-needed", max_retries=1,
                                timeout=Timeout(300, connect=CONNECT_TIMEOUT),
                                http_client=http_client or DefaultAsyncHttpxClient(
-                                   follow_redirects=False, **local_http_options(base_url)))
+                                   follow_redirects=False, **reading_options(base_url)))
 
     async def list_models(self) -> list[str]:
         page = await self._client.models.list()
@@ -204,7 +249,7 @@ class LLMClient:
                 acc.result.tee_route = headers.get("x-tee-verification-route")
             yield "open", None                 # the provider took it, and its reply has begun
             done = seen = False
-            async for line in read_lines(response.iter_bytes(), digest):
+            async for line in read_lines(response.iter_bytes(), digest, response.http_request.url):
                 if done or not line.startswith("data:"):
                     continue
                 seen = True
@@ -213,7 +258,7 @@ class LLMClient:
                     done = True                # read on (nothing after it is taken): the hash covers it all
                     continue
                 try:
-                    parsed = json.loads(data)
+                    parsed = loads(data)
                 except ValueError:
                     raise RuntimeError(f"the provider's stream held a line that isn't JSON: {data[:200]!r}") from None
                 if not isinstance(parsed, dict):
@@ -252,7 +297,11 @@ class LLMClient:
                     self.last_reply = value
                     self.last_usage = value.usage       # what it cost (Engine.spend)
             return text
-        resp = await self._client.chat.completions.create(model=model, messages=messages, **_split_params(params))
+        whole = WHOLE_BODY.set(True)        # a reply not streamed: read no further than MAX_BODY_BYTES
+        try:
+            resp = await self._client.chat.completions.create(model=model, messages=messages, **_split_params(params))
+        finally:
+            WHOLE_BODY.reset(whole)
         self.last_usage = resp.usage.model_dump() if resp.usage else None     # what it cost (Engine.spend)
         return resp.choices[0].message.content or ""
 
@@ -285,13 +334,20 @@ def _cut_off(response) -> ProviderError:
     )
 
 
-async def read_lines(chunks, digest=None) -> AsyncIterator[str]:
-    """The stream's lines (split at CRLF, CR or LF, and nowhere else: a JSON string may hold U+2028 or U+0085
-    unescaped), each byte also fed to `digest` as it arrives, decoded of any content encoding (the bytes the
-    receipt's hash is of: SealedLore's openai_compat._lines). Each piece is split once, so a long line costs its
-    length and no more: the whole of what had come was split again at every piece, so a line that never ended took
-    time growing with its square. A line past MAX_LINE_CHARS is a ProviderError, with nothing more read
-    (SealedLore's providers/streaming.read_lines)."""
+def too_long(url) -> ProviderError:
+    """A provider sent a line of more than MAX_LINE_CHARS with no end."""
+    return ProviderError(f"{shown(str(url))} sent a line of more than {MAX_LINE_CHARS // (1024 * 1024)} MB "
+                         "with no end, which isn't a reply; it was not read further.")
+
+
+async def read_lines(chunks, body=None, url="the provider") -> AsyncIterator[str]:
+    """The stream's lines (ended by CRLF, CR or LF, as an event stream's are, and nothing else),
+    each byte also fed to `body` (a hash) as it arrives, decoded of any transfer encoding
+    (SealedLore's providers/openai_compat._lines). Each piece is split once, so a long line costs
+    its length and no more: the line so far was joined to each piece that came and split again,
+    whole, which took time growing with the square of its length; and a line past MAX_LINE_CHARS
+    is a ProviderError, nothing more read (SealedLore's streaming.read_lines). `chunks`: the
+    response's bytes as they arrive; `url`: where they came from, for the error."""
     decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
     line: list[str] = []            # the line not yet ended, in the pieces it came in
     length = 0
@@ -304,23 +360,22 @@ async def read_lines(chunks, digest=None) -> AsyncIterator[str]:
         held_cr = not final and text.endswith("\r")
         if held_cr:
             text = text[:-1]
-        done: list[str] = []
+        out = []
         parts = _NEWLINE.split(text)
         for index, part in enumerate(parts):
             length += len(part)
             if length > MAX_LINE_CHARS:
-                raise ProviderError(f"the provider sent a line of more than {MAX_LINE_CHARS // (1024 * 1024)} MB with "
-                                    "no end; not read")
+                raise too_long(url)
             line.append(part)
             if index < len(parts) - 1:
-                done.append("".join(line))
+                out.append("".join(line))
                 line.clear()
                 length = 0
-        return done
+        return out
 
     async for chunk in chunks:
-        if digest is not None:
-            digest.update(chunk)
+        if body is not None:
+            body.update(chunk)
         for done in ended(decoder.decode(chunk), final=False):
             yield done
     for done in ended(decoder.decode(b"", final=True), final=True):
@@ -328,6 +383,56 @@ async def read_lines(chunks, digest=None) -> AsyncIterator[str]:
     if line and length:
         yield "".join(line)
 
+
+# Set while a reply that isn't streamed is asked for (LLMClient.complete, and the like): its body
+# is read no further than MAX_BODY_BYTES whatever its content type says (`capped_lines`).
+WHOLE_BODY: contextvars.ContextVar[bool] = contextvars.ContextVar("whole_body", default=False)
+
+
+async def capped_lines(response: httpx.Response) -> None:
+    """A response hook for every client reading a provider's answers (OpenAI's and Anthropic's SDKs',
+    and the app's own: `reading_options`): whatever is read of it (the Messages API's event stream, a
+    reply not streamed, a model list) is read no further than MAX_LINE_CHARS without a line's end, as
+    the streams this app reads are (`read_lines`). Counted in the bytes as decoded of any content
+    encoding, which is what the SDK holds: a few compressed megabytes can be a line of gigabytes. The
+    SDK's own readers keep a line until it ends, joining each piece to what came before.
+
+    And as every DA app reads an answer (Nov 2026): one compressed in a way that wasn't asked for
+    (br, zstd: secure_http.ACCEPT_ENCODING) is refused unread; an error's body is read to
+    MAX_ERROR_BYTES and no further, the rest left unread; and a body that isn't an event stream (or
+    one asked for whole: WHOLE_BODY) to MAX_BODY_BYTES in all. A refusal raises out of the SDK's
+    reading as it is."""
+    coding = encoded(response)
+    if coding:
+        raise ProviderError(f"{shown(str(response.request.url))} sent its answer compressed as "
+                            f"{coding[:20]!r}, which wasn't asked for; it was not read.",
+                            status_code=response.status_code)
+    read = response.aiter_bytes
+    error = response.status_code >= 400
+    stream = (not WHOLE_BODY.get()
+              and str(response.headers.get("content-type", "")).lower().startswith("text/event-stream"))
+    limit = MAX_ERROR_BYTES if error else None if stream else MAX_BODY_BYTES
+
+    async def aiter_bytes(chunk_size: int | None = None) -> AsyncIterator[bytes]:
+        run = total = 0
+        pieces = read(chunk_size)
+        try:
+            async for chunk in pieces:
+                if limit is not None and total + len(chunk) > limit:
+                    if error:
+                        yield chunk[:limit - total]     # an error's first words, the rest left unread
+                        await response.aclose()
+                        return
+                    raise too_much(response, limit)
+                total += len(chunk)
+                end = max(chunk.rfind(b"\n"), chunk.rfind(b"\r"))
+                run = len(chunk) - end - 1 if end >= 0 else run + len(chunk)
+                if run > MAX_LINE_CHARS:
+                    raise too_long(response.request.url)
+                yield chunk
+        finally:
+            await pieces.aclose()
+    response.aiter_bytes = aiter_bytes     # read (aread, aiter_lines, the SDKs' streams) through it
 
 
 # provider extensions sent in the request body, whatever the SDK version knows about:

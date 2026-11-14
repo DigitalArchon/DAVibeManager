@@ -406,8 +406,7 @@ def _fetch(
     With `unread` (a quote's verification: `_verify`), what is fetched is put there and not in
     the cache: `_keep` caches it once all of it has been read and its signatures checked. Cached
     as it arrived, an answer that couldn't be read (a proxy's or a portal's page with a 200)
-    refused every quote for the hour, long after Intel's service answered again (DA Toolkit's
-    review, Nov 2026)."""
+    refused every quote for the hour, long after Intel's service answered again."""
     key = (url, tuple(sorted((params or {}).items())))
     if unread is not None and key in unread:
         return unread[key]

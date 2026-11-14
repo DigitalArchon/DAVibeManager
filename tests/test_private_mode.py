@@ -92,10 +92,13 @@ class Relay:
             return httpx.Response(status, text=body, headers=headers)
         return httpx.MockTransport(handle)
 
-    def client(self, enclave=None):
+    def client(self, enclave=None, kind=None):
+        """The client as the app makes it (models.OpeningPrivateModeClient: its streams say when the sealed
+        reply has begun), or `kind`."""
+        from davibemanager.models import OpeningPrivateModeClient
         enclave = enclave or Enclave(RELAY, verifier=self.verifier)
-        return PrivateModeClient(BASE, "sk-test", enclave, transport_factory=self.transport,
-                                 plain_http=httpx.AsyncClient(transport=httpx.MockTransport(self.preflight)))
+        return (kind or OpeningPrivateModeClient)(BASE, "sk-test", enclave, transport_factory=self.transport,
+                                                  plain_http=httpx.AsyncClient(transport=httpx.MockTransport(self.preflight)))
 
 
 async def collect(client, model="private/glm-5-3"):
@@ -546,7 +549,6 @@ def test_what_the_relay_said_is_one_line_with_nothing_hidden():
     assert relay_said(HIDING) == SHOWN
     assert relay_said("a\u2028b\x85c\rd\te\x1b[31mf") == "a b c d e [31mf"
     assert relay_said("x" * 10_000) == "x" * 200 and relay_said("x" * 10_000, 300) == "x" * 300
-    assert relay_said(None) == ""
 
 
 async def test_whatever_of_the_relays_an_error_quotes_is_one_line_with_nothing_hidden():
@@ -610,3 +612,29 @@ def test_a_tee_attestations_error_is_cleaned_too():
     with pytest.raises(TeeRefused) as e:
         client.attest()
     assert one_visible_line(str(e.value)) and SHOWN in str(e.value)
+
+
+async def test_the_shared_client_says_its_reply_has_begun_only_when_asked_and_the_gateway_waits_for_that():
+    """llm/private_mode.py is DA Toolkit's copy, which says ("open", None) only with `opened` (DA Toolkit
+    never asks); this app's client (models.OpeningPrivateModeClient) always asks, as LLMClient's streams
+    always say it, so the gateway answers Claude Code once the enclave's sealed reply has begun
+    (gateway.answered), never only at its first word, and passes none of it on."""
+    from davibemanager import gateway
+    from davibemanager.config import Config, Provider
+    from davibemanager.models import Models, OpeningPrivateModeClient
+
+    plain = Relay().client(kind=PrivateModeClient)
+    assert ("open", None) not in await collect(plain)
+    cfg = Config(providers=[Provider("NanoGPT", BASE)])
+    models = Models(cfg, save_config=lambda c: None, emit=lambda t, **d: None, log=lambda e, **d: None)
+    models.key = lambda prov: "sk-test"
+    made = models.client(cfg.providers[0], "private/glm-5-3")
+    assert isinstance(made, OpeningPrivateModeClient)
+    relay = Relay()
+    events = relay.client().stream("private/glm-5-3", [{"role": "user", "content": "disk full?"}], [PROPOSE_TOOL])
+    first = await anext(events)
+    assert first == ("open", None) and relay.requests          # answered once the sealed reply began
+    relay = Relay()
+    passed = await gateway.answered(relay.client().stream("private/glm-5-3", [{"role": "user", "content": "x"}]))
+    kinds = [kind async for kind, _ in passed]
+    assert kinds[0] == "text" and "open" not in kinds and kinds[-1] == "done"

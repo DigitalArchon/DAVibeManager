@@ -12,7 +12,6 @@ from __future__ import annotations
 import asyncio
 import re
 import time
-from dataclasses import asdict
 from typing import Callable
 
 from . import config as config_mod
@@ -40,9 +39,21 @@ REVIEWER_PREFERENCE = (r"glm", r"deepseek", r"kimi", r"qwen", r"gpt-oss", r"llam
 
 def upstream_view(upstream: tee_mod.TeeUpstream) -> dict:
     """Who ran a TEE reply's model (llm/tee.py served_by), as its check's event carries it: RedPill's record
-    as read, the provider's name as the mark shows it ("Phala"), and what it means for the mark's tooltip."""
-    return {**asdict(upstream), "label": tee_mod.upstream_label(upstream) if upstream.name else "",
-            "words": tee_mod.upstream_words(upstream)}
+    as read, the provider's name as the mark shows it ("Phala"), and what it means for the mark's tooltip
+    (TeeUpstream.to_dict: the session it was, and whether api.redpill.ai was asked, too)."""
+    return upstream.to_dict()
+
+
+class OpeningPrivateModeClient(PrivateModeClient):
+    """The Private Mode client as this app uses it: every stream says ("open", None) once the enclave's
+    sealed reply has begun, as LLMClient's streams do once a provider has taken a request, so the gateway
+    answers Claude Code then (gateway.answered) and not only at the reply's first word. The shared client
+    (llm/private_mode.py, one copy with DA Toolkit's) says it when asked (`opened`); this is where it is
+    asked, outside that copy."""
+
+    def stream(self, model: str, messages: list[dict], tools: list[dict] | None = None,
+               params: dict | None = None, *, opened: bool = True):
+        return super().stream(model, messages, tools, params, opened=opened)
 
 
 class UserError(Exception):
@@ -238,7 +249,8 @@ class Models:
                 enclave = self._enclaves[prov.name] = Enclave(relay_url(prov.base_url),
                                                               on_attested=lambda att: self._private_attested(prov, att))
         try:
-            return PrivateModeClient(prov.base_url, key, enclave) if is_private_mode(model) else LLMClient(prov.base_url, key)
+            return (OpeningPrivateModeClient(prov.base_url, key, enclave) if is_private_mode(model)
+                    else LLMClient(prov.base_url, key))
         except (InsecureURL, UnusableKey) as e:
             raise UserError(str(e)) from None
 

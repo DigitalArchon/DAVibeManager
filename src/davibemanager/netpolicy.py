@@ -163,6 +163,11 @@ def is_local_host(host: str | None) -> bool:
     return ip is not None and any(ip in net for net in _PRIVATE_NETS)
 
 
+# The name DA Toolkit's netguard gives it, which the TEE and Private Mode clients copied from DA Toolkit
+# (llm/tee.py, llm/private_mode.py: one copy for the family) call it by.
+is_local = is_local_host
+
+
 def is_secure(url: str) -> bool:
     """https anywhere, or http to a local address. Never one with a space, a backslash or a control character
     in it (UNSAFE), which another parser may read as somewhere else."""
@@ -197,6 +202,12 @@ def check_url(url: str, what: str = "This address") -> str:
             "network. Use its https:// address instead."
         )
     return url
+
+
+def check(url: str) -> str:
+    """`check_url` as DA Toolkit's netguard.check is called (the shared TEE and Private Mode clients):
+    `url` stripped if the app may use it, else InsecureURL saying why."""
+    return check_url(url)
 
 
 _NAT64 = ipaddress.ip_network("64:ff9b::/96")

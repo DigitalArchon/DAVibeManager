@@ -27,7 +27,7 @@ from davibemanager.llm.ethsig import (
 from davibemanager.llm.secure_http import ProviderError
 from davibemanager.llm.tee import (
     GPUS_LOOSE,
-    MODEL_ENCLAVE_UNCHECKED,
+    OWN_ENCLAVE_UNCHECKED,
     NRAS_URL,
     RECEIPT_KEYS_LOOSE,
     TeeClient,
@@ -221,8 +221,9 @@ def test_nvidia_unreachable_is_partial_and_nvidia_rejecting_is_refused():
     assert besides_receipts(keys) == ["NVIDIA signature unchecked"]
     with pytest.raises(TeeRefused, match="NVIDIA rejected"):
         client_for(nras_status=400).attest()
-    with pytest.raises(TeeRefused, match="NVIDIA rejected"):
-        client_for(gpu=False, nvidia=nras.KeysUnavailable("no keys")).attest()
+    # A verdict that says no without NVIDIA's keys: nras.verify refuses it (see
+    # test_with_nvidias_keys_out_of_reach_a_verdict_that_says_no_is_refused). The copy of llm/tee.py
+    # read the verdict again itself until it became DA Toolkit's (Nov 2026).
     with pytest.raises(TeeRefused, match="GPU attestation failed: .*nonce"):
         client_for(nvidia=nras.NrasError("not made for this request's nonce")).attest()
 
@@ -941,6 +942,24 @@ def _real_client(real, monkeypatch, **server):
                      nvidia=lambda a, n, s: nras.verify(a, n, s, now=real["now"]))
 
 
+def test_with_nvidias_keys_out_of_reach_a_verdict_that_says_no_is_refused(real, monkeypatch):
+    """The whole real attestation, NVIDIA's keys out of reach: partial, the signature named; a verdict
+    that says no is refused all the same, by nras.verify itself (DA Toolkit's test, Nov 2026)."""
+    monkeypatch.setitem(nras._keys, "keys", {})
+    result = _real_client(real, monkeypatch, jwks={"no": "keys"}).attest()
+    assert result.level == "partial" and "NVIDIA signature unchecked" in result.shortfalls
+    nras._keys.update(at=0.0, keys={})
+    label, overall = real["nras_answer"][0]
+    part = overall.split(".")[1]
+    claims = json.loads(base64.urlsafe_b64decode(part + "=" * (-len(part) % 4)))
+    claims["x-nvidia-overall-att-result"] = False
+    header, _, signature = overall.split(".")
+    said_no = f"{header}.{base64.urlsafe_b64encode(json.dumps(claims).encode()).decode().rstrip('=')}.{signature}"
+    rejected = {**real, "nras_answer": [[label, said_no], real["nras_answer"][1]]}
+    with pytest.raises(TeeRefused, match="GPU attestation failed: NVIDIA rejected the GPU evidence"):
+        _real_client(rejected, monkeypatch, jwks={"no": "keys"}).attest()
+
+
 REDPILL = {"api_version": "aci/1", "service_capabilities": {"serving": "aggregator"},
            "attestation": {"workload_keyset": {"not_after": 4102444800}}}      # (2100)
 
@@ -951,8 +970,9 @@ def test_redpills_gateway_is_attested_only_in_part_and_its_expired_keys_are_refu
     result = _real_client(real, monkeypatch, extra=REDPILL).attest()
     assert result.level == "partial" and result.shortfalls == [
         RECEIPT_KEYS_LOOSE, "the model's own enclave unchecked (RedPill's gateway)", GPUS_LOOSE]
-    # the relay's JSON calls it RedPill's gateway, but no gateway report binds its key: not shown to be one
-    assert result.attested == "enclave"
+    # the relay's report says it is RedPill's (aci/1, an aggregator): what is attested is the gateway, said so
+    # wherever it is shown (DA Toolkit's copy of llm/tee.py, the one copy since Nov 2026; SealedLore 9af15c1)
+    assert result.attested == "gateway" and result.headline == "TEE gateway attested"
     assert result.gpus == 8 and result.tcb_status == "UpToDate"
     expired = {**REDPILL, "attestation": {"workload_keyset": {"not_after": 1_700_000_000}}}
     with pytest.raises(TeeRefused, match="attested keys expired"):
@@ -970,8 +990,8 @@ async def test_a_tee_model_attested_in_part_is_said_once(real, monkeypatch):
     for _ in range(2):
         m._tee.clear()
         assert (await m.tee_guard(cfg.providers[0], real["model"]))["level"] == "partial"
-    assert len(told) == 1 and told[0].startswith(f"{real['model']}: TEE attested, only in part (")
-    assert "Attested: the enclave whose key signs" in told[0] and "private model" in told[0]
+    assert len(told) == 1 and told[0].startswith(f"{real['model']}: TEE gateway attested, only in part (")
+    assert "Attested: RedPill's TEE gateway" in told[0] and "a private/ model" in told[0]
 
 
 # --- receipts: a reply's exact bytes and its upstream (Nov 2026; SealedLore's tests) ---------------
@@ -1236,7 +1256,8 @@ def test_a_keyset_the_quote_binds_itself_is_taken_and_one_tied_neither_way_is_no
     bound = receipt_client(tied="statement")
     assert bound.keyset is not None
     result = bound.attest()
-    assert result.shortfalls == [GPUS_LOOSE], "RedPill's own form binds the receipt keys"
+    # RedPill's own form binds the receipt keys; what it binds is the gateway's, the model's host its word
+    assert result.shortfalls == [OWN_ENCLAVE_UNCHECKED, GPUS_LOOSE], "RedPill's own form binds the receipt keys"
     assert result.attested == "gateway", "the keyset is the gateway's"
     loose = receipt_client(tied="none")
     assert loose.keyset is None
@@ -1375,7 +1396,7 @@ def test_the_gateways_report_binds_the_receipt_keys_and_only_the_model_behind_it
     result = client.attest()
     # the signing key is in the keyset the gateway's quote binds: the gateway's, so the model behind it unchecked,
     # and the GPUs the quote doesn't name
-    assert result.level == "partial" and result.shortfalls == [MODEL_ENCLAVE_UNCHECKED, GPUS_LOOSE]
+    assert result.level == "partial" and result.shortfalls == [OWN_ENCLAVE_UNCHECKED, GPUS_LOOSE]
     assert "binds its receipt keys" in result.detail
     # what was attested is the gateway
     assert result.attested == "gateway"
@@ -1434,7 +1455,7 @@ def test_the_gateway_stands_in_for_a_model_whose_own_evidence_was_relayed():
     receipts."""
     client = receipt_client(aci="bound", plain=lambda nonce: (200, RELAYED))
     result = client.attest()
-    assert result.level == "partial" and result.shortfalls == ["no GPU evidence", MODEL_ENCLAVE_UNCHECKED]
+    assert result.level == "partial" and result.shortfalls == ["no GPU evidence", OWN_ENCLAVE_UNCHECKED]
     assert "the gateway that answers it is attested instead" in result.detail
     assert result.attested == "gateway"
     assert client.check_reply("req_9", sent_at=SENT, receipt_id="rcpt-1", body_hash=streamed()) == "verified"
@@ -1448,7 +1469,7 @@ def test_through_the_gateway_alone_a_reply_without_a_receipt_is_not_verified():
     model's own enclave answered. A record with no receipt was "verified" all the same, as for a model attested
     itself (SealedLore's test, dd39efc)."""
     bare = receipt_client(aci="bound", plain=lambda nonce: (200, RELAYED), with_receipt=False)
-    assert bare.attest().shortfalls == ["no GPU evidence", MODEL_ENCLAVE_UNCHECKED]
+    assert bare.attest().shortfalls == ["no GPU evidence", OWN_ENCLAVE_UNCHECKED]
     with pytest.raises(ProviderError, match="no receipt"):
         bare.check_reply("req_9", sent_at=SENT, receipt_id="rcpt-1", body_hash=streamed())
     # nor with a keyset too loose to read one under (it names no time it holds until): the receipt that came
@@ -1491,7 +1512,7 @@ def test_a_slow_attestation_is_asked_again_with_a_new_nonce_then_the_gateway_sta
     receipt_client(aci="bound", plain=once)
     assert len(asked) == 2 and asked[0] != asked[1]
     always = receipt_client(aci="bound", plain=lambda nonce: (504, timeout))
-    assert always.attest().shortfalls == ["no GPU evidence", MODEL_ENCLAVE_UNCHECKED]
+    assert always.attest().shortfalls == ["no GPU evidence", OWN_ENCLAVE_UNCHECKED]
     with pytest.raises(TeeRefused, match="provider's side"):
         receipt_client(aci="400", plain=lambda nonce: (504, timeout))
 
@@ -1512,13 +1533,13 @@ def test_only_a_relay_or_a_timeout_has_the_gateway_stand_in():
 def test_a_chutes_model_with_the_gateway_checks_the_replies_redpill_answers(instances):
     """Chutes answers first and signs nothing; a reply RedPill answers instead names its receipt, checked
     against the gateway's bound keys."""
-    from davibemanager.llm.tee import GATEWAY_UNCHECKED, MODEL_ENCLAVE_UNCHECKED
+    from davibemanager.llm.tee import GATEWAY_UNCHECKED, OWN_ENCLAVE_UNCHECKED
 
     client = receipt_client(model="TEE/glm-5.1", aci="bound", plain=lambda nonce: (200, instances.body(nonce)))
     result = client.attest()
     # a request may go through the gateway, whose host is its word: short of that, as any the gateway answers
-    assert result.level == "partial" and result.instances and result.shortfalls == [MODEL_ENCLAVE_UNCHECKED]
-    assert "host is the gateway's word" in result.detail
+    assert result.level == "partial" and result.instances and result.shortfalls == [OWN_ENCLAVE_UNCHECKED]
+    assert "then the gateway's word in its receipt" in result.detail
     assert client.check_reply("req_9", sent_at=SENT, receipt_id="rcpt-1", body_hash=streamed()) == "verified"
     with pytest.raises(ProviderError, match="signs no replies"):
         client.check_reply("req_9", sent_at=SENT, body_hash=streamed())
@@ -1625,7 +1646,7 @@ async def test_a_model_attested_through_the_gateway_alone_is_said_in_part_and_it
     assert len(partial) == 1 and "no GPU evidence" in partial[0] and "own enclave unchecked" in partial[0]
     # what was attested is said, and what that leaves to the gateway's word (SealedLore's, Nov 11 2026)
     assert partial[0].startswith("TEE/glm-5.3-flash: TEE gateway attested, only in part (")
-    assert "That machine isn't attested by this app" in partial[0] and "in the clear" in partial[0]
+    assert "That machine isn't attested by DA Vibe Manager" in partial[0] and "in the clear" in partial[0]
     lookups = [r for r in seen if "/tee/signature/" in str(r.url)]
     assert lookups and all(r.headers.get("X-TEE-Verification-Route") == "r9" for r in lookups)
     assert not [r for r in seen if "/tee/attestation" in str(r.url) and "X-TEE-Verification-Route" in r.headers]

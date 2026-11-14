@@ -9,29 +9,40 @@ and usage.
 NanoGPT ships this as a Node proxy (`@nanogpt/private-mode`) run with `npx ...@latest`, so the
 code holding the plaintext would come from, and be updated by, the party the encryption is
 meant to keep out. Instead this module does what the proxy does using Tinfoil's own Python SDK,
-pinned exactly in pyproject.toml. One copy with DAToolkit's llm/private_mode.py (DAToolkit's is
-the source; port changes there first), after SealedLore's providers/private_mode.py:
+pinned exactly in pyproject.toml. The design follows SealedLore's providers/private_mode.py.
+This copy is the one DA Vibe Manager's and DA Private Coder's llm/private_mode.py are, line for
+line but their imports and names (each app's test_shared_code holds them to it): a change is made
+here first, then copied.
 
 1. **Attest** (`Enclave.current`): Tinfoil's `SecureClient.verify` fetches the attestation
    bundle through NanoGPT's relay and checks it against the hardware vendor's roots (AMD SEV-SNP
    or Intel TDX) and Sigstore's record of the router release. The report binds the enclave's
    HPKE key. The latest release is looked up from Tinfoil's GitHub; an older one is reported,
-   not refused, because rollouts lag. Every fetch the SDK makes follows a redirect only to https,
-   and never from the internet into this computer or its network (llm/sdk_guard.py).
+   not refused, because rollouts lag.
 2. **Preflight**: NanoGPT checks balance, reserves a charge and issues a cache scope. We send its
    sha256 as NanoGPT requires, but the sealed body carries **our own** random cache secret, so
    no one else (NanoGPT included) can probe our prompt cache.
 3. **Seal** the body with EHBP (HPKE X25519 + AES-GCM) to the attested key and decrypt the reply.
-   The transport refuses a 2xx reply that isn't sealed; we also refuse one NanoGPT doesn't mark
-   as Private Mode, and a stream that ends without its final chunk. What the relay says in an
-   error is never sealed, so it is said to be the relay's, short and on one line, without what a
-   reader can't see (`relay_said`): a refusal, a preflight's, an attestation error quoting the
-   bundle, the title of a key mismatch. Nothing is ever sent unsealed and nothing falls back to
-   the plain endpoint (`LLMClient` refuses `private/*`).
+   The transport refuses a 2xx reply that isn't sealed; we refuse any other reply that isn't
+   (EHBP passes one through as it came, so a reply the relay made itself, a 302 with a model's
+   answer in it, would otherwise pass for the enclave's), one NanoGPT doesn't mark as Private
+   Mode, and a stream that ends without its final chunk. An error the enclave sends inside the
+   seal partway through a reply (the context too long, say) is the model's own word, and is said
+   as it is (from DA Vibe Manager's copy, Nov 2026). What the relay says in an error is
+   never sealed, so it is said to be the relay's, short and on one line. Nothing is ever sent
+   unsealed and nothing falls back to the plain endpoint (`LLMClient` refuses `private/*`).
+   The last two from DA Vibe Manager's copy of this module (Nov 2026). Anything else of the
+   relay's an error quotes (a preflight refusal, an attestation bundle, the title of a key
+   mismatch) goes the same way, through `relay_said`, without what can't be seen. Every answer
+   is read only so far (llm/client.py capped_lines: gzip and deflate alone asked for, an error's
+   body to 64 KB, a whole one to 32 MB, a line to 32 MB) and its JSON nested no deeper than
+   secure_http.MAX_NESTING.
 
-The attestation is redone once it is five minutes old, on a clock that runs on while the computer
-sleeps (dcap.since_boot: one made before a suspend isn't taken for fresh after it), and once more
-if the enclave says the key has changed.
+The attestation is redone once it is five minutes old, once more if the enclave says the key
+has changed, and whenever the technician asks (the top bar's "Click to re-check":
+`Enclave.current(fresh=True)`). Its age is read off a clock that runs on while the machine
+sleeps (dcap.since_boot): time.monotonic stops, so a laptop woken after hours took an
+attestation made before it slept for minutes old.
 
 **Retired models.** The enclave is Tinfoil's router whatever the model, so a `private/` model
 NanoGPT no longer offers (private/glm-5-3-flash, Oct 2026) attests fine, and its first message
@@ -48,9 +59,9 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import re
 import secrets
 import time
-import unicodedata
 from dataclasses import asdict, dataclass
 from typing import AsyncIterator, Awaitable, Callable
 from urllib.parse import urlparse
@@ -58,12 +69,13 @@ from urllib.parse import urlparse
 import httpx
 from openai.types.chat import ChatCompletionChunk
 
-from ..netpolicy import check_key, check_url, is_local_host, without_password
+from .. import netpolicy as netguard
+from ..safety.hidden import visible
 from . import sdk_guard
 from .capabilities import norm_id
-from .client import StreamAccumulator, is_private_mode, read_lines
+from .client import StreamAccumulator, capped_lines, is_private_mode, openai_messages, read_lines
 from .dcap import since_boot
-from .secure_http import environment_proxy
+from .secure_http import ACCEPT_ENCODING, ProviderError, loads
 
 RELAY_PATH = "/api/v1/private/tinfoil"
 ROUTER_REPO = "tinfoilsh/confidential-model-router"
@@ -106,16 +118,13 @@ class ModelRetired(PrivateModeError):
 
 
 def relay_said(text: str, limit: int = 200) -> str:
-    """What NanoGPT's relay wrote (never sealed) as an error may quote it: one line, short, and
-    without what a reader can't see. Controls and line separators become spaces, format
-    characters (Unicode Cf: bidi overrides, zero-width and tag characters) go. Cut before it is
-    cleaned: an error body can be large. (DA Toolkit's relay_said, Nov 2026.)"""
-    kept = []
-    for ch in str(text or "")[:4096]:
-        category = unicodedata.category(ch)
-        if category != "Cf":
-            kept.append(" " if category in ("Cc", "Zl", "Zp") else ch)
-    return " ".join("".join(kept).split())[:limit]
+    """What NanoGPT's relay wrote, or an SDK error quoting it, as an error may say it: never
+    sealed, and shown, logged and, when a research run fails, given to the chat model as its
+    tool's result. So on one line, short, and without what can't be seen (safety/hidden.py:
+    control, bidi, zero-width and tag characters), so it can't pass for the model's words or
+    carry an instruction to it that the technician doesn't see. Cut before it is cleaned: an
+    error body can be 64 MiB."""
+    return " ".join(visible(re.sub(r"[\x00-\x1f\x7f\x85\u2028\u2029]", " ", text[:4096])).split())[:limit]
 
 
 def private_ids_in(body: object) -> list[str]:
@@ -135,15 +144,20 @@ def offered(model_id: str, ids: list[str]) -> bool | None:
     return any(norm_id(i) == key for i in ids)
 
 
+def _reading(**options) -> dict:
+    """What every client of the relay is made with: only gzip and deflate asked for, its answers read
+    only so far (llm/client.py capped_lines)."""
+    return {"headers": {"Accept-Encoding": ACCEPT_ENCODING}, "event_hooks": {"response": [capped_lines]}, **options}
+
+
 def offers_private_mode(base_url: str) -> bool:
     return (urlparse(base_url).hostname or "").lower() in PRIVATE_HOSTS
 
 
 def relay_url(base_url: str) -> str:
-    """The relay's address, without a user name and password written into the provider's: NanoGPT's relay
-    takes the API key, never those, and httpx would have sent them as Basic authentication with every request
-    (the Tinfoil SDK's attestation fetches too), beside the key (DA Toolkit's private_mode.relay_url)."""
-    parsed = urlparse(without_password(base_url))
+    """The relay's address, without a user name and password written into the provider's:
+    NanoGPT's relay takes the API key, never those."""
+    parsed = urlparse(netguard.without_password(base_url))
     return f"{parsed.scheme}://{parsed.netloc}{RELAY_PATH}"
 
 
@@ -191,15 +205,13 @@ def _hardware(document: dict) -> str:
 
 
 def tinfoil_verify(relay: str, cache_secret: str) -> Verified:
-    """Attest Tinfoil's router through NanoGPT's relay. Blocking network I/O: run in a thread."""
+    """Attest Tinfoil's router through NanoGPT's relay. Blocking network I/O: run in a thread.
+    The SDK's own fetches (the release and its Sigstore bundle, AMD's and Intel's collateral)
+    follow no redirect off https, nor one from the internet into this network (llm/sdk_guard.py)."""
     from tinfoil import SecureClient
     from tinfoil.github import fetch_latest_release
 
-    # The SDK fetches with bare requests, which follows a redirect anywhere, plain http included:
-    # its every fetch goes through a session that refuses one off https, or from the internet into
-    # this computer or its network (llm/sdk_guard.py), before anything is fetched.
-    sdk_guard.guard(is_local_host)
-
+    sdk_guard.guard(netguard.is_local)
     # The cache secret is passed explicitly, or the SDK would create one under ~/.tinfoil;
     # this client only verifies, it never sends a request.
     client = SecureClient(base_url=relay + "/", attestation_bundle_url=relay, transport="ehbp",
@@ -243,7 +255,8 @@ class Enclave:
     def __init__(self, relay: str, verifier: Verifier = tinfoil_verify,
                  clock: Callable[[], float] = since_boot, on_attested: Callable[[Attestation], None] | None = None):
         self.relay = relay
-        self._on_attested = on_attested     # each new attestation, for the log (and an older release, for the user)
+        # Told each new attestation, for an app's log (and an older release, for the user: DA Vibe Manager's)
+        self._on_attested = on_attested
         # Ours, not NanoGPT's: see the module docstring. In memory only.
         self.cache_secret = secrets.token_hex(32)
         self._verifier = verifier
@@ -261,17 +274,20 @@ class Enclave:
     def attestation(self) -> Attestation | None:
         return self._verified.attestation if self._verified else None
 
-    async def current(self) -> Verified:
+    async def current(self, fresh: bool = False) -> Verified:
+        """The enclave as attested: now, when the last attestation is MAX_AGE_SECONDS old or
+        `fresh` asks for one (Re-check, which until Nov 2026 showed the kept one again for five
+        minutes, having checked nothing). One that fails leaves none kept."""
         async with self._lock:
-            fresh = self._verified is not None and 0 <= self._clock() - self._at < MAX_AGE_SECONDS
-            if not fresh:
+            kept = self._verified is not None and 0 <= self._clock() - self._at < MAX_AGE_SECONDS
+            if fresh or not kept:
                 self._verified = None
                 try:
                     self._verified = await asyncio.to_thread(self._verifier, self.relay, self.cache_secret)
                 except PrivateModeError:
                     raise
                 except Exception as e:  # noqa: BLE001 - the SDK's own errors
-                    # they can quote the bundle, which came through the relay
+                    # the SDK's errors can quote the bundle, which came through the relay
                     raise PrivateModeError(f"the private model's enclave couldn't be attested: "
                                            f"{relay_said(str(e), 500)}; nothing was sent") from e
                 self._at = self._clock()
@@ -297,14 +313,30 @@ class Enclave:
             return self._ids
 
 
-def sealing_transport(public_key_hex: str, proxy: str | None = None) -> httpx.AsyncBaseTransport:
-    """EHBP over a transport that goes through `proxy`, the environment's for the relay
-    (secure_http.environment_proxy), if there is one, and sends nothing EHBP didn't seal.
+def environment_proxy(url: str) -> str | None:
+    """The proxy the environment names for `url` (HTTPS_PROXY, ALL_PROXY and the like, NO_PROXY
+    honoured), as the relay's other requests read it: the preflight, the model list and the
+    attestation's fetches go through it. None when there is none, or `url`'s host is exempt.
 
-    httpx takes no proxy from the environment for a client given a transport of its own, so
-    this one is told: without it the sealed request, alone of Private Mode's, went direct, from
-    this computer's own address, beside a preflight and a list that had gone through the proxy
-    (DA Assistant's sealed._sealing_transport, Nov 2026)."""
+    httpx reads no proxy from the environment for a client given a transport of its own, so the
+    sealed request is told it here: until Nov 2026 it alone of the relay's requests went direct,
+    from this machine's own address, beside a preflight that had gone through the proxy (DA
+    Assistant's sealed.py and proxy.for_url, Nov 2026)."""
+    import urllib.request
+
+    parsed = urlparse(url)
+    if urllib.request.proxy_bypass_environment(parsed.hostname or ""):
+        return None
+    found = urllib.request.getproxies_environment()
+    chosen = found.get(parsed.scheme.lower()) or found.get("all")
+    if not chosen:
+        return None
+    return chosen if "://" in chosen else f"http://{chosen}"
+
+
+def sealing_transport(public_key_hex: str, proxy: str | None = None) -> httpx.AsyncBaseTransport:
+    """EHBP sealing to the attested key, over a transport that goes through `proxy`, when there
+    is one (`environment_proxy`), and sends nothing EHBP didn't seal (`_NonEmptyBodyTransport`)."""
     from ehbp import AsyncEHBPTransport
 
     return AsyncEHBPTransport.from_public_key_hex(public_key_hex, inner=_NonEmptyBodyTransport(proxy=proxy))
@@ -325,7 +357,7 @@ def shape_body(model: str, upstream: str, messages: list[dict], tools: list[dict
                cache_secret: str, params: dict | None = None) -> dict:
     """The body Tinfoil's router takes, shaped as the proxy does for the fields we send."""
     msgs = []
-    for m in messages:
+    for m in openai_messages(messages):
         if m.get("role") == "assistant":
             m = {k: v for k, v in m.items() if k not in _ASSISTANT_REASONING_FIELDS}
         msgs.append(m)
@@ -349,34 +381,37 @@ class PrivateModeClient:
                  transport_factory: Callable[[str, str | None], httpx.AsyncBaseTransport] = sealing_transport,
                  plain_http: httpx.AsyncClient | None = None):
         if not offers_private_mode(base_url):
-            raise PrivateModeError(f"{base_url} does not offer NanoGPT Private Mode")
-        check_url(base_url, "The provider's base URL")
+            raise PrivateModeError(f"{netguard.shown(base_url)} does not offer NanoGPT Private Mode")
+        # https, and a key a header can carry, before anything is fetched with it (DA Vibe Manager's copy)
+        netguard.check(base_url)
         if not api_key:
             raise PrivateModeError("An API key is required for Private Mode.")
-        check_key(api_key, urlparse(base_url).hostname or "the provider")
+        netguard.check_key(api_key, urlparse(base_url).hostname or "the provider")
         self.enclave = enclave
         self._api_key = api_key
         self._transport_factory = transport_factory
         self._plain = plain_http
+        self.last_usage: dict | None = None     # the last `complete`'s
 
     def _headers(self) -> dict[str, str]:
         return {"Authorization": f"Bearer {self._api_key}"}
 
-    async def attest(self, model: str = "") -> Attestation:
+    async def attest(self, model: str = "", fresh: bool = False) -> Attestation:
         """Attest the enclave. With `model`, first make sure NanoGPT still offers it: the enclave
-        is Tinfoil's router whatever the model, so a retired one would attest."""
+        is Tinfoil's router whatever the model, so a retired one would attest. `fresh`: attested
+        now, whatever attestation is kept (Re-check: `Enclave.current`)."""
         if model:
             await self.check_offered(model)
-        return (await self.enclave.current()).attestation
+        return (await self.enclave.current(fresh)).attestation
 
     async def _read_private_ids(self) -> list[str]:
         """NanoGPT's list of Private Mode models: public, so no key is sent. [] when it can't
         be read."""
-        client = self._plain or httpx.AsyncClient(timeout=PREFLIGHT_TIMEOUT_SECONDS)
+        client = self._plain or httpx.AsyncClient(**_reading(timeout=PREFLIGHT_TIMEOUT_SECONDS))
         try:
             resp = await client.get(self.enclave.relay + "/models", headers={"Accept": "application/json"})
-            return private_ids_in(resp.json()) if resp.status_code < 400 else []
-        except (httpx.HTTPError, ValueError):
+            return private_ids_in(loads(resp.content)) if resp.status_code < 400 else []
+        except (httpx.HTTPError, ValueError, ProviderError):
             return []
         finally:
             if self._plain is None:
@@ -392,13 +427,13 @@ class PrivateModeClient:
             raise ModelRetired(model, ids, status_code, body)
 
     async def _preflight(self, model: str, body_bytes: int) -> tuple[str, str]:
-        client = self._plain or httpx.AsyncClient(timeout=PREFLIGHT_TIMEOUT_SECONDS)
+        client = self._plain or httpx.AsyncClient(**_reading(timeout=PREFLIGHT_TIMEOUT_SECONDS))
         try:
             resp = await client.post(self.enclave.relay + "/preflight",
                                      json={"model": model, "requestBodyBytes": body_bytes},
                                      headers=self._headers())
-        except httpx.HTTPError as e:
-            raise PrivateModeError(f"NanoGPT's Private Mode check failed: {e}") from e
+        except (httpx.HTTPError, ProviderError) as e:
+            raise PrivateModeError(f"NanoGPT's Private Mode check failed: {relay_said(str(e), 300)}") from e
         finally:
             if self._plain is None:
                 await client.aclose()
@@ -409,9 +444,11 @@ class PrivateModeClient:
             raise PrivateModeError(f"NanoGPT refused the Private Mode request (HTTP {resp.status_code}): "
                                    f"{relay_said(resp.text, 300)}", resp.status_code, resp.text)
         try:
-            data = resp.json()
+            data = loads(resp.content)
         except ValueError as e:
             raise PrivateModeError("NanoGPT's Private Mode check wasn't JSON") from e
+        if not isinstance(data, dict):
+            raise PrivateModeError("NanoGPT's Private Mode check didn't say where to send the request")
         scope = str(data.get("cacheScope") or "").strip()
         upstream = str(data.get("upstreamModel") or "").strip()
         if len(scope) != 64 or not upstream:
@@ -419,9 +456,10 @@ class PrivateModeClient:
         return scope, upstream
 
     async def stream(self, model: str, messages: list[dict], tools: list[dict] | None = None,
-                     params: dict | None = None) -> AsyncIterator[tuple[str, object]]:
-        """Yield ("open", None) once the enclave's sealed reply has begun, ("text"|"reasoning", str)
-        deltas, then ("done", TurnResult)."""
+                     params: dict | None = None, *, opened: bool = False) -> AsyncIterator[tuple[str, object]]:
+        """Yield ("text"|"reasoning", str) deltas, then ("done", TurnResult). With `opened`, ("open",
+        None) first, once the enclave's sealed reply has begun: for a caller that answers its own
+        caller then (DA Vibe Manager's gateway, as its LLMClient's streams do)."""
         if not is_private_mode(model):
             raise PrivateModeError(f"{model} isn't a Private Mode model; nothing was sent")
         await self.check_offered(model)
@@ -432,7 +470,7 @@ class PrivateModeClient:
             # the SDK is imported on the event loop.
             from ehbp import EHBPError, KeyConfigMismatchError
             try:
-                async for event in self._one_request(model, messages, tools, verified, params):
+                async for event in self._one_request(model, messages, tools, verified, params, opened):
                     started = started or event[0] != "open"     # nothing of the reply yet: it may be asked again
                     yield event
                 return
@@ -450,7 +488,8 @@ class PrivateModeClient:
             self.enclave.invalidate(verified)  # key rotated: attest again and retry once
 
     async def _one_request(self, model: str, messages: list[dict], tools: list[dict] | None,
-                           verified: Verified, params: dict | None = None) -> AsyncIterator[tuple[str, object]]:
+                           verified: Verified, params: dict | None = None,
+                           opened: bool = False) -> AsyncIterator[tuple[str, object]]:
         probe = shape_body(model, model, messages, tools, self.enclave.cache_secret, params)
         scope, upstream = await self._preflight(model, len(json.dumps(probe).encode()))
         body = shape_body(model, upstream, messages, tools, self.enclave.cache_secret, params)
@@ -465,12 +504,11 @@ class PrivateModeClient:
         }
         acc = StreamAccumulator()
         saw_done = False
-        # the proxy the environment names for the relay, as the preflight's client reads it (NO_PROXY too): a
-        # transport of our own reads none, so it is handed over. A redirect is never followed: it would carry the
-        # sealed body elsewhere, and comes back as the 3xx it is, which is refused below
+        # through the environment's proxy, as the preflight went (`environment_proxy`), read at each
+        # request as httpx reads it for the others
         route = environment_proxy(self.enclave.relay)
         async with httpx.AsyncClient(transport=self._transport_factory(verified.hpke_public_key, route),
-                                     timeout=TIMEOUT_SECONDS, follow_redirects=False) as client:
+                                     **_reading(timeout=TIMEOUT_SECONDS, follow_redirects=False)) as client:
             async with client.stream("POST", self.enclave.relay + "/v1/chat/completions",
                                      json=body, headers=headers) as resp:
                 from ehbp.protocol import RESPONSE_NONCE_HEADER
@@ -484,16 +522,18 @@ class PrivateModeClient:
                     error.through_enclave = RESPONSE_NONCE_HEADER in resp.headers
                     raise error
                 # EHBP passes a reply that isn't a success through as it came, unsealed: one the relay made
-                # itself (a 302 with a verdict in it) would pass for the enclave's. Only a sealed one counts.
+                # itself (a 302 with an answer in it) would pass for the enclave's. Only a sealed one counts.
                 if not 200 <= resp.status_code < 300 or RESPONSE_NONCE_HEADER not in resp.headers:
                     raise PrivateModeError(f"the reply wasn't sealed by the enclave (HTTP {resp.status_code}); refused",
                                            resp.status_code)
                 if resp.headers.get("x-nanogpt-private-mode") != "tinfoil":
                     raise PrivateModeError("the reply didn't come back through Private Mode; refused")
-                yield "open", None                 # its reply has begun (the gateway waits for this much)
-                # split at line ends alone, and no line past MAX_LINE_CHARS (httpx's aiter_lines splits at U+0085 and
-                # the like too, which a JSON string may hold, and holds a line however long it runs)
-                async for line in read_lines(resp.aiter_bytes()):
+                if opened:
+                    yield "open", None             # its reply has begun (`stream`'s `opened`)
+                # split at an event stream's line ends alone, and no further than MAX_LINE_CHARS without
+                # one (llm/client.py read_lines): httpx's aiter_lines also splits at U+2028 and U+0085,
+                # which JSON leaves unescaped in a string, and holds a line however long it grows
+                async for line in read_lines(resp.aiter_bytes(), url=resp.request.url):
                     if not line.startswith("data:"):
                         continue
                     data = line[5:].strip()
@@ -501,7 +541,7 @@ class PrivateModeClient:
                         saw_done = True
                         break
                     try:
-                        parsed = json.loads(data)
+                        parsed = loads(data)
                     except ValueError:
                         continue
                     if isinstance(parsed, dict) and parsed.get("error") and not parsed.get("choices"):
@@ -523,6 +563,7 @@ class PrivateModeClient:
         yield "done", result
 
     async def complete(self, model: str, messages: list[dict], params: dict | None = None) -> str:
+        """The reply's text; what it cost on `last_usage` (DA Vibe Manager's Engine reads it)."""
         text = ""
         async for kind, val in self.stream(model, messages, params=params):
             if kind == "text":
@@ -534,12 +575,12 @@ class PrivateModeClient:
 
 async def list_private_models(base_url: str, http: httpx.AsyncClient | None = None) -> list[str]:
     """The relay's public list of Private Mode model ids (no key needed)."""
-    check_url(base_url, "The provider's base URL")
-    client = http or httpx.AsyncClient(timeout=30)
+    netguard.check(base_url)
+    client = http or httpx.AsyncClient(**_reading(timeout=30))
     try:
         resp = await client.get(relay_url(base_url) + "/models", headers={"Accept": "application/json"})
         resp.raise_for_status()
-        return private_ids_in(resp.json())
+        return private_ids_in(loads(resp.content))
     finally:
         if http is None:
             await client.aclose()
