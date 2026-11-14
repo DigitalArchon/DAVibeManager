@@ -37,6 +37,7 @@ from typing import TYPE_CHECKING
 from urllib.parse import urlsplit
 
 from . import apps, sysinfo
+from .config import write_private
 from .conversation import fence
 from .llm import prompts
 from .models import UserError
@@ -585,7 +586,7 @@ class Sharing:
         path, n = folder / f"{stem}{SUFFIX}", 2
         while path.exists():
             path, n = folder / f"{stem}-{n}{SUFFIX}", n + 1
-        path.write_bytes(data)
+        write_private(path, data, mode=0o644)          # whole or not at all; to be passed on, as readable as before
         sig = signature(a)
         a = self.e.app_manager.app(app_id)
         apps.save({**a, "share": {**a["share"], "shared": [*[x for x in a["share"]["shared"] if x != sig], sig][-50:]}})

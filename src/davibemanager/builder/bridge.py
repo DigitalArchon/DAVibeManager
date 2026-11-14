@@ -22,12 +22,12 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 import shlex
 import time
 from pathlib import Path
 from typing import Callable
 
+from ..config import write_private
 from ..llm.prompts import builder_prompt
 from ..workspace import podman
 from .tools import BuilderHost, make_server, tool_names
@@ -113,10 +113,7 @@ def write_wrapper(path: Path, container: str) -> Path:
     lines.append(f"exec {shlex.quote(podman.podman())} exec -i --detach-keys= -w /work $E {shlex.quote(container)} "
                  '/usr/local/bin/claude "$@"')
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    tmp = path.with_suffix(".tmp")
-    tmp.write_text("\n".join(lines) + "\n")
-    os.chmod(tmp, 0o700)
-    tmp.replace(path)
+    write_private(path, "\n".join(lines) + "\n", mode=0o700)     # run by the SDK: this user's alone
     return path
 
 

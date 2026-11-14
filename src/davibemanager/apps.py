@@ -22,14 +22,13 @@ data_dir()/apps/<id>/app.json, series.patch, build.sh, changes/<change id>.md an
 from __future__ import annotations
 
 import json
-import os
 import re
 import shutil
 import time
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from .config import data_dir
+from .config import data_dir, write_private
 
 MAX_CHANGES = 20
 
@@ -86,10 +85,7 @@ def save(app: dict) -> dict:
     d = dir_of(app["id"])
     d.mkdir(parents=True, exist_ok=True, mode=0o700)
     app = {**app, "updated": time.time()}
-    tmp = d / "app.json.tmp"
-    tmp.write_text(json.dumps(app, indent=1, ensure_ascii=False), encoding="utf-8")
-    os.chmod(tmp, 0o600)
-    tmp.replace(d / "app.json")
+    write_private(d / "app.json", json.dumps(app, indent=1, ensure_ascii=False))
     return app
 
 
@@ -146,7 +142,9 @@ def write_file(app_id: str, name: str, text: str) -> Path:
         raise ValueError(f"not an app file: {name}")
     p = dir_of(app_id) / name
     p.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    p.write_text(text, encoding="utf-8")
+    # whole or not at all (a change half written was a patch that doesn't apply); as readable as before, the
+    # sandbox's builder reading them
+    write_private(p, text, mode=0o644)
     return p
 
 

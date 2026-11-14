@@ -42,7 +42,7 @@ from . import sysinfo
 from . import tray as tray_mod
 from .builder.bridge import BuilderSession, told_user
 from .builder.tools import Unanswered, check_packages
-from .config import NANOGPT_BASE_URL, Config, data_dir
+from .config import NANOGPT_BASE_URL, Config, data_dir, write_private
 from .conversation import Conversation, fence
 from .gateway import Gateway, Upstream, openai_usage
 from .hostenv import host_env
@@ -2809,8 +2809,8 @@ class Engine:
                     "created": time.time(), "status": "new", "screenshots": [], "id": did,
                     "conversation": self.conv.id if entry is not None and self.conv else "", "by": "assistant" if entry is not None else "app",
                     **({"install_to": install_to} if install_to else {}), **({"menu_name": renamed} if renamed else {})}
-            (d / "changes.patch").write_text(patch, encoding="utf-8")
-            (d / "FEATURE.md").write_text(feature + "\n", encoding="utf-8")
+            write_private(d / "changes.patch", patch, mode=0o644)           # whole or not at all, as readable as before
+            write_private(d / "FEATURE.md", feature + "\n", mode=0o644)
             if kind == "appimage":
                 # out of the clean container it was built in (the sandbox never holds it)
                 fname = delivery_mod.safe_name(Path(path).name, "app.AppImage")

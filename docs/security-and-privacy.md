@@ -527,6 +527,12 @@ links open in your browser.
   files only you can read; tor's own data in `~/.local/state/davibemanager/tor`.
 - **The sandbox**: in Podman's storage (`~/.local/share/containers`): its files, the tools it
   installed, and the assistant's own memory of each chat.
+- **How they are written.** The app's own folders (`~/.config/davibemanager`,
+  `~/.local/share/davibemanager`, `~/.local/state/davibemanager`) are made openable by you alone each
+  time it starts, also if they were there already. Settings, chats, apps, builds' records and sync's
+  files are written whole or not at all: to a new file of their own beside them, readable by you
+  alone, flushed to the disk and only then put in place, so a crash or a power cut leaves the old
+  version or the new one, never half of one.
 - **Your keyring**: your API key, a password written into an address, and your backup password when
   backups are made automatically.
 - **Public records the attestation checks fetched**: Tinfoil's software and Sigstore's library keep

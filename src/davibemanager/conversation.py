@@ -11,7 +11,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
-from .config import data_dir
+from .config import data_dir, write_private
 
 
 def root_dir(root: Path | None = None) -> Path:
@@ -102,13 +102,13 @@ class Conversation:
         shutil.rmtree(d)
 
     def save(self) -> None:
-        tmp = self.dir / "state.json.tmp"
-        tmp.write_text(json.dumps({"version": 1, "title": self.title, "started": self.started, "session": self.session,
+        # whole or not at all, flushed, this user's alone (config.write_private): a fixed state.json.tmp under the
+        # umask, never flushed, could leave the chat an empty file after a crash
+        write_private(self.dir / "state.json", json.dumps({"version": 1, "title": self.title, "started": self.started, "session": self.session,
                                    "chat": self.chat, "requests": self.requests, "questions": self.questions,
                                    "tokens": self.tokens, "mode": self.mode, "app": self.app, "app_name": self.app_name,
                                    "remake": self.remake, "after_reset": self.after_reset, "sealed": self.sealed},
-                                  ensure_ascii=False, default=str), encoding="utf-8")
-        tmp.replace(self.dir / "state.json")
+                                  ensure_ascii=False, default=str))
 
     def log(self, event: str, **data) -> None:
         with (self.dir / "events.jsonl").open("a", encoding="utf-8") as f:

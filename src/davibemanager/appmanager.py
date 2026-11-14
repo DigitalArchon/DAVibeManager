@@ -37,7 +37,7 @@ from typing import TYPE_CHECKING
 
 from . import appimage, apps, integrate, share, versions
 from . import delivery as delivery_mod
-from .config import REBUILD, data_dir
+from .config import REBUILD, data_dir, put_in_place, spare_name
 from .conversation import Conversation, fence
 from .llm import prompts
 from .llm.secure_http import loads
@@ -1161,13 +1161,14 @@ class AppManager:
         path = data_dir() / "runtime-x86_64"
         from .workspace import pins
         if not path.exists() or delivery_mod.sha256_file(path) != pins.RUNTIME_SHA256:
-            tmp = path.with_suffix(".part")
-            tmp.unlink(missing_ok=True)
-            await podman.copy_out(self.e.sandbox, "/usr/local/share/appimage/runtime-x86_64", tmp)
-            if delivery_mod.sha256_file(tmp) != pins.RUNTIME_SHA256:
+            tmp = spare_name(path)                  # its own name: a fixed one was every copy's at once
+            try:
+                await podman.copy_out(self.e.sandbox, "/usr/local/share/appimage/runtime-x86_64", tmp)
+                if delivery_mod.sha256_file(tmp) != pins.RUNTIME_SHA256:
+                    raise appimage.AppImageError("the sandbox's AppImage runtime doesn't match its pin")
+                put_in_place(tmp, path)             # flushed, then renamed, the folder flushed after
+            finally:
                 tmp.unlink(missing_ok=True)
-                raise appimage.AppImageError("the sandbox's AppImage runtime doesn't match its pin")
-            tmp.replace(path)
         return path.read_bytes()
 
     def install(self, did: str) -> dict:
@@ -1343,11 +1344,11 @@ class AppManager:
         dest, n = folder / f"{stem}.AppImage", 2
         while dest.exists():
             dest, n = folder / f"{stem}-{n}.AppImage", n + 1
-        tmp = dest.with_name(f".{dest.name}.part")
+        tmp = spare_name(dest)
         try:
             shutil.copyfile(src, tmp)
             os.chmod(tmp, 0o755)
-            tmp.replace(dest)
+            put_in_place(tmp, dest)                 # flushed, then renamed: a whole AppImage or none
         except BaseException:
             tmp.unlink(missing_ok=True)
             raise

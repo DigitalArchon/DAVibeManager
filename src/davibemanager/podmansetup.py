@@ -21,7 +21,7 @@ import shutil
 from typing import Callable
 
 from . import sysinfo
-from .config import data_dir
+from .config import data_dir, write_private
 
 # package manager -> (the binary that shows it's there, how it installs packages without asking)
 MANAGERS = {
@@ -115,7 +115,7 @@ def record_install(packages: list[str]) -> None:
     path = _record_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     had = installed_by_app() or []
-    path.write_text(json.dumps({"packages": sorted(set(had) | set(packages))}))
+    write_private(path, json.dumps({"packages": sorted(set(had) | set(packages))}))
 
 
 def installed_by_app() -> list[str] | None:

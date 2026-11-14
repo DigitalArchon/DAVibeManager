@@ -13,6 +13,7 @@ its addresses, 729a415, Nov 2026.)"""
 from __future__ import annotations
 
 import os
+import secrets
 import stat
 import tempfile
 import threading
@@ -396,18 +397,25 @@ def _on_disk(cfg: Config) -> dict:
 _SAVING = threading.Lock()          # one save at a time: the loop's, and a timer's or a thread's
 
 
-def write_private(path: Path, data: bytes) -> None:
-    """`data` as the file `path`, whole or not at all, readable by this user alone. It is written to a temporary
-    file of its own in the same folder (two saves never share one, and it is 0600 from the start: mkstemp), flushed
-    to the disk, and only then renamed over `path`; then the folder is flushed, so the rename outlasts a power cut
-    too. Until Nov 2026 every save wrote one fixed config.tmp under the umask and only then made it 0600, flushed
-    nothing (a crash soon after a save could leave the new name on an empty file), and two saves at once wrote into
-    the same file (DA Toolkit's config.write_atomic)."""
+def write_private(path: Path, data: bytes | str, mode: int = 0o600) -> None:
+    """`data` (bytes, or text as UTF-8) as the file `path`, whole or not at all, readable by this user alone. It is
+    written to a temporary file of its own in the same folder (two saves never share one, and it is 0600 from the
+    start: mkstemp), flushed to the disk, and only then renamed over `path`; then the folder is flushed, so the
+    rename outlasts a power cut too. Until Nov 2026 every save wrote one fixed config.tmp under the umask and only
+    then made it 0600, flushed nothing (a crash soon after a save could leave the new name on an empty file), and
+    two saves at once wrote into the same file (DA Toolkit's config.write_atomic). The one way every file that
+    matters is written (the cross-app standard, Nov 2026): settings, chats, apps, builds' records, sync's state,
+    the sandbox's wrapper. `mode`: another, for a file that must be run (0700) or read by the desktop (0644), set
+    before it is in place."""
+    if isinstance(data, str):
+        data = data.encode("utf-8")
     fd, name = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
     try:
         with os.fdopen(fd, "wb") as f:
             f.write(data)
             f.flush()
+            if mode != 0o600:
+                os.fchmod(f.fileno(), mode)
             os.fsync(f.fileno())
         os.replace(name, path)
     except BaseException:
@@ -416,8 +424,29 @@ def write_private(path: Path, data: bytes) -> None:
         except OSError:
             pass
         raise
+    _flush_folder(path.parent)
+
+
+def put_in_place(tmp: Path, path: Path) -> None:
+    """A file written whole at `tmp` (in `path`'s folder, by a copy or another program), flushed to the disk and
+    only then renamed over `path`, the folder flushed after, as write_private does for what it writes itself."""
+    fd = os.open(tmp, os.O_RDONLY)
     try:
-        folder = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+    os.replace(tmp, path)
+    _flush_folder(path.parent)
+
+
+def spare_name(path: Path) -> Path:
+    """A temporary name beside `path` that no other write shares (a fixed ".part" was one for every copy)."""
+    return path.with_name(f".{path.name}.{secrets.token_hex(6)}.part")
+
+
+def _flush_folder(folder_path: Path) -> None:
+    try:
+        folder = os.open(folder_path, os.O_RDONLY | os.O_DIRECTORY)
     except OSError:
         return
     try:
@@ -428,14 +457,43 @@ def write_private(path: Path, data: bytes) -> None:
         os.close(folder)
 
 
+def private_folder(path: Path) -> Path:
+    """`path`, a folder this user alone can open: made 0700, its parents too where they are made here, and made so
+    again if it isn't (mkdir's mode is for the last folder it makes, and one made by an older version, by another
+    program or by hand, took the umask's). The settings, data and state folders, and sync's."""
+    missing = [p for p in (path, *path.parents) if not p.exists()]
+    path.mkdir(parents=True, exist_ok=True, mode=0o700)
+    for made in missing:
+        try:
+            os.chmod(made, 0o700)
+        except OSError:
+            pass
+    if stat.S_IMODE(path.stat().st_mode) != 0o700:
+        os.chmod(path, 0o700)
+    return path
+
+
+def private_folders() -> None:
+    """The app's own folders (settings, data, state), this user's alone, whatever they were: at every start."""
+    for folder in (config_dir(), data_dir(), state_dir()):
+        try:
+            private_folder(folder)
+        except OSError:
+            pass
+
+
+def state_dir() -> Path:
+    """$XDG_STATE_HOME/davibemanager: tor's own files for sync (its guards, its consensus)."""
+    base = os.environ.get("XDG_STATE_HOME") or os.path.expanduser("~/.local/state")
+    return Path(base) / APP_ID
+
+
 def save(cfg: Config, path: Path | None = None) -> None:
     """config.toml, written whole or not at all (write_private), in a folder only this user can open: made 0700,
     and made so again if it isn't (mkdir's mode is for a folder it makes, and one made by an older version, or by
     hand, took the umask's)."""
     path = path or config_dir() / "config.toml"
-    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    if stat.S_IMODE(path.parent.stat().st_mode) != 0o700:
-        os.chmod(path.parent, 0o700)
+    private_folder(path.parent)
     data = tomli_w.dumps(_on_disk(cfg)).encode("utf-8")
     with _SAVING:
         write_private(path, data)

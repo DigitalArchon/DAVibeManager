@@ -212,13 +212,13 @@ def autostart_path() -> Path:
 def _lasting_icon() -> str:
     """The icon for the autostart entry, where it stays: ICON is inside the AppImage's mount when
     running from one, a folder that is gone once the app quits."""
-    from .config import data_dir
+    from .config import data_dir, write_private
     dest = data_dir() / "icons" / "davibemanager.svg"
     try:
         data = ICON.read_bytes()
         if not dest.is_file() or dest.read_bytes() != data:
             dest.parent.mkdir(parents=True, exist_ok=True)
-            dest.write_bytes(data)
+            write_private(dest, data, mode=0o644)
         return str(dest)
     except OSError:
         return str(ICON)
@@ -227,8 +227,10 @@ def _lasting_icon() -> str:
 def set_autostart(on: bool, exec_line: str) -> None:
     path = autostart_path()
     if on:
+        from .config import write_private
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(AUTOSTART.format(exec=exec_line, icon=_lasting_icon()))
+        # read by the desktop as it starts (0644, as before), whole or not at all
+        write_private(path, AUTOSTART.format(exec=exec_line, icon=_lasting_icon()), mode=0o644)
     else:
         path.unlink(missing_ok=True)
 

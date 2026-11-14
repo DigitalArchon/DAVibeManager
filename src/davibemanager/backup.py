@@ -344,7 +344,7 @@ def settle(unpacked: Path, current: config.Config) -> tuple[config.Config, dict]
             meta["status"] = "new"
         for k in ("installed_to", "installed_via", "installed_at", "installed_files", "backups", "removed", "tried"):
             meta.pop(k, None)
-        meta_path.write_text(json.dumps(meta, indent=1, ensure_ascii=False), encoding="utf-8")
+        config.write_private(meta_path, json.dumps(meta, indent=1, ensure_ascii=False))
     restored = {p.parent.name for p in (data / "deliveries").glob("D*/delivery.json")}
     named: set[str] = set(restored)             # every build id that means something, here or in a chat
     for app_path in (data / "apps").glob("*/app.json"):
@@ -357,19 +357,19 @@ def settle(unpacked: Path, current: config.Config) -> tuple[config.Config, dict]
                  builds=[d for d in a.get("builds", []) if d in restored])
         if u.get("build") and u["build"] not in restored:
             a["update"] = {k: v for k, v in u.items() if k != "build"} | ({"status": "available"} if u.get("status") == "built" else {})
-        app_path.write_text(json.dumps(a, indent=1, ensure_ascii=False), encoding="utf-8")
+        config.write_private(app_path, json.dumps(a, indent=1, ensure_ascii=False))
     have = {p.stem for p in (unpacked / "sessions").rglob("*.jsonl")} if (unpacked / "sessions").is_dir() else set()
     for state in (data / "conversations").glob("*/state.json"):
         s = _backup_json(state.read_bytes())
         named |= {p.get("id", "") for e in s.get("chat", []) for p in e.get("parts", []) if p.get("t") == "delivery"}
         if s.get("session") and s["session"] not in have:
             s["session"] = ""                   # the assistant starts it afresh; the chat is all there
-            state.write_text(json.dumps(s, ensure_ascii=False), encoding="utf-8")
+            config.write_private(state, json.dumps(s, ensure_ascii=False))
     # the next build's id comes after all of them: one given again would be another app's build where an
     # app or a chat names the one it had (its card, its latest build, Export AppImage)
     highest = max((int(d[1:]) for d in named if re.fullmatch(r"D\d{1,9}", d or "")), default=0)
     (data / "deliveries").mkdir(parents=True, exist_ok=True)
-    (data / "deliveries" / delivery_mod.LAST_ID).write_text(str(highest))
+    config.write_private(data / "deliveries" / delivery_mod.LAST_ID, str(highest))
     keys = _backup_json((unpacked / "secrets.json").read_bytes()) if (unpacked / "secrets.json").is_file() else {}
     return cfg, keys.get("providers") or {}
 
@@ -398,7 +398,7 @@ class Backups:
         st = {**self.state(), **changes}
         p = self.state_path()
         p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(json.dumps(st), encoding="utf-8")
+        config.write_private(p, json.dumps(st))
 
     def folder(self) -> Path:
         return Path(os.path.expanduser(self.e.cfg.settings.backup_dir or "~/DA Vibe Manager backups"))

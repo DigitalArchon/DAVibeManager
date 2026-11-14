@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import Callable
 
 from . import appimage, sysinfo
+from .config import write_private
 from .hostenv import HOST_TYPELIB_DIRS, host_env
 
 # package -> what it's for, in the user's words
@@ -177,9 +178,8 @@ def add_self_entry(argv: list[str], icon: Path) -> Path:
     shutil.copyfile(icon, dest_icon)
     path = self_entry_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(path.name + ".part")
-    tmp.write_text(SELF_DESKTOP.format(exec=self_exec(argv), icon=SELF_ICON), encoding="utf-8")
-    tmp.replace(path)
+    # read by the desktop's menu (0644, as written before), whole or not at all
+    write_private(path, SELF_DESKTOP.format(exec=self_exec(argv), icon=SELF_ICON), mode=0o644)
     refresh_caches()
     return path
 

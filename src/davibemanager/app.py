@@ -329,6 +329,7 @@ def main(argv: list[str] | None = None) -> None:
 
     token = secrets.token_urlsafe(32)
     port = args.port or _free_port()
+    config.private_folders()            # settings, data and state: this user's alone, whatever they were
     cfg = config.load()
     # a password written into an address: back from the keyring, or moved there out of config.toml; and a key saved
     # before keys were held to their address, given the addresses beside it (config.settle_key_origins), kept so at

@@ -44,6 +44,7 @@ import unicodedata
 from pathlib import Path
 from urllib.parse import unquote_plus, urlsplit
 
+from ..config import write_private
 from .hidden import visible
 
 NGRAM = 5
@@ -204,10 +205,7 @@ class OutsideData:
 
     def save(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-        tmp = self.path.with_suffix(".tmp")
-        tmp.write_text(json.dumps({"tokens": sorted(self.tokens), "runs": sorted(self.runs)}), encoding="utf-8")
-        os.chmod(tmp, 0o600)
-        tmp.replace(self.path)
+        write_private(self.path, json.dumps({"tokens": sorted(self.tokens), "runs": sorted(self.runs)}))
 
     def clear(self) -> None:
         self.tokens, self.runs = set(), set()

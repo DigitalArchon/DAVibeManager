@@ -27,7 +27,6 @@ import base64
 import hashlib
 import hmac
 import json
-import os
 import re
 import secrets
 import socket
@@ -35,6 +34,7 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from .. import config
 from ..config import config_dir
 from . import onion
 from .pairing import DEVICE_ID, clean_name
@@ -45,26 +45,18 @@ MAX_ENTRIES = 256                   # and entries in its list, the removed ones'
 
 
 def folder() -> Path:
-    d = config_dir() / "sync"
-    d.mkdir(parents=True, exist_ok=True, mode=0o700)
-    os.chmod(d, 0o700)
-    return d
+    return config.private_folder(config_dir() / "sync")
 
 
 def state_dir() -> Path:
     """Where tor's own files are kept (its guards, its consensus): $XDG_STATE_HOME/davibemanager."""
-    base = os.environ.get("XDG_STATE_HOME") or os.path.expanduser("~/.local/state")
-    d = Path(base) / "davibemanager"
-    d.mkdir(parents=True, exist_ok=True, mode=0o700)
-    return d
+    return config.private_folder(config.state_dir())
 
 
 def _write(path: Path, data) -> None:
-    tmp = path.with_name(path.name + ".tmp")
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=1, ensure_ascii=False)
-    tmp.replace(path)
+    """Whole or not at all, 0600, flushed (config.write_private): a fixed ".tmp" shared by every write, never
+    flushed, could leave a group's members or keys an empty file after a crash."""
+    config.write_private(path, json.dumps(data, indent=1, ensure_ascii=False))
 
 
 def _read(path: Path, default):

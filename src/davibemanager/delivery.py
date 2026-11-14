@@ -25,7 +25,7 @@ import shutil
 import time
 from pathlib import Path, PurePosixPath
 
-from .config import data_dir
+from .config import data_dir, write_private
 
 KINDS = ("appimage", "source", "addon")
 # how deep a delivered change goes: an ordinary app, part of the desktop, or below it
@@ -238,9 +238,7 @@ def remove(root: Path, did: str) -> None:
     except (OSError, ValueError):
         last = 0
     if int(m.group(1)) > last:
-        tmp = root / f"{LAST_ID}.tmp"
-        tmp.write_text(m.group(1))
-        tmp.replace(root / LAST_ID)
+        write_private(root / LAST_ID, m.group(1))
     shutil.rmtree(d)
 
 
@@ -284,9 +282,7 @@ def is_appimage(path: Path) -> bool:
 
 def record(dir_: Path, meta: dict) -> dict:
     meta = {**meta, "id": dir_.name}
-    tmp = dir_ / "delivery.json.tmp"
-    tmp.write_text(json.dumps(meta, indent=1, ensure_ascii=False), encoding="utf-8")
-    tmp.replace(dir_ / "delivery.json")
+    write_private(dir_ / "delivery.json", json.dumps(meta, indent=1, ensure_ascii=False))
     return meta
 
 

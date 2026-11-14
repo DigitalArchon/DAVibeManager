@@ -30,6 +30,7 @@ import subprocess
 from pathlib import Path
 
 from . import appimage, omarchy
+from .config import write_private
 from .hostenv import host_env
 from .llm.secure_http import loads
 
@@ -205,7 +206,7 @@ class Menu:
             entry = appimage.menu_entry(desktop.read_text(encoding="utf-8", errors="replace"), str(dest), icon_ref, app["id"])
             self.applications.mkdir(parents=True, exist_ok=True)
             desktop_id = self.desktop_id(app)
-            (self.applications / desktop_id).write_text(entry, encoding="utf-8")
+            write_private(self.applications / desktop_id, entry, mode=0o644)     # the menu reads it, as before
             self._refresh_menu()
         return {"via": self.key, "path": str(dest), "desktop_id": desktop_id}
 
