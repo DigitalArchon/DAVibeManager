@@ -196,3 +196,78 @@ def test_with_the_keyring_locked_one_in_the_file_is_used_and_kept_there(setup, m
     assert config.take_passwords(cfg) is True                 # the keyring is back (Engine.retry_keyring)
     config.save(cfg, path)
     assert "hunter2" not in path.read_text() and fresh(path).providers[0].base_url == ENDPOINT
+
+
+# --- config.toml is written whole or not at all, readable by this user alone (DA Toolkit's write_atomic) ------
+
+def test_config_toml_is_written_through_a_temporary_file_of_its_own_0600_from_the_start_and_flushed(tmp_path,
+                                                                                                    monkeypatch):
+    """Every save wrote one fixed config.tmp under the umask and only then made it 0600 (a moment in which another
+    user could open it), flushed nothing, and two saves at once wrote into the same file."""
+    import os
+    import stat
+
+    folder = tmp_path / "davibemanager"
+    path = folder / "config.toml"
+    seen, synced = [], []
+    replace, fsync = os.replace, os.fsync
+
+    def replacing(src, dst):
+        seen.append((os.path.basename(src), stat.S_IMODE(os.stat(src).st_mode), os.path.getsize(src)))
+        return replace(src, dst)
+    monkeypatch.setattr(os, "replace", replacing)
+    monkeypatch.setattr(os, "fsync", lambda fd: synced.append(fd) or fsync(fd))
+    old = os.umask(0o022)
+    try:
+        config.save(Config(providers=[Provider("NanoGPT", "https://nano-gpt.com/api/v1")]), path)
+        config.save(Config(providers=[Provider("NanoGPT", "https://nano-gpt.com/api/v1")]), path)
+    finally:
+        os.umask(old)
+    (first, _, size), (second, _, _) = seen
+    assert all(mode == 0o600 for _, mode, _ in seen) and size > 0
+    assert first != second and first.startswith(".config.toml.") and first != "config.tmp"
+    assert len(synced) >= 4, "the file and its folder, each save"
+    assert stat.S_IMODE(os.stat(path).st_mode) == 0o600 and sorted(p.name for p in folder.iterdir()) == ["config.toml"]
+    assert config.load(path).provider("NanoGPT").base_url == "https://nano-gpt.com/api/v1"
+
+
+def test_the_settings_folder_is_made_private_again_and_a_failed_save_leaves_the_file_as_it_was(tmp_path,
+                                                                                             monkeypatch):
+    import os
+    import stat
+
+    folder = tmp_path / "davibemanager"
+    folder.mkdir(mode=0o755)
+    os.chmod(folder, 0o755)                                 # made by an older version, or by hand
+    path = folder / "config.toml"
+    config.save(Config(providers=[Provider("NanoGPT", "https://nano-gpt.com/api/v1")]), path)
+    assert stat.S_IMODE(os.stat(folder).st_mode) == 0o700
+    before = path.read_bytes()
+
+    def full(fd):
+        raise OSError(28, "No space left on device")
+    monkeypatch.setattr(os, "fsync", full)
+    with pytest.raises(OSError, match="No space"):
+        config.save(Config(), path)
+    assert path.read_bytes() == before and sorted(p.name for p in folder.iterdir()) == ["config.toml"]
+
+
+def test_two_saves_at_once_each_write_the_whole_file(tmp_path):
+    import threading
+
+    path = tmp_path / "config.toml"
+    errors = []
+
+    def save(n):
+        try:
+            for _ in range(20):
+                config.save(Config(providers=[Provider(f"P{n}", "https://llm.example/v1")]), path)
+        except Exception as e:  # noqa: BLE001
+            errors.append(e)
+    threads = [threading.Thread(target=save, args=(n,)) for n in range(4)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert errors == [] and len(config.load(path).providers) == 1
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["config.toml"]

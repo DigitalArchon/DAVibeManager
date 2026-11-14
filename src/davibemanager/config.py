@@ -13,6 +13,9 @@ its addresses, 729a415, Nov 2026.)"""
 from __future__ import annotations
 
 import os
+import stat
+import tempfile
+import threading
 import tomllib
 from contextvars import ContextVar
 from dataclasses import asdict, dataclass, field, fields
@@ -381,11 +384,49 @@ def _on_disk(cfg: Config) -> dict:
     return data
 
 
+_SAVING = threading.Lock()          # one save at a time: the loop's, and a timer's or a thread's
+
+
+def write_private(path: Path, data: bytes) -> None:
+    """`data` as the file `path`, whole or not at all, readable by this user alone. It is written to a temporary
+    file of its own in the same folder (two saves never share one, and it is 0600 from the start: mkstemp), flushed
+    to the disk, and only then renamed over `path`; then the folder is flushed, so the rename outlasts a power cut
+    too. Until Nov 2026 every save wrote one fixed config.tmp under the umask and only then made it 0600, flushed
+    nothing (a crash soon after a save could leave the new name on an empty file), and two saves at once wrote into
+    the same file (DA Toolkit's config.write_atomic)."""
+    fd, name = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "wb") as f:
+            f.write(data)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(name, path)
+    except BaseException:
+        try:
+            os.unlink(name)
+        except OSError:
+            pass
+        raise
+    try:
+        folder = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+    except OSError:
+        return
+    try:
+        os.fsync(folder)
+    except OSError:
+        pass                            # a file system that can't flush a folder: the file itself is on the disk
+    finally:
+        os.close(folder)
+
+
 def save(cfg: Config, path: Path | None = None) -> None:
+    """config.toml, written whole or not at all (write_private), in a folder only this user can open: made 0700,
+    and made so again if it isn't (mkdir's mode is for a folder it makes, and one made by an older version, or by
+    hand, took the umask's)."""
     path = path or config_dir() / "config.toml"
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    tmp = path.with_suffix(".tmp")
-    with tmp.open("wb") as f:
-        tomli_w.dump(_on_disk(cfg), f)
-    os.chmod(tmp, 0o600)
-    tmp.replace(path)
+    if stat.S_IMODE(path.parent.stat().st_mode) != 0o700:
+        os.chmod(path.parent, 0o700)
+    data = tomli_w.dumps(_on_disk(cfg)).encode("utf-8")
+    with _SAVING:
+        write_private(path, data)
