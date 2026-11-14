@@ -73,7 +73,7 @@ def shown(url) -> str:
 def origin(url) -> str:
     """Where an address sends what is sent to it: its scheme, host and port ("https://nano-gpt.com:443"), the
     port said when the address leaves it to the scheme, lowercased; "" for text that isn't such an address. What a
-    saved key is held to (models.key_problem): a key goes to the origin it was entered for, and nowhere else."""
+    saved key is held to (models.key_problem_for): a key goes to the origin it was entered for, and nowhere else."""
     try:
         parsed = urlparse(str(url or "").strip())
         host, port = parsed.hostname, parsed.port

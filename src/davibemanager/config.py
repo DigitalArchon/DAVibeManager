@@ -92,7 +92,7 @@ class Provider:
     # model id -> context window in tokens (for providers that don't report it, e.g. local models)
     context_overrides: dict[str, int] = field(default_factory=dict)
     # where the API key stored for it was entered for: the origins (scheme, host, port: netpolicy.origin) of its
-    # addresses when it was. The key goes to those alone (models.key_problem): an address changed by hand, or
+    # addresses when it was. The key goes to those alone (models.key_problem_for): an address changed by hand, or
     # through the API, doesn't take the key with it. None until it is known (read from an older config.toml:
     # settle_key_origins gives it the addresses beside it)
     key_for: list[str] | None = None
