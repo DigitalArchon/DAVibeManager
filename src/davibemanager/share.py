@@ -275,6 +275,24 @@ def _text(z: zipfile.ZipFile, info: zipfile.ZipInfo) -> str:
         raise ShareError(f"{info.filename} in it isn't text.") from None
 
 
+# Deeper than any manifest nests ({"app": {"changes": [{…}]}}: four or five levels). One that someone else made
+# nested far deeper made Python 3.11's JSON reader raise RecursionError at about a thousand levels (3.12's, at some
+# tens of thousands), which no caller took for a file it couldn't read (SealedLore's storage/atomic.nests_deeper).
+MAX_NESTING = 32
+
+
+def nests_deeper(data, limit: int = MAX_NESTING) -> bool:
+    """Whether `data` (as json.loads made it) nests past `limit` levels. Walked, never recursed into."""
+    stack = [(data, 1)]
+    while stack:
+        item, depth = stack.pop()
+        if depth > limit:
+            return True
+        children = item.values() if isinstance(item, dict) else item if isinstance(item, list) else ()
+        stack.extend((child, depth + 1) for child in children if isinstance(child, (dict, list)))
+    return False
+
+
 def read(path: Path | bytes) -> dict:
     """A .vibe file (or its bytes), read strictly: {"app": {name, upstream, base_ref, packages, changes},
     "files": {name: text}, "exported"}. Raises ShareError saying what's wrong with it."""
@@ -295,10 +313,15 @@ def read(path: Path | bytes) -> dict:
         except (zipfile.BadZipFile, zlib.error, NotImplementedError, RuntimeError, EOFError, OSError) as e:
             # a checksum that's wrong, a way of packing or a password zipfile doesn't take
             raise ShareError(f"That file is damaged, so it can't be read ({e}).") from None
+    deep = ShareError("Its manifest.json is nested far deeper than a shared app's: it isn't one, so it wasn't read.")
     try:
         m = json.loads(files.pop("manifest.json"))
+    except RecursionError:                                      # before ValueError: Python's reader gave up on it
+        raise deep from None
     except ValueError:
         raise ShareError("Its manifest.json isn't readable.") from None
+    if nests_deeper(m):
+        raise deep
     if not isinstance(m, dict) or m.get("kind") != "dvm-app":
         raise ShareError("That isn't a shared app.")
     if m.get("format") != FORMAT:

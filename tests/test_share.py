@@ -511,6 +511,20 @@ def test_a_damaged_or_odd_shared_file_is_said_to_be_one(tmp_path):
             share._checked({"name": "x", "upstream": upstream}, {})
 
 
+@pytest.mark.parametrize("depth", [40, 1_000, 100_000])
+def test_a_manifest_nested_far_deeper_than_a_shared_apps_is_refused_in_words(tmp_path, depth):
+    """Python's JSON reader raises RecursionError for a manifest nested deep enough (at about a thousand levels on
+    3.11, some tens of thousands on 3.12), which the import took for nothing it knew: not a ShareError, so the window
+    had no words for it. A manifest nests four or five levels (SealedLore's storage/atomic.nests_deeper)."""
+    deep = '{"kind": "dvm-app", "format": 1, "app": {"name": "x", "x": ' + "[" * depth + "]" * depth + "}}"
+    path = tmp_path / "deep.vibe"
+    with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as z:
+        z.writestr("manifest.json", deep)
+    with pytest.raises(share.ShareError, match="nested far deeper"):
+        share.read(path)
+    assert not share.nests_deeper({"kind": "dvm-app", "app": {"changes": [{"id": "a", "title": "b"}]}})
+
+
 async def test_a_file_that_couldnt_be_imported_isnt_made(gthumb, tmp_path):
     """Share… would say it worked, and whoever got the file couldn't import it."""
     engine, _, _, _ = gthumb
