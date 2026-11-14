@@ -82,9 +82,9 @@ class Relay:
         def handle(request):
             assert request.url.path.endswith("/private/tinfoil/v1/chat/completions")
             self.requests.append((json.loads(request.content), dict(request.headers)))
-            status, body = self.replies.pop(0)
+            status, body, *sealed = self.replies.pop(0)
             # as EHBP hands over a reply it opened: the enclave's nonce stays with it (a 2xx only)
-            headers = {"content-type": "text/event-stream", **({"Ehbp-Response-Nonce": "ab" * 32} if status < 300 else {})}
+            headers = {"content-type": "text/event-stream", **({"Ehbp-Response-Nonce": "ab" * 32} if status < 300 or sealed else {})}
             if self.private_header:
                 headers["x-nanogpt-private-mode"] = self.private_header
             return httpx.Response(status, text=body, headers=headers)
@@ -150,6 +150,15 @@ async def test_reattests_and_retries_once_on_missing_seal():
     relay = Relay(replies=[(400, '{"error":"missing_encrypted_body_header"}'), (200, TOOL_REPLY)])
     await collect(relay.client())
     assert relay.verifies == 2 and len(relay.requests) == 2
+
+
+async def test_a_refusal_the_enclave_sealed_is_never_sent_again():
+    """With the enclave's nonce on it the request went the encrypted way and may have run (and been paid
+    for): the proxy never resends it (isMissingEncryptedBodyHeaderResponse), and neither do we."""
+    relay = Relay(replies=[(400, '{"error":"missing_encrypted_body_header"}', True), (200, TOOL_REPLY)])
+    with pytest.raises(PrivateModeError, match="HTTP 400"):
+        await collect(relay.client())
+    assert relay.verifies == 1 and len(relay.requests) == 1
 
 
 async def test_failed_attestation_sends_nothing():

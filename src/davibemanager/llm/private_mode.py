@@ -85,6 +85,8 @@ _ASSISTANT_REASONING_FIELDS = ("reasoning", "reasoning_content", "reasoning_deta
 
 
 class PrivateModeError(Exception):
+    through_enclave = False     # a refusal carrying the enclave's nonce: it may have run, so never sent again
+
     def __init__(self, message: str, status_code: int | None = None, body: str = ""):
         super().__init__(message)
         self.status_code = status_code
@@ -428,7 +430,8 @@ class PrivateModeClient:
                     # its title is the relay's: the 422 that says so isn't sealed
                     raise PrivateModeError(f"the enclave refused our key twice: {relay_said(str(e))}") from e
             except PrivateModeError as e:
-                missing_seal = e.status_code == 400 and "missing_encrypted_body_header" in e.body
+                missing_seal = (e.status_code == 400 and "missing_encrypted_body_header" in e.body
+                                and not e.through_enclave)
                 if started or attempt or not missing_seal:
                     raise
             except EHBPError as e:
@@ -455,12 +458,16 @@ class PrivateModeClient:
                                      timeout=TIMEOUT_SECONDS, follow_redirects=False) as client:
             async with client.stream("POST", self.enclave.relay + "/v1/chat/completions",
                                      json=body, headers=headers) as resp:
+                from ehbp.protocol import RESPONSE_NONCE_HEADER
                 if resp.status_code >= 400:
                     text = (await resp.aread()).decode(errors="replace")
                     # written by NanoGPT's relay, not the enclave: never sealed, so said as that, and short
-                    raise PrivateModeError(f"Private Mode request failed (HTTP {resp.status_code}); NanoGPT's relay "
-                                           f"said (unauthenticated): {relay_said(text)}", resp.status_code, text)
-                from ehbp.protocol import RESPONSE_NONCE_HEADER
+                    error = PrivateModeError(f"Private Mode request failed (HTTP {resp.status_code}); NanoGPT's "
+                                             f"relay said (unauthenticated): {relay_said(text)}", resp.status_code, text)
+                    # unless it carries the enclave's nonce: it came back the encrypted way, so the request may have
+                    # run, and been paid for (the proxy's isMissingEncryptedBodyHeaderResponse won't resend it)
+                    error.through_enclave = RESPONSE_NONCE_HEADER in resp.headers
+                    raise error
                 # EHBP passes a reply that isn't a success through as it came, unsealed: one the relay made
                 # itself (a 302 with a verdict in it) would pass for the enclave's. Only a sealed one counts.
                 if not 200 <= resp.status_code < 300 or RESPONSE_NONCE_HEADER not in resp.headers:
