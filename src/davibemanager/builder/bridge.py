@@ -5,8 +5,10 @@ a generated wrapper instead, which runs `podman exec -i` into the container, so 
 (the SDK's whole protocol: prompts, messages, permission checks and the in-process "host" MCP
 tools of builder/tools.py) is the only channel between the container and this app.
 
-The SDK hands its child the whole environment of this process; the wrapper passes only the
-variables named in FORWARD into the container, so nothing else of the user's environment gets in.
+The SDK starts the wrapper with the environment as it was before this app changed its own
+(builder/cli_transport.py: its own transport would hand it this process's, GTK_USE_PORTAL=0 and all);
+the wrapper passes only the variables named in FORWARD into the container, so nothing else of the
+user's environment gets in.
 
 A turn's chat entry is an ordered list of parts: text, the model's thinking, groups of steps in
 the sandbox, the cards the host tools add (requests to run something here, questions,
@@ -235,7 +237,11 @@ class BuilderSession:
             client = self._client_factory(self._options())
         else:
             from claude_agent_sdk import ClaudeSDKClient
-            client = ClaudeSDKClient(self._options())
+
+            from .cli_transport import HostEnvironmentTransport
+            options = self._options()
+            # started with host_env(), as every program the app starts (see builder/cli_transport.py)
+            client = ClaudeSDKClient(options, transport=HostEnvironmentTransport(options))
         try:
             await client.connect()
         except Exception as e:

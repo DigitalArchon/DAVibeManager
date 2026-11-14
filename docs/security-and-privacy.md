@@ -552,8 +552,8 @@ core", and none of its memory in one), so neither a core file nor the system's c
 keeps a copy, and other programs of yours can't read its memory or its environment while it runs.
 (So the desktop's portal won't answer it either: where the desktop asks for the portal's file
 dialogs, the app window uses GTK's own. That setting is the app's alone: your browser, opened by
-the app or from a link in its window, and every other program it starts get your environment as
-it was.)
+the app or from a link in its window, and every other program it starts, the `podman exec` that
+starts the assistant in its sandbox included, get your environment as it was.)
 
 A backup holds your apps, chats, settings and API key, locked with your backup password; it doesn't
 hold sync's keys.
