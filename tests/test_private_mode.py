@@ -55,6 +55,7 @@ class Relay:
         self.preflight_status = preflight_status
         self.preflight_text = preflight_text    # what a refusing preflight says, when not the usual JSON
         self.preflights, self.requests, self.keys, self.verifies, self.lists = [], [], [], 0, 0
+        self.proxies = []                       # the proxy each sealed request was given (environment_proxy)
 
     def verifier(self, relay, secret):
         assert relay == RELAY and len(secret) == 64
@@ -76,8 +77,9 @@ class Relay:
             return httpx.Response(self.preflight_status, json={"error": {"message": "nope"}})
         return httpx.Response(200, json={"cacheScope": SCOPE, "upstreamModel": "glm-5-3"})
 
-    def transport(self, key):
+    def transport(self, key, proxy=None):
         self.keys.append(key)
+        self.proxies.append(proxy)
 
         def handle(request):
             assert request.url.path.endswith("/private/tinfoil/v1/chat/completions")
@@ -221,6 +223,71 @@ async def test_real_ehbp_seals_body_and_guard_blocks_unsealed():
     assert isinstance(sealing_transport(pub), AsyncEHBPTransport)
 
 
+PROXY_VARIABLES = ("http_proxy", "https_proxy", "all_proxy", "no_proxy", "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY",
+                   "NO_PROXY")
+
+
+@pytest.fixture
+def no_proxies(monkeypatch):
+    for name in PROXY_VARIABLES:
+        monkeypatch.delenv(name, raising=False)
+    return monkeypatch
+
+
+async def test_the_sealed_request_goes_through_the_environments_proxy_as_the_preflight_does(no_proxies):
+    """httpx reads no proxy from the environment for a client given a transport of its own: the sealed request, alone
+    of Private Mode's, went direct, from this computer's own address, beside a preflight and a list that had gone
+    through the proxy (DA Assistant's sealed._sealing_transport). A fake proxy on this computer sees it ask for the
+    relay. The relay stands at a closed port of this computer: gone direct, as it went before, the request goes
+    nowhere at all."""
+    import asyncio
+
+    asked = []
+
+    async def proxy(reader, writer):
+        asked.append((await reader.readline()).decode(errors="replace"))
+        writer.close()
+
+    server = await asyncio.start_server(proxy, "127.0.0.1", 0)
+    port = server.sockets[0].getsockname()[1]
+    no_proxies.setenv("HTTPS_PROXY", f"http://127.0.0.1:{port}")
+    relay = Relay()
+    enclave = Enclave("https://localhost:9/api/v1/private/tinfoil", verifier=lambda relay, secret: verified())
+    client = PrivateModeClient(BASE, "sk-test", enclave,
+                               plain_http=httpx.AsyncClient(transport=httpx.MockTransport(relay.preflight)))
+    try:
+        with pytest.raises(httpx.HTTPError):
+            await collect(client)
+    finally:
+        server.close()
+        await server.wait_closed()
+    assert asked and asked[0].startswith("CONNECT localhost:9 "), asked
+    assert relay.preflights, "the preflight went first, as before"
+
+
+async def test_the_sealed_request_is_given_the_proxy_the_environment_names_for_the_relay_and_no_proxy_stands(
+        no_proxies):
+    no_proxies.setenv("HTTPS_PROXY", "http://proxy.example:3128")
+    relay = Relay()
+    assert (await collect(relay.client()))[-1][0] == "done"
+    assert relay.proxies == ["http://proxy.example:3128"]
+    for exempt in ("nano-gpt.com", ".nano-gpt.com,localhost", "*"):
+        no_proxies.setenv("NO_PROXY", exempt)
+        relay = Relay()
+        await collect(relay.client())
+        assert relay.proxies == [None], exempt
+    no_proxies.delenv("NO_PROXY")
+    no_proxies.delenv("HTTPS_PROXY")
+    no_proxies.setenv("ALL_PROXY", "socks5://127.0.0.1:9050")       # Tor, say
+    relay = Relay()
+    await collect(relay.client())
+    assert relay.proxies == ["socks5://127.0.0.1:9050"]
+    no_proxies.delenv("ALL_PROXY")
+    relay = Relay()
+    await collect(relay.client())
+    assert relay.proxies == [None]
+
+
 REVIEW_REPLY = (chunk({"role": "assistant", "content": "It lists your disks.\nSUMMARY: harmless\nDATA: none\nVERDICT: proceed"})
                 + chunk({}, "stop") + "data: [DONE]\n\n")
 
@@ -242,7 +309,7 @@ async def test_a_reply_the_enclave_didnt_seal_is_refused_whatever_its_status(sta
         return httpx.Response(200, json={"cacheScope": SCOPE, "upstreamModel": "glm-5-3"})
     client = PrivateModeClient(
         BASE, "sk-test", Enclave(RELAY, verifier=lambda relay, secret: verified(pub)),
-        transport_factory=lambda key: AsyncEHBPTransport.from_public_key_hex(key, inner=Relay()),
+        transport_factory=lambda key, proxy=None: AsyncEHBPTransport.from_public_key_hex(key, inner=Relay()),
         plain_http=httpx.AsyncClient(transport=httpx.MockTransport(preflight)))
     with pytest.raises(PrivateModeError, match="sealed|couldn't be opened"):
         async for _ in client.stream("private/glm-5-3", [{"role": "user", "content": "disk full?"}]):
@@ -488,7 +555,7 @@ async def test_whatever_of_the_relays_an_error_quotes_is_one_line_with_nothing_h
                                   headers={"content-type": PROBLEM_JSON_MEDIA_TYPE})
     client = PrivateModeClient(
         BASE, "sk-test", Enclave(RELAY, verifier=lambda relay_, secret: verified(pub)),
-        transport_factory=lambda key: AsyncEHBPTransport.from_public_key_hex(key, inner=Rotated()),
+        transport_factory=lambda key, proxy=None: AsyncEHBPTransport.from_public_key_hex(key, inner=Rotated()),
         plain_http=httpx.AsyncClient(transport=httpx.MockTransport(relay.preflight)))
     with pytest.raises(PrivateModeError, match="refused our key twice") as e:
         await collect(client)

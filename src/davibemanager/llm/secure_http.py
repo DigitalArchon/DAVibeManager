@@ -91,6 +91,26 @@ def refuse_insecure_redirect(response: httpx.Response) -> None:
         )
 
 
+def environment_proxy(url: str) -> str | None:
+    """The proxy the environment names for `url` (HTTPS_PROXY, HTTP_PROXY, ALL_PROXY, as requests and
+    httpx read them), or None: none named, or `url`'s host is one NO_PROXY exempts.
+
+    For a client that is given a transport of its own, which httpx then sends nowhere but where that
+    transport says, the environment unread: the sealed Private Mode request (private_mode.py), whose one
+    request carried the conversation past the proxy, from this computer's own address, beside a preflight
+    that had gone through it (DA Assistant's proxy.for_url, Nov 2026)."""
+    import urllib.request
+
+    parsed = urlparse(url)
+    if urllib.request.proxy_bypass_environment(parsed.hostname or ""):
+        return None
+    found = urllib.request.getproxies_environment()
+    chosen = found.get(parsed.scheme.lower()) or found.get("all")
+    if not chosen:
+        return None
+    return chosen if "://" in chosen else f"http://{chosen}"
+
+
 def make_client(base_url: str, **kwargs: Any) -> httpx.Client:
     """An httpx client for `base_url`: no proxies for a local endpoint (local_http_options), and
     the redirect guard. `kwargs` go to `httpx.Client` as they are."""

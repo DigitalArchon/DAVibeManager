@@ -187,8 +187,9 @@ then fetches from your distribution's own servers, as it always does.
   (Tinfoil's and Sigstore's) follow one only to HTTPS, and never from a server on the internet into
   this computer or your network: one they may not follow fails the attestation, and nothing is sent.
 - **Proxies.** The app has no proxy setting of its own: its requests use your system's proxy
-  settings (`HTTPS_PROXY` and the like), as most programs do, except a request to a model server
-  on this computer or your network, which never goes through a proxy. Sync goes through Tor.
+  settings (`HTTPS_PROXY` and the like, with `NO_PROXY`'s exceptions), as most programs do, a
+  private model's sealed request as well as its check beforehand, except a request to a model
+  server on this computer or your network, which never goes through a proxy. Sync goes through Tor.
 - **Nothing else from your environment.** A model provider gets the key you gave the app and
   nothing that OpenAI's library would take from your environment (`OPENAI_ORG_ID`,
   `OPENAI_PROJECT_ID`, `OPENAI_CUSTOM_HEADERS`). A model server that takes no connection fails in
