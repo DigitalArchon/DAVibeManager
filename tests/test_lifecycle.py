@@ -180,38 +180,47 @@ def test_a_crash_writes_no_core_and_nothing_reads_the_apps_memory():
     assert out.stdout.split("\n")[:4] == ["True True 0", "0", "True", "1"], out.stdout
 
 
-def test_core_dumps_are_set_off_as_the_standard_says_whatever_the_hard_limit(monkeypatch):
-    """The calls themselves, on a hard limit of 0 too (a soft limit can't go above it), and failures ignored."""
+def _calls_with_hard_limit(monkeypatch, hard) -> tuple[list, list, list]:
+    """What the real no_core_dumps asks of the system with RLIMIT_CORE's hard limit at `hard`: the limits it
+    sets, what it writes to coredump_filter, and its prctl calls, none of them made (the test run stays
+    dumpable)."""
     import builtins
+    import ctypes
     import io
+    import resource
 
     from davibemanager import app
+    set_to, written, prctl = [], [], []
 
-    import ctypes
-    import resource
-    prctl = []
+    class Filter(io.StringIO):
+        def close(self):
+            written.append(self.getvalue())
+            super().close()
 
     class Libc:
         def prctl(self, option, value, *rest):
             prctl.append((option, value))
-    for hard, want in ((resource.RLIM_INFINITY, 1), (5, 1), (0, 0)):
-        set_to, written = [], []
-
-        class Filter(io.StringIO):
-            def close(self):
-                written.append(self.getvalue())
-                super().close()
-        real_open = builtins.open
-        monkeypatch.setattr(resource, "getrlimit", lambda what, hard=hard: (0, hard))
-        monkeypatch.setattr(resource, "setrlimit", lambda what, limits: set_to.append(limits))
-        monkeypatch.setattr(builtins, "open", lambda path, *a, **k: Filter() if path == "/proc/self/coredump_filter"
-                            else real_open(path, *a, **k))
-        monkeypatch.setattr(app.sys, "platform", "linux")
-        monkeypatch.setattr(ctypes, "CDLL", lambda *a, **k: Libc())     # the test run stays dumpable
+    real_open = builtins.open
+    monkeypatch.setattr(resource, "getrlimit", lambda what: (0, hard))
+    monkeypatch.setattr(resource, "setrlimit", lambda what, limits: set_to.append(limits))
+    monkeypatch.setattr(builtins, "open", lambda path, *a, **k: Filter() if path == "/proc/self/coredump_filter"
+                        else real_open(path, *a, **k))
+    monkeypatch.setattr(app.sys, "platform", "linux")
+    monkeypatch.setattr(ctypes, "CDLL", lambda *a, **k: Libc())
+    try:
         REAL_NO_CORE_DUMPS()                             # the real one, not conftest's stand-in
+    finally:
         monkeypatch.setattr(builtins, "open", real_open)
-        assert set_to == [(want, hard)] and written == ["0"] and prctl == [(4, 0)], (hard, set_to, written, prctl)
-        prctl.clear()
+    return set_to, written, prctl
+
+
+def test_core_dumps_are_set_off_as_the_standard_says_whatever_the_hard_limit(monkeypatch):
+    """The calls themselves, on a hard limit of 0 too (a soft limit can't go above it), and none elsewhere."""
+    import resource
+
+    from davibemanager import app
+    for hard, want in ((resource.RLIM_INFINITY, 1), (5, 1), (0, 0)):
+        assert _calls_with_hard_limit(monkeypatch, hard) == ([(want, hard)], ["0"], [(4, 0)]), hard
     monkeypatch.setattr(app.sys, "platform", "darwin")
     monkeypatch.setattr(resource, "setrlimit", lambda *a: pytest.fail("not on another system"))
     REAL_NO_CORE_DUMPS()
