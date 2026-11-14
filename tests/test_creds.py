@@ -62,3 +62,98 @@ def test_a_secure_one_is_used_as_ever(memory_keyring):
     creds.set_secret("provider", "NanoGPT", "sk-live-123")
     assert memory_keyring.store[(creds.SERVICE, "provider:NanoGPT")] == "sk-live-123"
     assert creds.backend_error() is None
+
+
+# --- a key goes only to the address it was entered for (the design every DA app keeps, Nov 2026) ------------
+
+def _models(cfg):
+    return Models(cfg, save_config=lambda c: None, emit=lambda *a, **k: None, log=lambda *a, **k: None)
+
+
+NANO = "https://nano-gpt.com/api/v1"
+
+
+def test_a_key_doesnt_follow_an_address_changed_without_it():
+    """The key was kept by the provider's name alone: an address changed through the API (or by hand) took it, and
+    everything sent with it, to wherever it now pointed. Nothing is deleted: the address put back, it goes again."""
+    cfg = Config()
+    m = _models(cfg)
+    m.save_provider({"name": "NanoGPT", "base_url": NANO}, "sk-live-1")
+    assert cfg.provider("NanoGPT").key_for == ["https://nano-gpt.com:443"]
+    assert m.key(cfg.provider("NanoGPT")) == "sk-live-1"
+    m.save_provider({"name": "NanoGPT", "base_url": "https://evil.example/api/v1"})       # no key given with it
+    prov = cfg.provider("NanoGPT")
+    with pytest.raises(UserError, match=r"entered for https://nano-gpt.com:443, and NanoGPT's address is now "
+                                        r"https://evil.example:443: the key isn't sent there"):
+        m.key(prov)
+    with pytest.raises(UserError, match="isn't sent there"):
+        m.client(prov, "zai-org/glm-5.3")
+    assert creds.get_secret("provider", "NanoGPT") == "sk-live-1"                         # never deleted
+    m.save_provider({"name": "NanoGPT", "base_url": NANO})                                # put back
+    assert m.key(cfg.provider("NanoGPT")) == "sk-live-1"
+
+
+def test_a_key_follows_a_new_address_only_when_the_user_says_so_or_enters_it_again():
+    cfg = Config()
+    m = _models(cfg)
+    m.save_provider({"name": "Mine", "base_url": "https://llm.example/v1"}, "sk-live-1")
+    m.save_provider({"name": "Mine", "base_url": "https://llm2.example/v1", "use_saved_key": True})
+    assert m.key(cfg.provider("Mine")) == "sk-live-1" and cfg.provider("Mine").key_for == ["https://llm2.example:443"]
+    m.save_provider({"name": "Mine", "base_url": "http://localhost:11434/v1"}, "sk-local")
+    assert m.key(cfg.provider("Mine")) == "sk-local" and cfg.provider("Mine").key_for == ["http://localhost:11434"]
+    m.save_provider({"name": "Mine", "base_url": "http://localhost:8080/v1"})              # another port: elsewhere
+    with pytest.raises(UserError, match="isn't sent there"):
+        m.key(cfg.provider("Mine"))
+    # renamed, the key keeps its address
+    m.save_provider({"name": "Theirs", "base_url": "http://localhost:11434/v1"}, original_name="Mine")
+    assert m.key(cfg.provider("Theirs")) == "sk-local"
+    # a provider new here, with a key left under its name from before, sends it nowhere until one is entered
+    creds.set_secret("provider", "Stale", "sk-left-behind")
+    m.save_provider({"name": "Stale", "base_url": "https://new.example/v1"})
+    with pytest.raises(UserError, match="entered for no address"):
+        m.key(cfg.provider("Stale"))
+
+
+def test_a_hand_edited_address_doesnt_take_the_key_and_an_older_config_gives_it_the_addresses_beside_it(tmp_path):
+    from davibemanager import config
+
+    path = tmp_path / "config.toml"
+    path.write_text(f'[[providers]]\nname = "NanoGPT"\nbase_url = "{NANO}"\nbuilder_url = "{NANO}"\n\n'
+                    '[settings]\nbuilder_provider = "NanoGPT"\nbuilder_model = "zai-org/glm-5.3"\n')
+    cfg = config.load(path)                                  # from before keys were held to their address
+    assert cfg.provider("NanoGPT").key_for == ["https://nano-gpt.com:443"] and cfg.__dict__["_origins_settled"]
+    config.save(cfg, path)
+    import tomllib
+    assert tomllib.loads(path.read_text())["providers"][0]["key_for"] == ["https://nano-gpt.com:443"]
+    path.write_text(path.read_text().replace(NANO, "https://evil.example/v1"))           # edited by hand
+    cfg = config.load(path)
+    assert "_origins_settled" not in cfg.__dict__
+    creds.set_secret("provider", "NanoGPT", "sk-live-2")
+    m = _models(cfg)
+    with pytest.raises(UserError, match="entered for https://nano-gpt.com:443.*Settings"):
+        m.builder_target()                                  # the assistant doesn't start with it
+    with pytest.raises(UserError, match="isn't sent there"):
+        m.key(cfg.provider("NanoGPT"))
+
+
+async def test_the_gateway_refuses_a_request_whose_key_was_entered_for_another_address(tmp_path):
+    import httpx
+
+    from davibemanager.gateway import Gateway, Upstream
+
+    forwarded = []
+
+    def key():
+        raise UserError("The API key saved for NanoGPT was entered for https://nano-gpt.com:443 …")
+
+    g = Gateway(tmp_path / "gw", lambda: Upstream(
+        "https://evil.example/api/v1", "bearer", key, ("anthropic/claude-opus-5.5",), provider="NanoGPT"),
+        http=httpx.AsyncClient(transport=httpx.MockTransport(lambda r: forwarded.append(r) or httpx.Response(200))))
+    await g.start()
+    try:
+        async with httpx.AsyncClient(transport=httpx.AsyncHTTPTransport(uds=str(g.model_socket)), base_url="http://gw") as c:
+            r = await c.post("/v1/messages", headers={"authorization": f"Bearer {g.token}"}, json={
+                "model": "anthropic/claude-opus-5.5", "messages": [{"role": "user", "content": "hi"}]})
+    finally:
+        await g.stop()
+    assert r.status_code == 403 and "entered for https://nano-gpt.com:443" in r.text and forwarded == []

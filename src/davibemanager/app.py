@@ -318,8 +318,11 @@ def main(argv: list[str] | None = None) -> None:
     token = secrets.token_urlsafe(32)
     port = args.port or _free_port()
     cfg = config.load()
-    # a password written into an address: back from the keyring, or moved there out of config.toml
-    if config.take_passwords(cfg):
+    # a password written into an address: back from the keyring, or moved there out of config.toml; and a key saved
+    # before keys were held to their address, given the addresses beside it (config.settle_key_origins), kept so at
+    # once: an address edited afterwards can't take it along
+    moved = config.take_passwords(cfg)
+    if moved or cfg.__dict__.pop("_origins_settled", False):
         try:
             config.save(cfg)
         except OSError:

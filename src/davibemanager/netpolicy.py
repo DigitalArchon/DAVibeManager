@@ -70,6 +70,22 @@ def shown(url) -> str:
     return parsed._replace(netloc="…@" + parsed.netloc.rsplit("@", 1)[1]).geturl()
 
 
+def origin(url) -> str:
+    """Where an address sends what is sent to it: its scheme, host and port ("https://nano-gpt.com:443"), the
+    port said when the address leaves it to the scheme, lowercased; "" for text that isn't such an address. What a
+    saved key is held to (models.key_problem): a key goes to the origin it was entered for, and nowhere else."""
+    try:
+        parsed = urlparse(str(url or "").strip())
+        host, port = parsed.hostname, parsed.port
+    except ValueError:
+        return ""
+    scheme = parsed.scheme.lower()
+    if scheme not in ("http", "https") or not host:
+        return ""
+    port = port or (443 if scheme == "https" else 80)
+    return f"{scheme}://{f'[{host}]' if ':' in host else host}:{port}"
+
+
 def without_password(url) -> str:
     """`url` with the user name and password written into it taken out, as shown() does but leaving an
     address, not a placeholder, where they were: what config.toml keeps of an address whose password is in

@@ -21,7 +21,7 @@ from urllib.parse import urlparse
 
 import tomli_w
 
-from .netpolicy import without_password
+from .netpolicy import origin, without_password
 
 NANOGPT_BASE_URL = "https://nano-gpt.com/api/v1"
 ANTHROPIC_BASE_URL = "https://api.anthropic.com"
@@ -88,6 +88,15 @@ class Provider:
     vision_overrides: dict[str, str] = field(default_factory=dict)
     # model id -> context window in tokens (for providers that don't report it, e.g. local models)
     context_overrides: dict[str, int] = field(default_factory=dict)
+    # where the API key stored for it was entered for: the origins (scheme, host, port: netpolicy.origin) of its
+    # addresses when it was. The key goes to those alone (models.key_problem): an address changed by hand, or
+    # through the API, doesn't take the key with it. None until it is known (read from an older config.toml:
+    # settle_key_origins gives it the addresses beside it)
+    key_for: list[str] | None = None
+
+    def origins(self) -> list[str]:
+        """The origins its key would go to now: its chat endpoint's and the assistant's."""
+        return sorted({origin(url) for url in (self.base_url, self.builder_url) if url} - {""})
 
 
 def provider_defaults(p: Provider) -> Provider:
@@ -249,7 +258,20 @@ def from_dict(data: dict) -> Config:
     if cfg.settings.builder_reasoning not in BUILDER_EFFORTS:
         cfg.settings.builder_reasoning = BUILDER_EFFORT  # likewise a level ("xhigh", "none")
     apply_search_default(cfg.settings)
+    if settle_key_origins(cfg):
+        cfg.__dict__["_origins_settled"] = True     # app.main saves it at once: an edit after it can't take the key
     return cfg
+
+
+def settle_key_origins(cfg: Config) -> bool:
+    """A key saved before keys were held to an address takes the origins of the addresses saved beside it, with no
+    question (the design every DA app keeps, Nov 2026): from then on a changed address doesn't take it along. True
+    if any did, so config.toml should be saved again."""
+    settled = False
+    for p in cfg.providers:
+        if p.key_for is None:
+            p.key_for, settled = p.origins(), True
+    return settled
 
 
 def load(path: Path | None = None) -> Config:

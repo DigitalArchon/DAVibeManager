@@ -445,7 +445,10 @@ class Gateway:
                 return fail(path, 403, str(e))
             except Exception as e:  # noqa: BLE001 - the reason is the user's to see (no provider, no key)
                 return fail(path, 403, f"DA Vibe Manager refused this request: {e}")
-            key = up.key()
+            try:
+                key = up.key()
+            except Exception as e:  # noqa: BLE001 - entered for another address (models.key_problem_for): said
+                return fail(path, 403, f"DA Vibe Manager refused this request: {e}")
             if not key:
                 # a 403, not a 401: Claude Code would take a 401 for its own login refused
                 return fail(path, 403, f"No API key is stored for {up.provider}; add it in Settings.")

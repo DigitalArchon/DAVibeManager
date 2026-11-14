@@ -53,6 +53,24 @@ class KeyringWait(UserError):
     """The key may well be stored, but the keyring can't be read yet (e.g. just after login)."""
 
 
+def key_problem_for(prov: Provider) -> str | None:
+    """Why the key stored for `prov` isn't sent with its requests, or None: it was entered for other addresses
+    than the provider has now (Provider.key_for). An address changed in config.toml by hand, or through the API,
+    never takes the key with it: the key would go, with everything sent, to whatever the new address is. Nothing
+    is deleted; entering the key again for the new address, or putting the address back, sends it again (the
+    design every DA app keeps, Nov 2026; DA Private Coder's creds.account keys it by host and port)."""
+    if prov.key_for is None:
+        return None
+    elsewhere = [o for o in prov.origins() if o not in prov.key_for]
+    if not elsewhere:
+        return None
+    was = ", ".join(shown(o) for o in prov.key_for) or "no address"
+    now = ", ".join(shown(o) for o in elsewhere)
+    return (f"The API key saved for {prov.name} was entered for {was}, and {prov.name}'s address is now {now}: the key "
+            "isn't sent there, so a changed address can't take it anywhere else. If the new address is right, enter "
+            f"the key again for it (Settings → API key, for NanoGPT); otherwise put {prov.name}'s address back.")
+
+
 class Models:
     def __init__(self, cfg: Config, *, save_config: Callable[[Config], None], emit: Callable[..., None],
                  log: Callable[..., None]):
@@ -107,6 +125,15 @@ class Models:
             name=name, base_url=base_url, default_model=str(data.get("default_model", "")).strip(),
             builder_url=builder_url, builder_auth=builder_auth, tier_overrides=overrides))
         old = self.cfg.provider(original_name or name)
+        # the key goes only where it was entered for: a new one is for these addresses; an older one stays for its
+        # own, so an address changed here without it doesn't take it along (key_problem_for), unless the caller
+        # says the user chose to use it there (`use_saved_key`). A provider new here has none until one is given
+        if api_key or (old and data.get("use_saved_key") is True):
+            prov.key_for = prov.origins()
+        elif old:
+            prov.key_for = list(old.key_for) if old.key_for is not None else old.origins()
+        else:
+            prov.key_for = []
         # a password written into an address goes to the keyring, as the API key does (config.py)
         renamed = bool(original_name and original_name != name and old)
         try:
@@ -188,10 +215,15 @@ class Models:
         return prov
 
     def key(self, prov: Provider) -> str | None:
+        """The provider's key, for its requests; None when none can be read. A key entered for another address
+        than the provider has now is never given out: UserError, saying why and what to do (key_problem_for)."""
         try:
-            return creds.get_secret("provider", prov.name)
+            key = creds.get_secret("provider", prov.name)
         except Exception:  # noqa: BLE001 - keyring locked/unavailable
             return None
+        if key and (problem := key_problem_for(prov)):
+            raise UserError(problem)
+        return key
 
     def client(self, prov: Provider, model: str = "") -> LLMClient | PrivateModeClient:
         if self.client_factory:
@@ -312,7 +344,7 @@ class Models:
         if s.review_model:
             return s.review_model
         for prov in self.cfg.providers:
-            if not (prov.base_url and offers_private_mode(prov.base_url) and self.key(prov)):
+            if not (prov.base_url and offers_private_mode(prov.base_url)) or key_problem_for(prov) or not self.key(prov):
                 continue
             try:
                 ids = [m for m in await self._private_ids(prov.base_url) if is_private_mode(m)]
@@ -433,6 +465,8 @@ class Models:
             raise KeyringWait(f"Your keyring isn't open yet, so your {prov.name} key can't be read ({e}).") from None
         if not stored:
             raise UserError(f"No API key is stored for {prov.name}; add it in Settings.")
+        if problem := key_problem_for(prov):
+            raise UserError(problem)            # entered for another address: the assistant doesn't start with it
         if not s.builder_model:
             raise UserError("Choose the assistant's model in Settings.")
         small = s.builder_small_model or s.builder_model

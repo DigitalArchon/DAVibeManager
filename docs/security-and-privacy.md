@@ -211,6 +211,12 @@ then fetches from your distribution's own servers, as it always does.
   requests: the sandbox never holds it (the gateway adds it on the way out), and it isn't in any
   log, message or error. A key with a space, a line break or a character no key has in it is
   refused before anything is sent, without being repeated back.
+- **A key goes only to the address it was entered for**: the scheme, host and port the provider's
+  address had when you saved the key. If the address is changed afterwards (by hand in the settings
+  file, or through the app's API) to another host or port, the key isn't sent there: the request
+  is refused, saying which address the key was for and what to do (enter the key again for the new
+  address, or put the address back). Nothing is deleted. A key saved before this rule takes the
+  address saved beside it, the first time the app starts.
 - **A password written into an address** (`https://user:password@host/…`, a provider's or a
   package mirror's) goes to your keyring with the address as typed; the settings file has the
   address without it. It goes only to the address it was typed for, and wherever an address is
