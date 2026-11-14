@@ -229,3 +229,77 @@ async def test_a_model_server_that_never_answers_the_connection_fails_soon(monke
     finally:
         for s in held + [listener]:
             s.close()
+
+
+# --- a stream's lines: split at line ends alone, in time and memory its length takes (SealedLore's read_lines) -
+
+def _pieces(data: bytes, size: int, taken: list | None = None):
+    async def gen():
+        for i in range(0, len(data), size):
+            if taken is not None:
+                taken.append(i)
+            yield data[i:i + size]
+    return gen()
+
+
+@pytest.mark.parametrize("size", [1, 2, 3, 7, 1000])
+async def test_a_streams_lines_read_in_any_pieces_are_split_at_line_ends_alone(size):
+    """CRLF, CR or LF, a CRLF split between two pieces, a character split between two: and never at U+2028 or U+0085,
+    which a JSON string may hold unescaped."""
+    import re
+
+    from davibemanager.llm.client import read_lines
+
+    text = "data: one\r\ndata: two\rdata: thrée\n\ndata: f o\x85ur\r\n\r\nlast"
+    got = [line async for line in read_lines(_pieces(text.encode(), size))]
+    assert got == re.split(r"\r\n|\r|\n", text) and got[-1] == "last"
+    assert [line async for line in read_lines(_pieces(b"a\r\n", size))] == ["a"]
+
+
+async def test_a_long_line_costs_its_length_not_its_length_squared():
+    """Every piece was added to the line so far and the whole of it split again: a megabyte-long line in small pieces
+    took time growing with its square."""
+    import time
+
+    from davibemanager.llm.client import read_lines
+
+    data = b"data: " + b"x" * (1024 * 1024) + b"\n"
+    started = time.monotonic()
+    (line,) = [line async for line in read_lines(_pieces(data, 32))]
+    assert len(line) == len(data) - 1
+    assert time.monotonic() - started < 5.0
+
+
+async def test_a_line_that_never_ends_is_refused_before_it_fills_memory(monkeypatch):
+    """A provider (or whatever answers at its address) that sends one line for ever was read for ever, all of it
+    held. Now it is refused at MAX_LINE_CHARS, nothing more read: through the client the gateway and the app's own
+    requests use, and a private model's sealed stream alike."""
+    from davibemanager.llm import client as client_mod
+    from davibemanager.llm.secure_http import ProviderError
+
+    monkeypatch.setattr(client_mod, "MAX_LINE_CHARS", 10_000)
+    taken: list = []
+    body = _pieces(b"data: " + b"x" * 10_000_000, 1000, taken)
+    http = httpx.AsyncClient(transport=httpx.MockTransport(
+        lambda r: httpx.Response(200, content=body, headers={"content-type": "text/event-stream"})))
+    with pytest.raises(ProviderError, match="a line of more than"):
+        async for _ in LLMClient("https://nano-gpt.com/api/v1", "k", http).stream("m", USER):
+            pass
+    assert len(taken) < 20, "read no further than the limit"
+
+    from test_private_mode import Relay, collect
+    relay = Relay(replies=[(200, "data: " + "x" * 20_000)])
+    with pytest.raises(ProviderError, match="a line of more than"):
+        await collect(relay.client())
+
+
+async def test_a_private_models_reply_keeps_a_character_httpx_would_have_split_a_line_at():
+    """httpx's aiter_lines splits as str.splitlines does, at U+0085 and U+2028 too, which a JSON string may hold
+    unescaped: the chunk's two halves weren't JSON, and were dropped without a word."""
+    from test_private_mode import Relay, chunk, collect
+
+    reply = (chunk({"role": "assistant", "content": "a\x85b c"}).replace("\\u0085", "\x85").replace("\\u2028", " ")
+             + chunk({}, "stop") + "data: [DONE]\n\n")
+    assert "\x85" in reply
+    events = await collect(Relay(replies=[(200, reply)]).client())
+    assert "".join(v for k, v in events if k == "text") == "a\x85b c"

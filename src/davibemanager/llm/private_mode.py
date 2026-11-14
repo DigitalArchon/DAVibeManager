@@ -61,7 +61,7 @@ from openai.types.chat import ChatCompletionChunk
 from ..netpolicy import check_key, check_url, is_local_host
 from . import sdk_guard
 from .capabilities import norm_id
-from .client import StreamAccumulator, is_private_mode
+from .client import StreamAccumulator, is_private_mode, read_lines
 from .dcap import since_boot
 from .secure_http import environment_proxy
 
@@ -488,7 +488,9 @@ class PrivateModeClient:
                 if resp.headers.get("x-nanogpt-private-mode") != "tinfoil":
                     raise PrivateModeError("the reply didn't come back through Private Mode; refused")
                 yield "open", None                 # its reply has begun (the gateway waits for this much)
-                async for line in resp.aiter_lines():
+                # split at line ends alone, and no line past MAX_LINE_CHARS (httpx's aiter_lines splits at U+0085 and
+                # the like too, which a JSON string may hold, and holds a line however long it runs)
+                async for line in read_lines(resp.aiter_bytes()):
                     if not line.startswith("data:"):
                         continue
                     data = line[5:].strip()

@@ -34,6 +34,11 @@ SENSITIVITY_TIERS = {
 # (300 s between its pieces). The two were one number until Nov 2026, so a local model server that was
 # switched off showed "thinking" for ten minutes and more (two attempts) before it failed (DA Toolkit's 2d1aa54).
 CONNECT_TIMEOUT = 10
+# A stream is read no further than this without a line's end. A stream's line (one event) is a few kilobytes, a
+# picture sent inline a few megabytes: a longer one is no reply, and reading on would hold memory for as long as the
+# provider sent (SealedLore's providers/streaming.MAX_LINE_CHARS).
+MAX_LINE_CHARS = 32 * 1024 * 1024
+_NEWLINE = re.compile(r"\r\n|\r|\n")
 
 
 def is_private_mode(model_id: str) -> bool:
@@ -199,7 +204,7 @@ class LLMClient:
                 acc.result.tee_route = headers.get("x-tee-verification-route")
             yield "open", None                 # the provider took it, and its reply has begun
             done = seen = False
-            async for line in _lines(response.iter_bytes(), digest):
+            async for line in read_lines(response.iter_bytes(), digest):
                 if done or not line.startswith("data:"):
                     continue
                 seen = True
@@ -280,20 +285,49 @@ def _cut_off(response) -> ProviderError:
     )
 
 
-async def _lines(chunks, digest) -> AsyncIterator[str]:
-    """The stream's lines, each byte also fed to `digest` as it arrives, decoded of any content
-    encoding (the bytes the receipt's hash is of: SealedLore's openai_compat._lines)."""
+async def read_lines(chunks, digest=None) -> AsyncIterator[str]:
+    """The stream's lines (split at CRLF, CR or LF, and nowhere else: a JSON string may hold U+2028 or U+0085
+    unescaped), each byte also fed to `digest` as it arrives, decoded of any content encoding (the bytes the
+    receipt's hash is of: SealedLore's openai_compat._lines). Each piece is split once, so a long line costs its
+    length and no more: the whole of what had come was split again at every piece, so a line that never ended took
+    time growing with its square. A line past MAX_LINE_CHARS is a ProviderError, with nothing more read
+    (SealedLore's providers/streaming.read_lines)."""
     decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
-    pending = ""
+    line: list[str] = []            # the line not yet ended, in the pieces it came in
+    length = 0
+    held_cr = False                 # a CR at a piece's end may be the first half of a CRLF
+
+    def ended(text: str, final: bool) -> list[str]:
+        nonlocal length, held_cr
+        if held_cr:
+            text = "\r" + text
+        held_cr = not final and text.endswith("\r")
+        if held_cr:
+            text = text[:-1]
+        done: list[str] = []
+        parts = _NEWLINE.split(text)
+        for index, part in enumerate(parts):
+            length += len(part)
+            if length > MAX_LINE_CHARS:
+                raise ProviderError(f"the provider sent a line of more than {MAX_LINE_CHARS // (1024 * 1024)} MB with "
+                                    "no end; not read")
+            line.append(part)
+            if index < len(parts) - 1:
+                done.append("".join(line))
+                line.clear()
+                length = 0
+        return done
+
     async for chunk in chunks:
-        digest.update(chunk)
-        pending += decoder.decode(chunk)
-        *complete, pending = re.split(r"\r\n|\r|\n", pending)
-        for line in complete:
-            yield line
-    pending += decoder.decode(b"", final=True)
-    if pending:
-        yield pending
+        if digest is not None:
+            digest.update(chunk)
+        for done in ended(decoder.decode(chunk), final=False):
+            yield done
+    for done in ended(decoder.decode(b"", final=True), final=True):
+        yield done
+    if line and length:
+        yield "".join(line)
+
 
 
 # provider extensions sent in the request body, whatever the SDK version knows about:
