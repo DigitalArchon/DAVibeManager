@@ -18,6 +18,7 @@ import uvicorn
 
 from . import config, omarchy
 from .engine import Engine
+from . import hostenv
 from .hostenv import HOST_TYPELIB_DIRS, put_back, set_for_self
 from .server.app import Launches, create_app, runtime_dir
 
@@ -27,20 +28,37 @@ PR_SET_DUMPABLE = 4
 
 def no_core_dumps() -> None:
     """A native crash must not write the process's memory to disk: the API key, the conversation,
-    a private model's replies opened in memory, the sync group's keys. `RLIMIT_CORE` 0 stops a core
-    file; not dumpable stops the system's collector (systemd-coredump reads the flag, not the limit)
-    and, as a side effect, a debugger or another program of this user's reading the process's memory
-    or its environment. What it starts runs dumpable again (the flag is reset when a program is
-    started), and the sandbox's guard still reads the start time in /proc/<pid>/stat, which stays
-    readable. Failures are ignored: the app runs as before (SealedLore's gui/app.py, Sept 2026)."""
+    a private model's replies opened in memory, the sync group's keys. As every DA app does it (the
+    cross-app standard, Nov 2026):
+
+    - not dumpable (`PR_SET_DUMPABLE` 0): the system's collector (systemd-coredump, apport) reads the
+      flag, not the limit, and, as a side effect, a debugger or another program of this user's can't
+      read the process's memory or its environment;
+    - `RLIMIT_CORE`'s soft limit 1, the hard limit left as it is: the kernel aborts the core of a
+      process whose limit is exactly 1 ("RLIMIT_CORE is set to 1, aborting core"), even one dumpable
+      again, where 0 alone is ignored by systemd-coredump's pipe (measured on MintDev, Nov 14 2026);
+      and the programs it starts may raise their own again, as a hard limit of 0 kept them from;
+    - `/proc/self/coredump_filter` 0: no memory of it in any core that is still made. Written first: a
+      process that isn't dumpable may not write its own (its /proc/self files are root's).
+
+    What it starts runs dumpable again (the flag is reset when a program is started), and the
+    sandbox's guard still reads the start time in /proc/<pid>/stat, which stays readable. Linux only;
+    failures are ignored: the app runs as before (SealedLore's gui/app.py, Sept 2026)."""
+    if not sys.platform.startswith("linux"):
+        return
+    try:
+        # first: once the process isn't dumpable its /proc/self files are root's, and this one can't be written
+        with open("/proc/self/coredump_filter", "w") as f:
+            f.write("0")
+    except OSError:
+        pass
     try:
         import resource
 
-        resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
+        _, hard = resource.getrlimit(resource.RLIMIT_CORE)
+        resource.setrlimit(resource.RLIMIT_CORE, (1 if hard == resource.RLIM_INFINITY or hard >= 1 else hard, hard))
     except (ImportError, ValueError, OSError):
         pass
-    if not sys.platform.startswith("linux"):
-        return
     try:
         import ctypes
 
@@ -281,8 +299,8 @@ def browser_opener(port: int, launches: Launches):
     """What opens the default browser on the app: on a one-time code (server.app.Launches), never the token,
     since what a browser is opened with is on its command line, which every user of this computer can read."""
     def open_in_browser() -> None:
-        import webbrowser
-        webbrowser.open(f"http://127.0.0.1:{port}/#c={launches.new()}")
+        # the browser started with the environment as it was (hostenv.open_url): not this app's GTK_USE_PORTAL=0
+        hostenv.open_url(f"http://127.0.0.1:{port}/#c={launches.new()}")
     return open_in_browser
 
 
@@ -298,6 +316,7 @@ def server_config(app, port: int) -> uvicorn.Config:
 
 def main(argv: list[str] | None = None) -> None:
     no_core_dumps()     # first: nothing the app holds is ever written out by a crash, its arguments' handling included
+    hostenv.browsers_get_the_original_environment()       # the window's links too (pywebview's webbrowser.open)
     ap = argparse.ArgumentParser(prog="davibemanager", description="Your Linux helper, in the tray")
     mode = ap.add_mutually_exclusive_group()
     mode.add_argument("--browser", action="store_true",

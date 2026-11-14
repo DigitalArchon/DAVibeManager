@@ -542,10 +542,13 @@ links open in your browser.
 Kept only in memory, and gone when the app stops: your API key once read from the keyring, the
 gateway's token, the window's key, attestations and their results, the private models' cache key,
 and RedPill's session records. If the app crashes, none of its memory is written to disk: it turns
-core dumps off as it starts, so neither a core file nor the system's crash collector keeps a copy,
-and other programs of yours can't read its memory or its environment while it runs. (So the
-desktop's portal won't answer it either: where the desktop asks for the portal's file dialogs,
-the app window uses GTK's own.)
+core dumps off as it starts (not dumpable, a core size limit of 1, which the kernel takes as "no
+core", and none of its memory in one), so neither a core file nor the system's crash collector
+keeps a copy, and other programs of yours can't read its memory or its environment while it runs.
+(So the desktop's portal won't answer it either: where the desktop asks for the portal's file
+dialogs, the app window uses GTK's own. That setting is the app's alone: your browser, opened by
+the app or from a link in its window, and every other program it starts get your environment as
+it was.)
 
 A backup holds your apps, chats, settings and API key, locked with your backup password; it doesn't
 hold sync's keys.

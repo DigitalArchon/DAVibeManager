@@ -10,6 +10,8 @@ import pytest
 from keyring.errors import KeyringLocked
 
 from davibemanager import creds, engine as engine_mod
+from davibemanager.app import no_core_dumps as REAL_NO_CORE_DUMPS          # before conftest stands in for it
+from davibemanager.hostenv import browsers_get_the_original_environment as REAL_BROWSERS
 from davibemanager.models import KeyringWait, UserError
 from davibemanager.workspace import scripts
 
@@ -147,16 +149,22 @@ async def test_on_quit_the_sandbox_is_stopped_before_claude_code_is_closed(env, 
 
 def test_a_crash_writes_no_core_and_nothing_reads_the_apps_memory():
     """A core file would hold the API key, the conversation and a private model's replies opened in memory. Run in
-    a process of its own: the flag is the process's."""
+    a process of its own: the flag is the process's. As every DA app sets it (the cross-app standard, Nov 2026):
+    not dumpable, RLIMIT_CORE's soft limit 1 (the kernel aborts a core at exactly 1, where systemd-coredump's pipe
+    ignores 0) with the hard limit as it was, and nothing of its memory in a core (coredump_filter 0)."""
     import sys
     import textwrap
 
     code = textwrap.dedent("""
         import ctypes, os, resource, subprocess, sys
+        hard = resource.getrlimit(resource.RLIMIT_CORE)[1]
         from davibemanager.app import no_core_dumps
         no_core_dumps()
         libc = ctypes.CDLL(None, use_errno=True)
-        print(resource.getrlimit(resource.RLIMIT_CORE), libc.prctl(3, 0, 0, 0, 0))   # PR_GET_DUMPABLE
+        soft, after = resource.getrlimit(resource.RLIMIT_CORE)
+        print(soft == (1 if hard == resource.RLIM_INFINITY or hard >= 1 else hard), after == hard,
+              libc.prctl(3, 0, 0, 0, 0))   # PR_GET_DUMPABLE
+        print(int(open("/proc/self/coredump_filter").read(), 16))
         # the sandbox's guard, another program, still reads when the app started
         pid = str(os.getpid())
         mine = open(f"/proc/{pid}/stat").read().rsplit(") ", 1)[1].split()[19]
@@ -169,7 +177,72 @@ def test_a_crash_writes_no_core_and_nothing_reads_the_apps_memory():
     """)
     out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=60)
     assert out.returncode == 0, out.stderr
-    assert out.stdout.split("\n")[:3] == ["(0, 0) 0", "True", "1"], out.stdout
+    assert out.stdout.split("\n")[:4] == ["True True 0", "0", "True", "1"], out.stdout
+
+
+def test_core_dumps_are_set_off_as_the_standard_says_whatever_the_hard_limit(monkeypatch):
+    """The calls themselves, on a hard limit of 0 too (a soft limit can't go above it), and failures ignored."""
+    import builtins
+    import io
+
+    from davibemanager import app
+
+    import ctypes
+    import resource
+    prctl = []
+
+    class Libc:
+        def prctl(self, option, value, *rest):
+            prctl.append((option, value))
+    for hard, want in ((resource.RLIM_INFINITY, 1), (5, 1), (0, 0)):
+        set_to, written = [], []
+
+        class Filter(io.StringIO):
+            def close(self):
+                written.append(self.getvalue())
+                super().close()
+        real_open = builtins.open
+        monkeypatch.setattr(resource, "getrlimit", lambda what, hard=hard: (0, hard))
+        monkeypatch.setattr(resource, "setrlimit", lambda what, limits: set_to.append(limits))
+        monkeypatch.setattr(builtins, "open", lambda path, *a, **k: Filter() if path == "/proc/self/coredump_filter"
+                            else real_open(path, *a, **k))
+        monkeypatch.setattr(app.sys, "platform", "linux")
+        monkeypatch.setattr(ctypes, "CDLL", lambda *a, **k: Libc())     # the test run stays dumpable
+        REAL_NO_CORE_DUMPS()                             # the real one, not conftest's stand-in
+        monkeypatch.setattr(builtins, "open", real_open)
+        assert set_to == [(want, hard)] and written == ["0"] and prctl == [(4, 0)], (hard, set_to, written, prctl)
+        prctl.clear()
+    monkeypatch.setattr(app.sys, "platform", "darwin")
+    monkeypatch.setattr(resource, "setrlimit", lambda *a: pytest.fail("not on another system"))
+    REAL_NO_CORE_DUMPS()
+
+
+def test_a_browser_is_started_with_the_environment_as_it_was_not_the_apps_own(monkeypatch):
+    """GTK_USE_PORTAL=0 is the app's own (the portal refuses an undumpable process): webbrowser hands the browser
+    the process's environment, so the app's browser, and every link the window opened (pywebview's
+    webbrowser.open), lost the portal's dialogs the desktop asked for (the cross-app standard, Nov 2026)."""
+    import webbrowser
+
+    from davibemanager import app, hostenv
+
+    seen = []
+
+    def browser(url, new=0, autoraise=True):
+        seen.append((url, new, os.environ.get("GTK_USE_PORTAL"), os.environ.get("GI_TYPELIB_PATH")))
+        return True
+    monkeypatch.setattr(hostenv, "ORIGINAL", {})
+    monkeypatch.setattr(hostenv, "_REAL_OPEN", None)
+    monkeypatch.setattr(webbrowser, "open", browser)
+    monkeypatch.setenv("GTK_USE_PORTAL", "1")
+    monkeypatch.delenv("GI_TYPELIB_PATH", raising=False)
+    app.own_dialogs()
+    hostenv.set_for_self("GI_TYPELIB_PATH", "/opt/app/girepository-1.0")
+    REAL_BROWSERS()                                               # conftest's stands in for the rest of the run
+    assert webbrowser.open is hostenv.open_url
+    webbrowser.open_new_tab("https://example.org/")               # as pywebview opens a link the user clicked
+    app.browser_opener(8123, app.Launches())()
+    assert [(n, portal, typelib) for _, n, portal, typelib in seen] == [(2, "1", None), (0, "1", None)]
+    assert os.environ["GTK_USE_PORTAL"] == "0" and os.environ["GI_TYPELIB_PATH"] == "/opt/app/girepository-1.0"
 
 
 def test_the_app_turns_core_dumps_off_before_anything_else(monkeypatch):

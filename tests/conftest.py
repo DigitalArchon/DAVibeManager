@@ -47,6 +47,8 @@ def dumpable_test_run(monkeypatch):
     from davibemanager import app
 
     monkeypatch.setattr(app, "no_core_dumps", lambda: None)
+    # nor is webbrowser.open replaced for the whole run (hostenv.open_url is tested by itself)
+    monkeypatch.setattr(app.hostenv, "browsers_get_the_original_environment", lambda: None)
 
 
 @pytest.fixture

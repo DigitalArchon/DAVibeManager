@@ -7,6 +7,7 @@ AppRun sets for DA Vibe Manager itself (see _set_by_apprun)."""
 from __future__ import annotations
 
 import os
+import threading
 
 # where the system keeps its GObject introspection typelibs (Fedora, Debian/Ubuntu, Arch)
 HOST_TYPELIB_DIRS = ("/usr/lib64/girepository-1.0", "/usr/lib/x86_64-linux-gnu/girepository-1.0",
@@ -41,6 +42,49 @@ def put_back(name: str) -> None:
         os.environ.pop(name, None)
     else:
         os.environ[name] = value
+
+
+# webbrowser.open as it was, once browsers_get_the_original_environment put open_url in its place
+_REAL_OPEN = None
+_BROWSER_LOCK = threading.Lock()
+
+
+def _set(values: dict[str, str | None]) -> None:
+    for name, value in values.items():
+        if value is None:
+            os.environ.pop(name, None)
+        else:
+            os.environ[name] = value
+
+
+def open_url(url: str, new: int = 0, autoraise: bool = True) -> bool:
+    """webbrowser.open, the browser it starts given the environment as it was before this app changed it for
+    itself (set_for_self: GTK_USE_PORTAL=0, which the portal's refusal of an undumpable process asks for, and
+    GI_TYPELIB_PATH): webbrowser hands a browser the process's own environment, so it opened its file dialogs
+    without the portal the desktop asked for, wherever the window's links were opened (the cross-app
+    standard, Nov 2026). Put back for the call alone, under a lock, and set again after: GTK reads
+    GTK_USE_PORTAL once, when it first needs a dialog."""
+    import webbrowser
+
+    real = webbrowser.open if webbrowser.open is not open_url else _REAL_OPEN
+    with _BROWSER_LOCK:
+        mine = {name: os.environ.get(name) for name in ORIGINAL}
+        _set(ORIGINAL)
+        try:
+            return real(url, new, autoraise)
+        finally:
+            _set(mine)
+
+
+def browsers_get_the_original_environment() -> None:
+    """Every webbrowser.open of this process (and open_new, open_new_tab, which call it) through open_url: the
+    window's own (pywebview opens a link the user clicks with it) as well as the app's."""
+    global _REAL_OPEN
+    import webbrowser
+
+    if _REAL_OPEN is None and webbrowser.open is not open_url:
+        _REAL_OPEN = webbrowser.open
+        webbrowser.open = open_url
 
 
 def _set_by_apprun(env) -> set[str]:
