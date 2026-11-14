@@ -137,6 +137,12 @@ def proof(secret: bytes, first: dict, second: dict, first_nonce: bytes, second_n
                     hashlib.sha256).hexdigest()
 
 
+def _same(theirs, ours: str) -> bool:
+    """Whether what the other computer sent is `ours`, compared in constant time, as bytes: compare_digest raises
+    TypeError on a str with anything but ASCII in it (sync/wire.py's _same)."""
+    return hmac.compare_digest(str(theirs or "").encode("utf-8", "surrogatepass"), ours.encode("utf-8"))
+
+
 def nonce_of(text) -> bytes:
     text = str(text or "")
     if not NONCE.fullmatch(text):
@@ -197,9 +203,9 @@ class Waiting:
         if not isinstance(msg, dict) or msg.get("t") != "reveal":
             raise PairingError("The other computer sent something that isn't a pairing.")
         nonce = nonce_of(msg.get("nonce"))
-        if not hmac.compare_digest(commitment(nonce, self.them), self.their_commit):
+        if not _same(self.their_commit, commitment(nonce, self.them)):
             raise PairingError("The other computer's answer didn't match what it first sent: nothing was paired.")
-        if not hmac.compare_digest(str(msg.get("proof") or ""), proof(self.secret, self.me, self.them, self.nonce, nonce)):
+        if not _same(msg.get("proof"), proof(self.secret, self.me, self.them, self.nonce, nonce)):
             raise PairingError("The other computer couldn't show it has the code: nothing was paired.")
         self.their_nonce = nonce
 

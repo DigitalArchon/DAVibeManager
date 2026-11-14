@@ -156,6 +156,13 @@ def _proof(secret: bytes, role: bytes, mine: bytes, theirs: bytes, client: str, 
                     hashlib.sha256).hexdigest()
 
 
+def _same(theirs, ours: str) -> bool:
+    """Whether what the other computer sent is `ours`, compared in constant time, as bytes: compare_digest raises
+    TypeError on a str with anything but ASCII in it, which anyone reaching the onion could send (a crash of the
+    handshake, not a refusal). Any character at all is encoded (surrogatepass: JSON can carry a lone surrogate)."""
+    return hmac.compare_digest(str(theirs or "").encode("utf-8", "surrogatepass"), ours.encode("utf-8"))
+
+
 def _nonce(msg: dict) -> bytes:
     text = str(msg.get("nonce") or "")
     if len(text) != 64:
@@ -180,7 +187,7 @@ async def hello_as_client(reader, writer, me: str, them: str, group: str, secret
     if msg.get("proto") != PROTO:
         raise WireError("its DA Vibe Manager is a different version: update both")
     theirs = _nonce(msg)
-    if not hmac.compare_digest(str(msg.get("proof") or ""), _proof(secret, b"server", mine, theirs, me, them)):
+    if not _same(msg.get("proof"), _proof(secret, b"server", mine, theirs, me, them)):
         raise WireError("the computer that answered couldn't prove it's that one of the group")
     await send(writer, {"t": "auth", "proof": _proof(secret, b"client", theirs, mine, me, them)})
     msg = await recv(reader, HELLO_WAIT)
@@ -210,8 +217,7 @@ async def hello_as_server(reader, writer, me: str, lookup) -> tuple[str, str]:
     await send(writer, {"t": "hello", "proto": PROTO, "id": me, "nonce": mine.hex(),
                         "proof": _proof(secret, b"server", theirs, mine, who, me)})
     msg = await recv(reader, HELLO_WAIT)
-    if msg.get("t") != "auth" or not hmac.compare_digest(str(msg.get("proof") or ""),
-                                                          _proof(secret, b"client", mine, theirs, who, me)):
+    if msg.get("t") != "auth" or not _same(msg.get("proof"), _proof(secret, b"client", mine, theirs, who, me)):
         await send(writer, {"t": "refused", "code": "member", "why": "it couldn't prove which computer it is"})
         raise Refused("member", "a computer that couldn't prove which it is")
     await send(writer, {"t": "welcome"})

@@ -5,6 +5,7 @@ two computers, or three, comes together."""
 import asyncio
 import base64
 import hashlib
+import json
 import os
 import time
 from contextlib import contextmanager
@@ -136,6 +137,22 @@ def test_what_a_computer_says_of_itself_is_checked():
         a.opened(b.opening())
 
 
+def test_a_proof_or_commitment_with_characters_that_arent_ascii_is_refused_not_a_crash():
+    """compare_digest raises TypeError on a str with anything but ASCII in it: anyone who reached the code's onion
+    could send one, and the pairing failed with a TypeError, not a refusal in words."""
+    code = pairing.new_code()
+    a, b = pairing.Waiting(code, info("Desktop")), pairing.Joining(code, info("Laptop"))
+    reveal = b.answered(a.opened(b.opening()))
+    for proof in ("é" * 64, "\ud800" + "0" * 63, 7):
+        with pytest.raises(pairing.PairingError, match="has the code"):
+            a.revealed({**reveal, "proof": proof})
+    a, b = pairing.Waiting(code, info("Desktop")), pairing.Joining(code, info("Laptop"))
+    opening = b.opening()
+    reveal = b.answered(a.opened({**opening, "commit": "ü" * 64}))
+    with pytest.raises(pairing.PairingError, match="didn't match"):
+        a.revealed(reveal)
+
+
 # ---------------------------------------------------------------- the wire
 
 async def pipe():
@@ -194,6 +211,36 @@ async def test_members_prove_which_they_are_and_others_are_refused_saying_why():
                 await serving
         cw.close()
         server.close()
+
+
+async def test_a_hello_whose_proof_isnt_ascii_is_refused_in_words_both_ways():
+    """A computer, or anyone at its onion, answering with a proof of characters that aren't ASCII made the handshake
+    raise TypeError (compare_digest on str), not a refusal."""
+    key, me, them, group = os.urandom(32), os.urandom(16).hex(), os.urandom(16).hex(), os.urandom(16).hex()
+    # as the server: a client whose auth's proof isn't ASCII
+    (cr, cw), (sr, sw), server = await pipe()
+    serving = asyncio.ensure_future(wire.hello_as_server(sr, sw, me, lambda who, gid: store.pair_key(key, me, who)))
+    await wire.send(cw, {"t": "hello", "proto": wire.PROTO, "id": them, "group": group, "nonce": os.urandom(32).hex()})
+    assert (await wire.recv(cr))["t"] == "hello"
+    await wire.send(cw, {"t": "auth", "proof": "é" * 64})
+    with pytest.raises(wire.Refused, match="couldn't prove"):
+        await serving
+    assert (await wire.recv(cr))["t"] == "refused"
+    cw.close()
+    server.close()
+    # as the client: a server whose hello's proof isn't ASCII
+    (cr, cw), (sr, sw), server = await pipe()
+    asking = asyncio.ensure_future(wire.hello_as_client(cr, cw, me, them, group, store.pair_key(key, me, them)))
+    assert (await wire.recv(sr))["t"] == "hello"
+    # a lone surrogate, as JSON can carry one (escaped: this app's own send would refuse to encode it)
+    data = json.dumps({"t": "hello", "proto": wire.PROTO, "id": them, "nonce": os.urandom(32).hex(),
+                       "proof": "\ud800ü" * 32}).encode()
+    sw.write(b"J" + len(data).to_bytes(4, "big") + data)
+    await sw.drain()
+    with pytest.raises(wire.WireError, match="couldn't prove"):
+        await asking
+    cw.close()
+    server.close()
 
 
 async def test_tor_saying_an_onion_cant_be_reached_is_put_in_words(tmp_path):
