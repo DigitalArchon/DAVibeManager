@@ -157,3 +157,56 @@ async def test_the_gateway_refuses_a_request_whose_key_was_entered_for_another_a
     finally:
         await g.stop()
     assert r.status_code == 403 and "entered for https://nano-gpt.com:443" in r.text and forwarded == []
+
+
+# --- a key over plain http to another machine (the cross-app standard, Nov 2026) ----------------------------
+
+def test_a_key_never_crosses_the_network_unencrypted_unless_the_config_says_so(tmp_path):
+    """Plain http is allowed to this computer and the local network, but to another machine the key crosses that
+    network unencrypted. With no field for the address in the window, nothing asks: it isn't sent, in words naming
+    the address and the ways out, until config.toml says `key_over_http = true` beside it."""
+    from davibemanager import netpolicy
+    assert netpolicy.in_the_clear("http://192.168.1.5:11434/v1") and netpolicy.in_the_clear("http://nas.local/v1")
+    for here in ("http://localhost:11434/v1", "http://127.0.0.2/v1", "http://[::1]:8080/v1", "https://192.168.1.5/v1"):
+        assert not netpolicy.in_the_clear(here), here
+    assert not netpolicy.is_loopback_host("127.0.0.1.") and netpolicy.is_loopback_host("api.localhost")
+    cfg = Config()
+    m = _models(cfg)
+    m.save_provider({"name": "Mine", "base_url": "http://192.168.1.5:11434/v1"}, "sk-lan")
+    with pytest.raises(UserError, match=r"http://192.168.1.5:11434/v1 is plain http to another machine.*https://.*"
+                                        r"`key_over_http = true` under Mine in config.toml"):
+        m.key(cfg.provider("Mine"))
+    with pytest.raises(UserError, match="plain http to another machine"):
+        m.client(cfg.provider("Mine"), "llama3")
+    cfg.provider("Mine").key_over_http = True                                         # as a hand edit sets it
+    assert m.key(cfg.provider("Mine")) == "sk-lan"
+    m.save_provider({"name": "Mine", "base_url": "http://192.168.1.5:11434/v1", "default_model": "x"})
+    assert m.key(cfg.provider("Mine")) == "sk-lan"                                    # kept at the same address
+    m.save_provider({"name": "Mine", "base_url": "http://192.168.1.6:11434/v1"}, "sk-other")
+    with pytest.raises(UserError, match="plain http"):
+        m.key(cfg.provider("Mine"))                                                   # not to another machine
+    m.save_provider({"name": "Mine", "base_url": "http://192.168.1.6:11434/v1", "key_over_http": "yes"})
+    assert cfg.provider("Mine").key_over_http is False                                # only a JSON true
+    m.save_provider({"name": "Mine", "base_url": "http://192.168.1.6:11434/v1", "key_over_http": True})
+    assert m.key(cfg.provider("Mine")) == "sk-other"
+    m.save_provider({"name": "Local", "base_url": "http://localhost:11434/v1"}, "sk-here")
+    assert m.key(cfg.provider("Local")) == "sk-here"                                  # this computer: never leaves it
+
+
+def test_a_provider_already_sending_its_key_over_plain_http_keeps_doing_so_once_settled(tmp_path):
+    """The first load by this version of a config.toml from before keys were held to their address sets the flag
+    for a provider whose key already went so, with no question; a hand edit after it sets nothing."""
+    import tomllib
+
+    from davibemanager import config
+    path = tmp_path / "config.toml"
+    path.write_text('[[providers]]\nname = "Lan"\nbase_url = "http://192.168.1.5:11434/v1"\n\n'
+                    '[[providers]]\nname = "NanoGPT"\nbase_url = "https://nano-gpt.com/api/v1"\n')
+    cfg = config.load(path)
+    assert cfg.provider("Lan").key_over_http is True and cfg.provider("NanoGPT").key_over_http is False
+    config.save(cfg, path)
+    assert tomllib.loads(path.read_text())["providers"][0]["key_over_http"] is True
+    path.write_text(path.read_text().replace("http://192.168.1.5:11434/v1", "http://192.168.1.9:11434/v1")
+                    .replace("key_over_http = true", "key_over_http = false"))
+    cfg = config.load(path)
+    assert cfg.provider("Lan").key_over_http is False                                  # settled once, never again

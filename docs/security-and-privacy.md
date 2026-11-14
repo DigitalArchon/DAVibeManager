@@ -225,6 +225,15 @@ then fetches from your distribution's own servers, as it always does.
   is refused, saying which address the key was for and what to do (enter the key again for the new
   address, or put the address back). Nothing is deleted. A key saved before this rule takes the
   address saved beside it, the first time the app starts.
+- **A key never crosses your network unencrypted unless you say so.** Plain `http://` is allowed to
+  a model server on this computer or your local network, but to another machine the key (and
+  everything sent with it) crosses the network readable by anyone on it, a café's or a hotel's Wi-Fi
+  included. There is no field for such an address in the window, so nothing asks: the key isn't
+  sent, and the request is refused saying so, unless the provider's entry in the settings file says
+  `key_over_http = true` beside its address (or use the server's `https://` address). A provider
+  already sending its key that way when this version first read its settings keeps doing so, with
+  the line written for it once. To this computer itself (`localhost`, 127.0.0.1, `::1`) a key never
+  leaves it, so none of this applies.
 - **A password written into an address** (`https://user:password@host/…`, a provider's or a
   package mirror's) goes to your keyring with the address as typed; the settings file has the
   address without it. It goes only to the address it was typed for, and wherever an address is

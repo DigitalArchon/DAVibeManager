@@ -25,7 +25,7 @@ from .llm import tee as tee_mod
 from .llm.client import LLMClient, detect_tier, is_private_mode
 from .llm.private_mode import (Enclave, PrivateModeClient, list_private_models, offers_private_mode, relay_said,
                                relay_url)
-from .netpolicy import InsecureURL, UnusableKey, check_url, key_problem, scrubbed, shown
+from .netpolicy import InsecureURL, UnusableKey, check_url, in_the_clear, key_problem, scrubbed, shown
 
 # A TEE model's attestation is made again, with a fresh nonce, before a send once it is this old: on a
 # clock that runs on while the computer sleeps (dcap.since_boot), so one made before a night's suspend
@@ -70,6 +70,14 @@ def key_problem_for(prov: Provider) -> str | None:
     never takes the key with it: the key would go, with everything sent, to whatever the new address is. Nothing
     is deleted; entering the key again for the new address, or putting the address back, sends it again (the
     design every DA app keeps, Nov 2026; DA Private Coder's creds.account keys it by host and port)."""
+    clear = [url for url in (prov.base_url, prov.builder_url) if url and in_the_clear(url)]
+    if clear and not prov.key_over_http:
+        # plain http to another machine on the network: anyone on it reads the key (SealedLore's keys_in_the_clear;
+        # where the address is typed in a window, every DA app asks first: here there is no such field)
+        return (f"{prov.name}'s address {shown(clear[0])} is plain http to another machine on your network, so its API "
+                "key would cross the network unencrypted, readable by anyone on it (a café's or a hotel's Wi-Fi too): "
+                "it isn't sent. Use the server's https:// address, or, if the network is yours alone, add the line "
+                f"`key_over_http = true` under {prov.name} in config.toml.")
     if prov.key_for is None:
         return None
     elsewhere = [o for o in prov.origins() if o not in prov.key_for]
@@ -136,6 +144,10 @@ class Models:
             name=name, base_url=base_url, default_model=str(data.get("default_model", "")).strip(),
             builder_url=builder_url, builder_auth=builder_auth, tier_overrides=overrides))
         old = self.cfg.provider(original_name or name)
+        # a key over plain http to another machine (netpolicy.in_the_clear): only where the caller says the user
+        # chose it (a JSON true), or the provider had it at these same addresses (key_problem_for)
+        prov.key_over_http = data.get("key_over_http") is True or bool(
+            old and old.key_over_http and old.origins() == prov.origins())
         # the key goes only where it was entered for: a new one is for these addresses; an older one stays for its
         # own, so an address changed here without it doesn't take it along (key_problem_for), unless the caller
         # says the user chose to use it there (`use_saved_key`). A provider new here has none until one is given

@@ -24,7 +24,7 @@ from urllib.parse import urlparse
 
 import tomli_w
 
-from .netpolicy import origin, without_password
+from .netpolicy import in_the_clear, origin, without_password
 
 NANOGPT_BASE_URL = "https://nano-gpt.com/api/v1"
 ANTHROPIC_BASE_URL = "https://api.anthropic.com"
@@ -96,6 +96,12 @@ class Provider:
     # through the API, doesn't take the key with it. None until it is known (read from an older config.toml:
     # settle_key_origins gives it the addresses beside it)
     key_for: list[str] | None = None
+    # its key may go over plain http to another machine on the local network (netpolicy.in_the_clear), where
+    # anyone on that network can read it: set by hand beside the address in config.toml (`key_over_http =
+    # true`), there being no field for the address in the window; without it such a key isn't sent
+    # (models.key_problem_for). Set once, with no question, for a provider already sending its key so when this
+    # version first read its config (settle_key_origins)
+    key_over_http: bool = False
 
     def origins(self) -> list[str]:
         """The origins its key would go to now: its chat endpoint's and the assistant's."""
@@ -274,6 +280,9 @@ def settle_key_origins(cfg: Config) -> bool:
     for p in cfg.providers:
         if p.key_for is None:
             p.key_for, settled = p.origins(), True
+            # its key went over plain http to another machine before: it keeps doing so, as it did
+            if any(in_the_clear(url) for url in (p.base_url, p.builder_url) if url):
+                p.key_over_http = True
     return settled
 
 

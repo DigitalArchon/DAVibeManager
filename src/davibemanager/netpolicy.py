@@ -163,6 +163,35 @@ def is_local_host(host: str | None) -> bool:
     return ip is not None and any(ip in net for net in _PRIVATE_NETS)
 
 
+_LOOPBACK = (ipaddress.ip_network("127.0.0.0/8"), ipaddress.ip_network("::1/128"))
+
+
+def is_loopback_host(host: str | None) -> bool:
+    """`host` is this computer itself (127.0.0.0/8, ::1, a localhost name): what goes there over plain http
+    never leaves it. Any other local host is taken for another machine (nothing is looked up), and plain http to
+    it can be read by anyone on the network between (SealedLore's models/config.is_loopback_host)."""
+    host = (host or "").strip().lower()
+    if host.endswith(".") and _ip(host.rstrip(".")) is not None:
+        return False                    # a name to the resolver, not that address
+    host = host.rstrip(".")
+    if host == "localhost" or host.endswith(".localhost"):
+        return bool(_DNS_NAME.fullmatch(host))
+    ip = _ip(host)
+    return ip is not None and any(ip in net for net in _LOOPBACK)
+
+
+def in_the_clear(url: str) -> bool:
+    """Plain http to another machine on the local network: allowed (`check_url`), but anyone on that network
+    can read what goes, a café's or a hotel's Wi-Fi included. To this computer it never leaves (SealedLore's
+    gui/settings_dialog._in_the_clear)."""
+    try:
+        parsed = urlparse(str(url or "").strip())
+        host = parsed.hostname or ""
+    except ValueError:
+        return False
+    return parsed.scheme.lower() == "http" and is_local_host(host) and not is_loopback_host(host)
+
+
 # The name DA Toolkit's netguard gives it, which the TEE and Private Mode clients copied from DA Toolkit
 # (llm/tee.py, llm/private_mode.py: one copy for the family) call it by.
 is_local = is_local_host
