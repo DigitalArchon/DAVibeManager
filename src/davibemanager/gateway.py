@@ -33,6 +33,7 @@ from typing import Awaitable, Callable
 import httpx
 
 from .llm import anthropic_bridge as bridge
+from .llm.errors import error_words, shown_error
 from .llm import routes
 from .llm.client import capped_lines, is_private_mode
 from .llm.secure_http import ACCEPT_ENCODING, ProviderError, is_local, loads, local_http_options
@@ -102,16 +103,17 @@ def upstream_refusal(model: str, e: BaseException, provider: str, answering: boo
     status = getattr(e, "status_code", None)
     status = status if isinstance(status, int) and not isinstance(status, bool) else None
     name = provider or "the provider"
-    said = f"{model}: {e}"
+    words = shown_error(e)              # the provider's own words labelled, on one line, cut short
+    said = f"{model}: {words}"
     if isinstance(e, ModelRetired):
         return Refused(400, said, "invalid_request_error")
     if status == 402:
         return Refused(402, f"{model}: your {name} balance is too low for this request, so it wasn't run. Top it up, "
-                            f"then try again. ({name} said: {e})", "billing_error")
+                            f"then try again. ({name} said: {words})", "billing_error")
     if status in (401, 403):
         # never a 401 to Claude Code: it would take its own login for the one refused
         check = " Check the API key in Settings." if status == 401 else ""
-        return Refused(403, f"{model}: {name} refused the request (HTTP {status}): {e}{check}")
+        return Refused(403, f"{model}: {name} refused the request (HTTP {status}): {words}{check}")
     if status == 429:
         return Refused(429, said, "rate_limit_error", retry=True)
     if status is not None and 400 <= status < 500:
@@ -698,11 +700,12 @@ class Gateway:
         remember them, and the one to send instead ("": none; None: not that kind of refusal)."""
         if not sent:
             return None
-        takes = efforts_named(str(error), sent)
+        words = error_words(error)         # the body too: openai 3.38 and later leave it out of str(error)
+        takes = efforts_named(words, sent)
         if takes:
             self._efforts[model] = takes
             return nearest_effort(sent, takes)
-        if effort_unsupported(str(error)):
+        if effort_unsupported(words):
             self._efforts[model] = ()
             return ""
         return None

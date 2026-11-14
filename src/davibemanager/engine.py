@@ -50,6 +50,7 @@ from .hostrun import HostRequest
 from .llm import anthropic_bridge, capabilities, prompts, websearch
 from .llm import routes as routes_mod
 from .llm.client import is_private_mode
+from .llm.errors import shown_error
 from .models import KeyHeldBack, KeyringWait, Models, UserError
 from .netpolicy import InsecureURL, check_url
 from .netpolicy import scrubbed
@@ -1501,8 +1502,9 @@ class Engine:
             client = self.models.client(prov, model)
             text = await self.models.complete(client, prov, model, messages)
         except Exception as e:  # noqa: BLE001
-            self._network_event({**row, "status": 502, "error": str(e)[:300], "seconds": round(time.monotonic() - started, 2)})
-            raise UserError(f"The reviewer couldn't be asked: {e}") from e
+            self._network_event({**row, "status": 502, "error": shown_error(e)[:300],
+                                 "seconds": round(time.monotonic() - started, 2)})
+            raise UserError(f"The reviewer couldn't be asked: {shown_error(e)}") from e
         row.update(status=200, seconds=round(time.monotonic() - started, 2))
         self._check_reply(check, client, row)
         self._network_event(row)
@@ -2089,7 +2091,7 @@ class Engine:
             client = self.models.client(prov, model)
             text = await self.models.complete(client, prov, model, messages)
         except Exception as e:
-            self._network_event({"kind": "vision", "model": model, "status": 502, "error": str(e)[:300], **private})
+            self._network_event({"kind": "vision", "model": model, "status": 502, "error": shown_error(e)[:300], **private})
             raise
         usage = getattr(client, "last_usage", None)
         route = self.models.route(prov, model)     # a host the user chose for it: paid per use, as the gateway counts it

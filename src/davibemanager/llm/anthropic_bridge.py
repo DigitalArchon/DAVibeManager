@@ -38,6 +38,7 @@ from contextlib import aclosing
 from typing import AsyncIterator, Awaitable, Callable
 
 from ..safety.inject import defang
+from .errors import shown_error
 from .secure_http import loads
 
 VISION_PROMPT = """\
@@ -121,7 +122,7 @@ class ImageDescriber:
             except asyncio.CancelledError:
                 raise
             except Exception as e:  # noqa: BLE001 - the assistant should know, and can carry on without it
-                return f"[An image was here, but the vision helper couldn't describe it: {e}]"
+                return f"[An image was here, but the vision helper couldn't describe it: {shown_error(e)}]"
         # what a picture shows is anyone's text (a page, a window's title): not the app's notes
         return f"[Image, described for you by a vision model ({self.model}):]\n{defang(self._cache[digest])}"
 
@@ -469,8 +470,8 @@ async def sse(events: AsyncIterator[tuple[str, object]], model: str, input_estim
         if result is None:
             raise RuntimeError(_ENDED_EARLY)
     except Exception as e:  # noqa: BLE001 - told to the CLI the way Anthropic tells errors mid-stream
-        stats["error"] = str(e)
-        yield _sse("error", {"type": "error", "error": {"type": "api_error", "message": f"{model}: {e}"}})
+        stats["error"] = shown_error(e)
+        yield _sse("error", {"type": "error", "error": {"type": "api_error", "message": f"{model}: {stats['error']}"}})
         return
     for out in close():
         yield out

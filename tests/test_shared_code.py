@@ -11,7 +11,7 @@ import pytest
 
 HERE = Path(__file__).resolve().parents[1] / "src" / "davibemanager" / "llm"
 CANONICAL = Path(__file__).resolve().parents[1].parent / "DAToolkit" / "src" / "datoolkit" / "llm"
-SHARED = ("tee.py", "private_mode.py", "dcap.py", "nras.py", "ethsig.py", "sdk_guard.py")
+SHARED = ("tee.py", "private_mode.py", "dcap.py", "nras.py", "ethsig.py", "sdk_guard.py", "errors.py")
 
 _NAMES = re.compile(r"datoolkit|davibemanager|daprivatecoder")
 _APPS = re.compile(r"DA Toolkit|DA Vibe Manager|DA Private Coder")

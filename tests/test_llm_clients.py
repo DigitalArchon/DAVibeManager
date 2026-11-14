@@ -330,3 +330,59 @@ async def test_an_overflow_is_recognised_however_the_openai_library_words_its_er
                             body=error.body)
         assert capabilities.overflow(error) == capabilities.overflow(later) == (True, limit), str(error)
     assert capabilities.overflow("Error code: 400") == (False, None)
+
+
+async def _provider_errors(*answers):
+    """The errors the real client raises for each of `answers` (httpx.Response), as the openai installed words
+    them, each with its twin as openai 3.38 and later word it: only the body's message in the text."""
+    import openai
+
+    out = []
+    for answer in answers:
+        client = LLMClient("https://fake.example/v1", "sk-test",
+                           httpx.AsyncClient(transport=httpx.MockTransport(lambda r, a=answer: a)))
+        with pytest.raises(openai.APIStatusError) as caught:
+            await client.complete("m", [{"role": "user", "content": "hi"}])
+        error = caught.value
+        message = error.body.get("message") if isinstance(error.body, dict) else None
+        later = type(error)(f"Error code: {error.status_code}" + (f" - {message}" if message else ""),
+                            response=error.response, body=error.body)
+        out.append((error, later))
+    return out
+
+
+async def test_a_providers_words_are_read_whole_and_told_labelled_short_whichever_openai_wrote_them():
+    """llm/errors.py (DA Toolkit's): what Claude Code is told of a refusal, and Sandbox activity shows, is the status,
+    the provider's message and the rest of its answer labelled as its own, on one line and cut short, on either
+    openai; the settings and efforts a route refuses are found in the body too. 3.37 put the whole body in the
+    text, uncut; 3.38 and later nothing of one that isn't JSON."""
+    from types import SimpleNamespace
+
+    from davibemanager.config import Config
+    from davibemanager.gateway import Gateway, upstream_refusal
+    from davibemanager.llm.errors import SHOWN_WORDS, shown_error
+    from davibemanager.models import Models
+
+    (plain, plain_later), (coded, coded_later), (long, long_later), (setting, setting_later), (effort, effort_later) = \
+        await _provider_errors(
+            httpx.Response(400, text="the upstream said no:\nquota exceeded for this key"),
+            httpx.Response(400, json={"error": {"message": "This request is too long.", "code": "context_length_exceeded"}}),
+            httpx.Response(400, text="x" * 70_000),
+            httpx.Response(400, text="moonshotai/kimi-k3 does not support temperature on the selected route"),
+            httpx.Response(400, text="reasoning_effort must be one of low, high, max"))
+    assert shown_error(plain) == shown_error(plain_later) == \
+        "Error code: 400 (the provider said: the upstream said no: quota exceeded for this key)"
+    assert shown_error(coded) == shown_error(coded_later) == \
+        'Error code: 400 - This request is too long. (the provider said: {"code": "context_length_exceeded"})'
+    assert shown_error(long) == shown_error(long_later) == f"Error code: 400 (the provider said: {'x' * SHOWN_WORDS})"
+    for error in (plain, plain_later):
+        told = upstream_refusal("glm", error, "NanoGPT")
+        assert str(told) == "glm: Error code: 400 (the provider said: the upstream said no: quota exceeded for this key)"
+    assert len(str(upstream_refusal("glm", long_later, "NanoGPT"))) < 400
+    models = Models(Config(), save_config=lambda c: None, emit=lambda *a, **k: None, log=lambda *a, **k: None)
+    prov = SimpleNamespace(name="NanoGPT")
+    for error in (setting, setting_later):
+        assert models.learn_unsupported(prov, "kimi", {"temperature": 0.3}, error) == "temperature"
+    for error in (effort, effort_later):
+        gateway = SimpleNamespace(_efforts={})
+        assert Gateway._learned(gateway, "kimi", error, "medium") == "high" and gateway._efforts["kimi"] == ("low", "high", "max")

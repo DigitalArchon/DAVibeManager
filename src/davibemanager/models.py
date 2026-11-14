@@ -23,6 +23,7 @@ from .llm import params as params_mod
 from .llm import routes as routes_mod
 from .llm import tee as tee_mod
 from .llm.client import LLMClient, detect_tier, is_private_mode
+from .llm.errors import error_words, shown_error
 from .llm.private_mode import (Enclave, PrivateModeClient, list_private_models, offers_private_mode, relay_said,
                                relay_url)
 from .netpolicy import InsecureURL, UnusableKey, check_url, in_the_clear, key_problem, scrubbed, shown
@@ -452,12 +453,13 @@ class Models:
         return route
 
     def learn_unsupported(self, prov: Provider, model: str, params: dict, err: Exception) -> str | None:
-        m = re.search(r"(?:does not|doesn't|do not) support (?:the )?[`'\"]?([a-z_]+)", str(err), re.I)
+        # the body too: openai 3.38 and later leave it out of str(err)
+        m = re.search(r"(?:does not|doesn't|do not) support (?:the )?[`'\"]?([a-z_]+)", error_words(err), re.I)
         key = m.group(1).lower() if m else ""
         if key not in params:
             return None
         self._unsupported.setdefault((prov.name, model), set()).add(key)
-        self._log("setting_unsupported", model=model, setting=key, error=str(err)[:300])
+        self._log("setting_unsupported", model=model, setting=key, error=shown_error(err))
         return key
 
     def is_tee(self, prov: Provider, model: str) -> bool:
