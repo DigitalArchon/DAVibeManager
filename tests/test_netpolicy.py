@@ -143,6 +143,31 @@ def test_an_address_urlparse_cant_take_or_an_ip_with_a_dot_after_it_is_refused()
     assert check_url("http://192.168.1.50:8080/v1")
 
 
+@pytest.mark.parametrize("host", ["evil\\.local", "a%2f.local", "a/b.local", "x y.local", "evil\\.localhost",
+                                  "a%2e.localhost", "ev!l.local"])
+def test_a_local_name_is_local_only_as_a_plain_dns_name(host):
+    """Any characters passed in a `.local` name: one a resolver or another parser reads as another name (a
+    backslash taken for a slash, a % escape decoded) reached it over plain http, with the key (DA Toolkit's
+    netguard._DNS_NAME)."""
+    assert not is_local_host(host)
+    with pytest.raises(InsecureURL):
+        check_url(f"http://{host}/v1")
+    assert is_local_host("my_nas.local") and is_local_host("Printer.Local.") and is_local_host("app.localhost")
+
+
+@pytest.mark.parametrize("url", ["https://host\\@evil.example/v1", "https://nano-gpt.com\\.evil.example/v1",
+                                 "https://nano-gpt.com/api v1", "https://nano-gpt.com/\x00v1",
+                                 "https://nano-\tgpt.com/v1", "http://localhost\\@evil.example/", "https://a\x7f.com/",
+                                 "https://nano-gpt.com/api/v1\nX-Evil: 1"])
+def test_an_address_with_a_space_a_backslash_or_a_control_character_is_refused(url):
+    """Python's parser and httpx's (or a browser's) may read such an address as two different places: refused in
+    words, never used (DA Toolkit's and DA Assistant's netguard.UNSAFE). A redirect to one isn't followed."""
+    with pytest.raises(InsecureURL, match="no spaces, backslashes or control characters"):
+        check_url(url)
+    assert not is_secure(url)
+    assert check_url(" https://nano-gpt.com/api/v1\n") == "https://nano-gpt.com/api/v1"     # pasted with spaces round it
+
+
 def test_this_computers_networks_include_its_second_addresses_and_its_sites_other_ipv6_networks(tmp_path, monkeypatch):
     import ipaddress
     fib = tmp_path / "fib_trie"

@@ -180,8 +180,10 @@ then fetches from your distribution's own servers, as it always does.
 - **HTTPS only.** Every address the app sends anything to is HTTPS, except an address on this
   computer or your local network: localhost, the loopback and private ranges (10.0.0.0/8,
   172.16.0.0/12, 192.168.0.0/16, fc00::/7), link-local addresses and `.local` names, where plain
-  `http://` is allowed (for a model server of your own, say). An address that is neither is
-  refused, saying why: it is never used, and never quietly rewritten.
+  `http://` is allowed (for a model server of your own, say). A `.local` name counts only as a
+  plain name (letters, digits, `-`, `_` and dots). An address that is neither is refused, saying
+  why: it is never used, and never quietly rewritten. So is one with a space, a backslash or a
+  control character in it, which another program may read as a different address.
 - **Redirects.** A model provider's redirect is never followed: the request, your words in it,
   would go wherever it points. Nor is one in a TEE model's checks; the checks of a private model
   (Tinfoil's and Sigstore's) follow one only to HTTPS, and never from a server on the internet into

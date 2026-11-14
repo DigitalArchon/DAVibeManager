@@ -37,6 +37,14 @@ class InsecureURL(ValueError):
     """A URL the app won't use: not https, and not on this machine or the local network."""
 
 
+# a name a resolver reads as written: "%", "/", "\\" and the like in a name could reach DNS as another, so a
+# `.local` name holding one isn't judged local (DA Toolkit's netguard._DNS_NAME)
+_DNS_NAME = re.compile(r"[a-z0-9_-]+(\.[a-z0-9_-]+)*")
+# what no address has in it, and Python's parser and httpx's may not agree on (DA Toolkit's and DA Assistant's
+# netguard.UNSAFE): "https://host\\@evil.example/" is host's to one and evil.example's to the other
+UNSAFE = re.compile(r"[\\\s\x00-\x1f\x7f]")
+
+
 # Everything of a text up to its last "@" before a query or a fragment, the scheme and "//" aside: where an
 # address that can't be read may have a user name and password.
 _UP_TO_AT = re.compile(r"^((?:[^:/?#]+:)?//)?[^?#]*@")
@@ -133,13 +141,17 @@ def is_local_host(host: str | None) -> bool:
     if not host:
         return False
     if host == "localhost" or host.endswith(".localhost") or host.endswith(".local"):
-        return True
+        # only a plain DNS name: "evil\\.local" or "a%2f.local" is read as another name by someone
+        return bool(_DNS_NAME.fullmatch(host))
     ip = _ip(host)
     return ip is not None and any(ip in net for net in _PRIVATE_NETS)
 
 
 def is_secure(url: str) -> bool:
-    """https anywhere, or http to a local address."""
+    """https anywhere, or http to a local address. Never one with a space, a backslash or a control character
+    in it (UNSAFE), which another parser may read as somewhere else."""
+    if UNSAFE.search(str(url or "")):
+        return False
     try:
         parsed = urlparse(url)
         parsed.hostname
@@ -153,6 +165,9 @@ def is_secure(url: str) -> bool:
 def check_url(url: str, what: str = "This address") -> str:
     """Return `url` unchanged if the app may use it, else raise InsecureURL saying why."""
     url = (url or "").strip()
+    if UNSAFE.search(url):
+        raise InsecureURL(f"{what} isn't an address the app can use: {shown(url)[:80]!r}. An address has no "
+                          "spaces, backslashes or control characters in it.")
     try:
         parsed = urlparse(url)
         host = parsed.hostname
