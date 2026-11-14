@@ -398,8 +398,9 @@ async def capped_lines(response: httpx.Response) -> None:
     SDK's own readers keep a line until it ends, joining each piece to what came before.
 
     And as every DA app reads an answer (Nov 2026): one compressed in a way that wasn't asked for
-    (br, zstd: secure_http.ACCEPT_ENCODING) is refused unread; an error's body is read to
-    MAX_ERROR_BYTES and no further, the rest left unread; and a body that isn't an event stream (or
+    (br, zstd: secure_http.ACCEPT_ENCODING) is refused unread; an error's body, and a redirect's (httpx
+    reads one it follows whole before following it), is read to MAX_ERROR_BYTES and no further, the
+    rest left unread; and a body that isn't an event stream (or
     one asked for whole: WHOLE_BODY) to MAX_BODY_BYTES in all. A refusal raises out of the SDK's
     reading as it is."""
     coding = encoded(response)
@@ -408,7 +409,7 @@ async def capped_lines(response: httpx.Response) -> None:
                             f"{coding[:20]!r}, which wasn't asked for; it was not read.",
                             status_code=response.status_code)
     read = response.aiter_bytes
-    error = response.status_code >= 400
+    error = response.status_code >= 300            # an error's, or a redirect's
     stream = (not WHOLE_BODY.get()
               and str(response.headers.get("content-type", "")).lower().startswith("text/event-stream"))
     limit = MAX_ERROR_BYTES if error else None if stream else MAX_BODY_BYTES

@@ -90,17 +90,18 @@ def too_much(response, limit: int = MAX_BODY_BYTES) -> ProviderError:
 
 def capped_body(response: httpx.Response) -> None:
     """A response hook for a client reading bodies from outside (make_client's): a body sent in a
-    coding not asked for is refused before a byte of it is read; an error's body is read to
-    MAX_ERROR_BYTES and no further; any other to MAX_BODY_BYTES, counted as decoded (a few
-    compressed megabytes can be gigabytes), else ProviderError. A stream read a piece at a time
-    (`client.stream`) is held to the same."""
+    coding not asked for is refused before a byte of it is read; an error's body, and a redirect's
+    (httpx reads one it follows whole before following it), is read to MAX_ERROR_BYTES and no
+    further; any other to MAX_BODY_BYTES, counted as decoded (a few compressed megabytes can be
+    gigabytes), else ProviderError. A stream read a piece at a time (`client.stream`) is held to
+    the same."""
     coding = encoded(response)
     if coding:
         raise ProviderError(f"{shown(str(response.request.url))} sent its answer compressed as "
                             f"{coding[:20]!r}, which wasn't asked for; it was not read.",
                             status_code=response.status_code)
     read = response.iter_bytes
-    limit = MAX_ERROR_BYTES if response.status_code >= 400 else MAX_BODY_BYTES
+    limit = MAX_ERROR_BYTES if response.status_code >= 300 else MAX_BODY_BYTES
 
     def iter_bytes(chunk_size: int | None = None):
         total = 0
@@ -109,7 +110,7 @@ def capped_body(response: httpx.Response) -> None:
             for chunk in pieces:
                 if total + len(chunk) > limit:
                     if limit == MAX_ERROR_BYTES:
-                        yield chunk[:limit - total]     # an error's first words, the rest left unread
+                        yield chunk[:limit - total]     # its first words, the rest left unread
                         response.close()
                         return
                     raise too_much(response, limit)
