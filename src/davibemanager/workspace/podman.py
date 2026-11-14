@@ -30,6 +30,7 @@ from urllib.parse import urlparse
 
 from .. import podmansetup
 from ..config import data_dir
+from ..hostenv import host_env
 from ..netpolicy import shown
 from . import pins
 
@@ -148,10 +149,12 @@ def _ca_bundle() -> str:
 
 async def run(argv: list[str], *, timeout: float = 120, input: bytes | None = None,
               on_line: Callable[[str], None] | None = None, env: dict[str, str] | None = None) -> tuple[int, str]:
-    """Run a podman command; returns (exit code, combined output). `env`: set for it, besides this app's."""
+    """Run a podman command; returns (exit code, combined output). `env`: set for it, besides the
+    environment as it was before this app changed it for itself (hostenv.host_env: GTK_USE_PORTAL=0 and
+    the like are this process's alone, as every program the app starts gets them back)."""
     proc = await asyncio.create_subprocess_exec(
         *argv, stdin=asyncio.subprocess.PIPE if input is not None else asyncio.subprocess.DEVNULL,
-        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT, env={**os.environ, **env} if env else None)
+        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT, env=host_env(**(env or {})))
     out: list[str] = []
 
     def take(line: bytes) -> None:

@@ -13,6 +13,8 @@ import shutil
 import subprocess
 from pathlib import Path
 
+from .hostenv import host_env
+
 PARTS = ("system", "hardware")
 HEADER = ("[About this computer: the user chose in Settings to share this with you in every chat; it comes "
           "from their computer]")
@@ -37,8 +39,9 @@ def _run(argv: list[str], timeout: float = 5) -> str:
     if not shutil.which(argv[0]):
         return ""
     try:
+        # the environment as it was before this app changed it for itself (hostenv: GTK_USE_PORTAL)
         return subprocess.run(argv, capture_output=True, text=True, timeout=timeout,
-                              env={**os.environ, "LC_ALL": "C"}).stdout
+                              env=host_env(LC_ALL="C")).stdout
     except (OSError, subprocess.SubprocessError):
         return ""
 

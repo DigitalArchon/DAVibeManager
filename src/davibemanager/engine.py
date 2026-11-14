@@ -1572,7 +1572,7 @@ class Engine:
                 ["/bin/sh", "-c", sandbox_scripts.GUARD, "dvm-sandbox-guard", str(os.getpid()), start,
                  podman.podman(), SANDBOX, podman.check_name(SANDBOX)],
                 stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                start_new_session=True, close_fds=True)
+                start_new_session=True, close_fds=True, env=host_env())
         except (OSError, IndexError) as e:
             app_log("sandbox_guard_failed", error=str(e))
 

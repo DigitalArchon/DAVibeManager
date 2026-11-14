@@ -45,6 +45,7 @@ import tomli_w
 from . import __version__, apps, config, creds
 from . import delivery as delivery_mod
 from .conversation import Conversation
+from .hostenv import host_env
 from .llm.secure_http import loads
 from .models import UserError
 from .workspace import podman
@@ -476,7 +477,8 @@ class Backups:
                   'for s in "$@"; do find . -maxdepth 2 -name "$s.jsonl" -type f; done | tar -cf - -T - 2>/dev/null')
         proc = await asyncio.create_subprocess_exec(
             podman.podman(), "unshare", "sh", "-c", script, "sh", mount, *ids,
-            stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
+            stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
+            env=host_env())
         try:
             data, _ = await asyncio.wait_for(proc.communicate(), 300)
         except asyncio.TimeoutError:
