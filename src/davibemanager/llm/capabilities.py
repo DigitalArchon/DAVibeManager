@@ -109,10 +109,24 @@ _LIMIT = [re.compile(p, re.I) for p in (
 )]
 
 
+def error_words(err: Exception | str) -> str:
+    """A provider's error as it wrote it: the error's text, and, for an SDK's error, the body the provider sent
+    with it. openai 3.38 and later put only the body's "message" in the text ("Error code: 400 - This request is
+    too long for the model's context window.") and nothing of a body that isn't JSON ("Error code: 400"): the
+    code ("context_length_exceeded") and a plain-text answer ("prompt is too long: … tokens > … maximum") are in
+    `.body` alone. Earlier versions wrote the whole body into the text, as `str(body)` writes it here (DA
+    Toolkit's capabilities.error_words)."""
+    text = str(err)
+    body = None if isinstance(err, str) else getattr(err, "body", None)
+    if body is None or body == "":
+        return text
+    return f"{text}\n{body}"
+
+
 def overflow(err: Exception | str) -> tuple[bool, int | None]:
     """Whether a provider error says the request was too long for the model's context window,
-    and the window size when the message names it."""
-    text = str(err)
+    and the window size when the message names it (error_words: the text and the body it came with)."""
+    text = error_words(err)
     if not _OVERFLOW.search(text):
         return False, None
     for pat in _LIMIT:

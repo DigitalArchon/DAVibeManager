@@ -303,3 +303,30 @@ async def test_a_private_models_reply_keeps_a_character_httpx_would_have_split_a
     assert "\x85" in reply
     events = await collect(Relay(replies=[(200, reply)]).client())
     assert "".join(v for k, v in events if k == "text") == "a\x85b c"
+
+
+async def test_an_overflow_is_recognised_however_the_openai_library_words_its_error():
+    """openai 3.38 and later write only the body's "message" into an error's text, and nothing of a body that isn't
+    JSON: the code (context_length_exceeded) and a plain-text answer are in its .body alone (DA Toolkit's test: a
+    source install there took 3.51 and saw no overflow as one)."""
+    import openai
+
+    def answer(request):
+        if b"plain" in request.content:
+            return httpx.Response(400, text="prompt is too long: 210345 tokens > 200000 maximum")
+        return httpx.Response(400, json={"error": {"message": "This request is too long for the model's context window.",
+                                                   "code": "context_length_exceeded"}})
+
+    client = LLMClient("https://fake.example/v1", "sk-test", httpx.AsyncClient(transport=httpx.MockTransport(answer)))
+    errors = []
+    for asked in ("json", "plain"):
+        with pytest.raises(openai.APIStatusError) as caught:
+            await client.complete("m", [{"role": "user", "content": asked}])
+        errors.append(caught.value)
+    for error, limit in zip(errors, (None, 200000)):
+        message = error.body.get("message") if isinstance(error.body, dict) else None
+        # as the openai installed wrote it, and as 3.38 and later write it
+        later = type(error)("Error code: 400" + (f" - {message}" if message else ""), response=error.response,
+                            body=error.body)
+        assert capabilities.overflow(error) == capabilities.overflow(later) == (True, limit), str(error)
+    assert capabilities.overflow("Error code: 400") == (False, None)
