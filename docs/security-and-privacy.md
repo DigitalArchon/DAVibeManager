@@ -116,9 +116,11 @@ Tinfoil's latest router release, and for an Intel TDX enclave its published hard
 from Tinfoil's proxy of GitHub (github-proxy.tinfoil.sh), and, where the attestation doesn't carry
 it, AMD's certificate for the processor through Tinfoil's proxy (kds-proxy.tinfoil.sh). These are
 public records: nothing of yours goes, and no key. The app holds every one of these fetches, Sigstore's
-included, to its rule for redirects: one is followed only to HTTPS, and never from the internet into
-this computer or your network (for Sigstore's trust root, five at most). One it may not follow fails
-the attestation, and nothing is sent. Should a version of that software not let the app hold its
+included, to its rule for redirects: one is followed only to HTTPS, never from the internet into
+this computer or your network, and never to an address the app wouldn't use itself (for Sigstore's
+trust root, five at most). One it may not follow fails the attestation, saying where it pointed, and
+nothing is sent. What these fetches read is bounded: gzip or deflate only, 32 MB at most (an error's
+or a redirect's text, 64 KB). Should a version of that software not let the app hold its
 fetches to that, the attestation is refused, saying why, rather than made without it.
 
 ### RedPill (api.redpill.ai): only with Name the provider behind each TEE reply
@@ -186,8 +188,9 @@ then fetches from your distribution's own servers, as it always does.
   control character in it, which another program may read as a different address.
 - **Redirects.** A model provider's redirect is never followed: the request, your words in it,
   would go wherever it points. Nor is one in a TEE model's checks; the checks of a private model
-  (Tinfoil's and Sigstore's) follow one only to HTTPS, and never from a server on the internet into
-  this computer or your network: one they may not follow fails the attestation, and nothing is sent.
+  (Tinfoil's and Sigstore's) follow one only to HTTPS, never from a server on the internet into
+  this computer or your network, and never to an address the app wouldn't use: one they may not
+  follow fails the attestation, and nothing is sent.
 - **Proxies.** The app has no proxy setting of its own: its requests use your system's proxy
   settings (`HTTPS_PROXY` and the like, with `NO_PROXY`'s exceptions), as most programs do, a
   private model's sealed request as well as its check beforehand, except a request to a model

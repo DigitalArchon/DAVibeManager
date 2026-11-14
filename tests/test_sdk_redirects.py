@@ -205,6 +205,34 @@ def test_without_the_sdk_there_is_nothing_to_guard(sdk, monkeypatch):
     assert sdk_guard.guard(is_local_host) == []
 
 
+def test_attesting_holds_a_redirect_to_the_apps_own_rule_for_an_address(sdk, monkeypatch):
+    """The guard is given the app's rule for an address (netguard.check) beside its reading of this network: a
+    redirect's target is held to it, not to its scheme alone (sdk_guard, the standard's final pass)."""
+    passed = []
+    monkeypatch.setattr(sdk_guard, "guard", lambda *a, **k: passed.append(k.get("check")) or [])
+    with pytest.raises(AttributeError):  # the fake SDK has no verification document
+        private_mode.tinfoil_verify("https://nano-gpt.com/api/v1/private/tinfoil", "s" * 64)
+    assert passed == [private_mode.netguard.check]
+
+
+async def test_the_enclave_says_which_redirect_the_guard_refused():
+    """sigstore says only "Failed to refresh TUF metadata": the refused redirect, its cause, is said too."""
+    refused = sdk_guard._session_class(private_mode.netguard.is_local).refused(
+        "the attestation was sent on to 'http://evil.example/root.json', which isn't https; not followed")
+
+    def verifier(_relay, _secret):
+        try:
+            raise refused
+        except Exception as e:
+            raise RuntimeError("Failed to refresh TUF metadata") from e
+
+    enclave = private_mode.Enclave("https://nano-gpt.com/api/v1/private/tinfoil", verifier=verifier)
+    with pytest.raises(private_mode.PrivateModeError) as failed:
+        await enclave.current()
+    assert ("couldn't be attested: Failed to refresh TUF metadata (the attestation was sent on to "
+            "'http://evil.example/root.json', which isn't https; not followed); nothing was sent") in str(failed.value)
+
+
 
 # --- sigstore-python, which the SDK verifies with (Nov 2026) --------------------------------------------------------
 #

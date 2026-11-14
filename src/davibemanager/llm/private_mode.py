@@ -207,11 +207,12 @@ def _hardware(document: dict) -> str:
 def tinfoil_verify(relay: str, cache_secret: str) -> Verified:
     """Attest Tinfoil's router through NanoGPT's relay. Blocking network I/O: run in a thread.
     The SDK's own fetches (the release and its Sigstore bundle, AMD's and Intel's collateral)
-    follow no redirect off https, nor one from the internet into this network (llm/sdk_guard.py)."""
+    follow no redirect off https, nor one from the internet into this network, nor one to an
+    address the app wouldn't use (netguard.check), and read a reply only so far (llm/sdk_guard.py)."""
     from tinfoil import SecureClient
     from tinfoil.github import fetch_latest_release
 
-    sdk_guard.guard(netguard.is_local)
+    sdk_guard.guard(netguard.is_local, check=netguard.check)
     # The cache secret is passed explicitly, or the SDK would create one under ~/.tinfoil;
     # this client only verifies, it never sends a request.
     client = SecureClient(base_url=relay + "/", attestation_bundle_url=relay, transport="ehbp",
@@ -287,9 +288,12 @@ class Enclave:
                 except PrivateModeError:
                     raise
                 except Exception as e:  # noqa: BLE001 - the SDK's own errors
-                    # the SDK's errors can quote the bundle, which came through the relay
+                    # the SDK's errors can quote the bundle, which came through the relay; a redirect the
+                    # guard refused says why, where sigstore says only "Failed to refresh TUF metadata"
+                    refused = sdk_guard.not_followed(e)
+                    why = f" ({relay_said(refused, 500)})" if refused and refused not in str(e) else ""
                     raise PrivateModeError(f"the private model's enclave couldn't be attested: "
-                                           f"{relay_said(str(e), 500)}; nothing was sent") from e
+                                           f"{relay_said(str(e), 500)}{why}; nothing was sent") from e
                 self._at = self._clock()
                 if self._on_attested:
                     try:
