@@ -64,6 +64,10 @@ class KeyringWait(UserError):
     """The key may well be stored, but the keyring can't be read yet (e.g. just after login)."""
 
 
+class KeyHeldBack(UserError):
+    """The key is stored, but isn't sent (key_problem_for): its words say why and the way out."""
+
+
 def key_problem_for(prov: Provider) -> str | None:
     """Why the key stored for `prov` isn't sent with its requests, or None: it was entered for other addresses
     than the provider has now (Provider.key_for). An address changed in config.toml by hand, or through the API,
@@ -490,7 +494,7 @@ class Models:
         if not stored:
             raise UserError(f"No API key is stored for {prov.name}; add it in Settings.")
         if problem := key_problem_for(prov):
-            raise UserError(problem)            # entered for another address: the assistant doesn't start with it
+            raise KeyHeldBack(problem)          # another address, or plain http to another machine: not sent
         if not s.builder_model:
             raise UserError("Choose the assistant's model in Settings.")
         small = s.builder_small_model or s.builder_model

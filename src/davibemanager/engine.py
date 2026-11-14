@@ -50,7 +50,7 @@ from .hostrun import HostRequest
 from .llm import anthropic_bridge, capabilities, prompts, websearch
 from .llm import routes as routes_mod
 from .llm.client import is_private_mode
-from .models import KeyringWait, Models, UserError
+from .models import KeyHeldBack, KeyringWait, Models, UserError
 from .netpolicy import InsecureURL, check_url
 from .netpolicy import scrubbed
 from .netpolicy import shown as shown_address
@@ -465,6 +465,9 @@ class Engine:
         try:
             prov, model, small, tier = self.models.builder_target()
             out = {"provider": prov.name, "model": model, "small_model": small, "tier": tier}
+        except KeyHeldBack as e:
+            # stored but not sent: the window says why and the way out, never the first run's "paste your key"
+            out = {"error": str(e), "key_held": True}
         except UserError as e:
             out = {"error": str(e)}
         review = self.cfg.settings.review_model

@@ -214,3 +214,24 @@ def test_a_provider_already_sending_its_key_over_plain_http_is_held_back_once_se
     cfg = config.load(path)
     cfg.provider("Lan").key_over_http = True                                            # as the line added sets it
     assert models.key_problem_for(cfg.provider("Lan")) is None
+
+
+async def test_the_window_is_told_a_stored_key_is_held_back_and_why(env):
+    """The state the window reads (Engine.snapshot): a key held back is not "not set up" (the window showed the first
+    run's "paste your key" for it), so the assistant's status says so (key_held), with the words and the way out."""
+    engine, _, _ = env
+    prov = engine.cfg.provider("Fake")
+    prov.key_for = ["https://elsewhere.example:443"]                       # entered there; the address moved by hand
+    state = engine.snapshot()
+    assert state["ready"] is False and state["keyring_wait"] == ""
+    assert state["assistant"]["key_held"] is True
+    assert "entered for https://elsewhere.example:443" in state["assistant"]["error"]
+    assert "enter the key again" in state["assistant"]["error"]
+    prov.key_for, prov.base_url, prov.builder_url = None, "http://192.168.1.5:11434/v1", "http://192.168.1.5:11434"
+    state = engine.snapshot()
+    assert state["assistant"]["key_held"] is True and "`key_over_http = true` under Fake" in state["assistant"]["error"]
+    prov.key_over_http = True
+    assert "key_held" not in engine.snapshot()["assistant"] and engine.ready
+    creds.delete_secret("provider", "Fake")
+    state = engine.snapshot()
+    assert "key_held" not in state["assistant"] and "No API key is stored" in state["assistant"]["error"]

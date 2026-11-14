@@ -299,3 +299,29 @@ def test_a_tee_request_with_no_reply_to_check_is_never_said_to_be_checking():
     assert refused is broken is errored is None
     # nothing says it broke off: still being checked
     assert unnamed[0] == checking[0] == "TEE · checking its signature…" and verified[0] == "TEE verified"
+
+
+def test_a_key_held_back_is_said_in_the_apps_own_words_not_as_a_first_run():
+    """A stored key the app won't send (entered for another address, or plain http to another machine:
+    Engine.assistant_status's key_held) is shown as that, its words as text, with the way out; the first run's
+    screen asked for a key as though none were stored (seen on the lab VMs, Nov 14 2026)."""
+    words = ('The API key saved for NanoGPT was entered for https://nano-gpt.com:443 … '
+             '<b>enter the key again</b> or add `key_over_http = true`')
+    code = script("notReadyAs", "NOT_READY_WORDS") + """
+const test = (st) => [notReadyAs(st), NOT_READY_WORDS[notReadyAs(st)]];"""
+    assert run(code, [{"keyring_wait": "not open", "assistant": {"error": "x", "key_held": True}},
+                      {"keyring_wait": "", "assistant": {"error": words, "key_held": True}},
+                      {"keyring_wait": "", "assistant": {"error": "Set up the assistant first"}}]) == [
+        ["keyring", "Waiting for your keyring"], ["held", "Your API key isn't sent"], ["setup", "Needs setting up"]]
+    # the screen, built by a stand-in h(): the words a text child as they came (h() makes text nodes of strings)
+    screen = script("heldKeyScreen") + """
+const h = (tag, attrs, ...children) => ({ tag, attrs, children });
+const openPanel = () => {};
+const test = (error) => { globalThis.S = { state: { assistant: { error, key_held: true } } }; return heldKeyScreen(); };"""
+    [built] = run(screen, [words])
+    shown = [c for part in built["children"] for c in part["children"] if isinstance(c, str)]
+    assert words in shown and "Open Settings" in json.dumps(built)
+    assert not re.search(r"innerHTML|insertAdjacentHTML|html:", script("heldKeyScreen"))
+    text = APP_JS.read_text(encoding="utf-8")
+    assert "{ keyring: keyringScreen, held: heldKeyScreen, setup: setupScreen }[notReadyAs(st)]()" in text
+    assert 'notReadyAs(st) === "held" ? st.assistant.error' in text          # the status's tooltip says them too

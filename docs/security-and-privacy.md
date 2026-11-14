@@ -224,15 +224,15 @@ then fetches from your distribution's own servers, as it always does.
   refused before anything is sent, without being repeated back.
 - **A key goes only to the address it was entered for**: the scheme, host and port the provider's
   address had when you saved the key. If the address is changed afterwards (by hand in the settings
-  file, or through the app's API) to another host or port, the key isn't sent there: the request
-  is refused, saying which address the key was for and what to do (enter the key again for the new
-  address, or put the address back). Nothing is deleted. A key saved before this rule takes the
+  file, or through the app's API) to another host or port, the key isn't sent there: the window
+  says so in place of the chat, and each request is refused, saying which address the key was for and
+  what to do (enter the key again for the new address, or put the address back). Nothing is deleted. A key saved before this rule takes the
   address saved beside it, the first time the app starts.
 - **A key never crosses your network unencrypted unless you say so.** Plain `http://` is allowed to
   a model server on this computer or your local network, but to another machine the key (and
   everything sent with it) crosses the network readable by anyone on it, a café's or a hotel's Wi-Fi
   included. There is no field for such an address in the window, so nothing asks: the key isn't
-  sent, and the request is refused saying so, unless the provider's entry in the settings file says
+  sent, and the window and every request say so, unless the provider's entry in the settings file says
   `key_over_http = true` beside its address (or use the server's `https://` address). A provider
   already sending its key that way before this version is held back too, until that line is added:
   nothing is taken as agreed to. To this computer itself (`localhost`, 127.0.0.1, `::1`) a key never

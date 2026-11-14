@@ -482,12 +482,20 @@ function waitingOnUser() {
     || Object.values(st.questions).some((q) => q.status === "pending");
 }
 
+// why the assistant can't start: the keyring isn't open yet, the key stored is held back (Engine.assistant_status:
+// entered for another address, or plain http to another machine), or nothing is set up
+function notReadyAs(st) {
+  return st.keyring_wait ? "keyring" : st.assistant?.key_held ? "held" : "setup";
+}
+
+const NOT_READY_WORDS = { keyring: "Waiting for your keyring", held: "Your API key isn't sent", setup: "Needs setting up" };
+
 function renderStatus() {
   const st = S.state;
   const el = $("#status"), text = $("#status-text");
   const w = st.workspace || {};
   let cls = "ok", msg = "Ready";
-  if (!st.ready) { cls = "wait"; msg = st.keyring_wait ? "Waiting for your keyring" : "Needs setting up"; }
+  if (!st.ready) { cls = "wait"; msg = NOT_READY_WORDS[notReadyAs(st)]; }
   else if (w.state === "needs_podman") { cls = "wait"; msg = "Install Podman first"; }
   else if (w.state === "failed") { cls = "bad"; msg = "The sandbox couldn't start"; }
   else if (w.state === "removed") { cls = ""; msg = "The sandbox is removed"; }
@@ -501,10 +509,11 @@ function renderStatus() {
   el.className = `status ${cls}`;
   const [cost, costWhy] = spendText(st.spend);
   text.textContent = msg + cost;
-  el.title = [w.state === "failed" ? w.summary || w.error : [w.trouble, w.step].filter(Boolean).join("\n"), costWhy].filter(Boolean).join("\n\n");
+  el.title = [notReadyAs(st) === "held" ? st.assistant.error
+    : w.state === "failed" ? w.summary || w.error : [w.trouble, w.step].filter(Boolean).join("\n"), costWhy].filter(Boolean).join("\n\n");
   $("#stop-btn").classList.toggle("hidden", !st.busy);
   $("#send-btn").classList.toggle("hidden", st.busy && !$("#input").value.trim() && !S.files.length);
-  $("#input").placeholder = !st.ready ? "Set up first…"
+  $("#input").placeholder = !st.ready ? (notReadyAs(st) === "held" ? "Your API key isn't sent: see above…" : "Set up first…")
     : waitingOnUser() ? "Reply, or decide on the card above…"
     : st.busy ? "Write any time: it reads it with its next step…"
     : w.state === "needs_podman" ? "Install Podman first (above)…"
@@ -587,7 +596,11 @@ function renderChat(scroll) {
   const keep = focus && box.contains(focus) && KEYS.has(focus) ? { key: KEYS.get(focus), value: focus.value, pos: focus.selectionStart } : null;
   const typed = {};
   for (const el of keyed(box, "input, textarea")) typed[KEYS.get(el)] = el.value;
-  if (!st.ready) { box.replaceChildren(st.keyring_wait ? keyringScreen() : setupScreen()); $("#composer").classList.add("hidden"); return; }
+  if (!st.ready) {
+    box.replaceChildren({ keyring: keyringScreen, held: heldKeyScreen, setup: setupScreen }[notReadyAs(st)]());
+    $("#composer").classList.add("hidden");
+    return;
+  }
   $("#composer").classList.remove("hidden");
   const items = st.chat.map((e, i) => entryEl(e, false, i));
   if (S.live) items.push(entryEl(S.live, true, "live"));
@@ -1677,6 +1690,17 @@ function keyringScreen() {
     h("p", {}, "Your API key is kept in your desktop's keyring (GNOME Keyring or KWallet), which isn't open yet. It usually opens a moment after you log in; if your desktop asks for the keyring's password, enter it. DA Vibe Manager carries on by itself as soon as it can read the key."),
     h("p", { class: "small muted" }, S.state.keyring_wait),
     h("div", { class: "actions" }, h("button", { class: "primary", onclick: () => guarded(() => api("POST", "/api/keyring/retry")) }, "Try again")));
+}
+
+// the key is stored, but the app holds it back (the DA apps' standard: a key goes only to the address it was
+// entered for, and never over plain http to another machine): the app's own words, as text, which say why and
+// the way out; never the first run's screen, which would ask for a key already stored as though there were none
+function heldKeyScreen() {
+  return h("div", { class: "setup" },
+    h("h2", {}, "Your API key isn't sent"),
+    h("div", { class: "warnbox" }, S.state.assistant.error),
+    h("p", { class: "small" }, "Nothing has been deleted: your key is still in your keyring."),
+    h("div", { class: "actions" }, h("button", { class: "primary", onclick: () => openPanel("settings") }, "Open Settings")));
 }
 
 // a computer without Podman: what it is, and the app's own command to install it, run on the user's click
