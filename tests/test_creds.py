@@ -193,20 +193,24 @@ def test_a_key_never_crosses_the_network_unencrypted_unless_the_config_says_so(t
     assert m.key(cfg.provider("Local")) == "sk-here"                                  # this computer: never leaves it
 
 
-def test_a_provider_already_sending_its_key_over_plain_http_keeps_doing_so_once_settled(tmp_path):
-    """The first load by this version of a config.toml from before keys were held to their address sets the flag
-    for a provider whose key already went so, with no question; a hand edit after it sets nothing."""
-    import tomllib
+def test_a_provider_already_sending_its_key_over_plain_http_is_held_back_once_settled(tmp_path):
+    """The first load by this version of a config.toml from before keys were held to their address takes nothing as
+    agreed to (the author, Nov 14 2026: nothing is grandfathered): a key that already went over plain http to another
+    machine is held back, refused in words naming the address and the way out, until the line is added."""
+    import re
 
-    from davibemanager import config
+    from davibemanager import config, models
     path = tmp_path / "config.toml"
     path.write_text('[[providers]]\nname = "Lan"\nbase_url = "http://192.168.1.5:11434/v1"\n\n'
                     '[[providers]]\nname = "NanoGPT"\nbase_url = "https://nano-gpt.com/api/v1"\n')
     cfg = config.load(path)
-    assert cfg.provider("Lan").key_over_http is True and cfg.provider("NanoGPT").key_over_http is False
+    assert cfg.provider("Lan").key_over_http is False and cfg.provider("NanoGPT").key_over_http is False
+    assert cfg.provider("Lan").key_for == cfg.provider("Lan").origins()
+    held = models.key_problem_for(cfg.provider("Lan")) or ""
+    assert re.search(r"http://192.168.1.5:11434/v1 is plain http to another machine.*"
+                     r"`key_over_http = true` under Lan in config.toml", held), held
+    assert models.key_problem_for(cfg.provider("NanoGPT")) is None
     config.save(cfg, path)
-    assert tomllib.loads(path.read_text())["providers"][0]["key_over_http"] is True
-    path.write_text(path.read_text().replace("http://192.168.1.5:11434/v1", "http://192.168.1.9:11434/v1")
-                    .replace("key_over_http = true", "key_over_http = false"))
     cfg = config.load(path)
-    assert cfg.provider("Lan").key_over_http is False                                  # settled once, never again
+    cfg.provider("Lan").key_over_http = True                                            # as the line added sets it
+    assert models.key_problem_for(cfg.provider("Lan")) is None

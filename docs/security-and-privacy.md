@@ -234,8 +234,8 @@ then fetches from your distribution's own servers, as it always does.
   included. There is no field for such an address in the window, so nothing asks: the key isn't
   sent, and the request is refused saying so, unless the provider's entry in the settings file says
   `key_over_http = true` beside its address (or use the server's `https://` address). A provider
-  already sending its key that way when this version first read its settings keeps doing so, with
-  the line written for it once. To this computer itself (`localhost`, 127.0.0.1, `::1`) a key never
+  already sending its key that way before this version is held back too, until that line is added:
+  nothing is taken as agreed to. To this computer itself (`localhost`, 127.0.0.1, `::1`) a key never
   leaves it, so none of this applies.
 - **A password written into an address** (`https://user:password@host/…`, a provider's or a
   package mirror's) goes to your keyring with the address as typed; the settings file has the

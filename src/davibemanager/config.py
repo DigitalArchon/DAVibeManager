@@ -100,8 +100,8 @@ class Provider:
     # its key may go over plain http to another machine on the local network (netpolicy.in_the_clear), where
     # anyone on that network can read it: set by hand beside the address in config.toml (`key_over_http =
     # true`), there being no field for the address in the window; without it such a key isn't sent
-    # (models.key_problem_for). Set once, with no question, for a provider already sending its key so when this
-    # version first read its config (settle_key_origins)
+    # (models.key_problem_for). Never set for one already sending its key so before this was asked: it is held back
+    # until the line is added (the author, Nov 14 2026: nothing is grandfathered)
     key_over_http: bool = False
 
     def origins(self) -> list[str]:
@@ -280,10 +280,9 @@ def settle_key_origins(cfg: Config) -> bool:
     settled = False
     for p in cfg.providers:
         if p.key_for is None:
+            # a key that went over plain http to another machine before this was asked is not taken as agreed to
+            # (nothing is grandfathered, Nov 14 2026): held back until `key_over_http = true` is added beside it
             p.key_for, settled = p.origins(), True
-            # its key went over plain http to another machine before: it keeps doing so, as it did
-            if any(in_the_clear(url) for url in (p.base_url, p.builder_url) if url):
-                p.key_over_http = True
     return settled
 
 
