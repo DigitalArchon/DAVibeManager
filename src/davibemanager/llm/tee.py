@@ -378,8 +378,8 @@ def _session_record(client: httpx.Client, session_id: str) -> _Record:
         verifier=relay_said(str(record.get("verifier_id") or ""), 80),
         scope=relay_said(str(extra.get("evidence_scope") or extra.get("trust_boundary") or ""), 40),
         gpus=relay_said(str(gpus.get("status") or ""), 20),
-        established=established if isinstance(established, int) else 0,
-        expires=expires if isinstance(expires, int) else 0,
+        established=established if _integer(established) else 0,
+        expires=expires if _integer(expires) else 0,
     )
     with _records_lock:
         while len(_records) >= SESSION_RECORDS_KEPT:
@@ -441,6 +441,11 @@ def _address_of_public(value: Any) -> str | None:
     if len(key) != 65 or key[0] != 4:
         return None
     return "0x" + keccak256(key[1:])[-20:].hex()
+
+
+def _integer(value: Any) -> bool:
+    """An integer as JSON writes one: never a bool, which Python counts as one."""
+    return isinstance(value, int) and not isinstance(value, bool)
 
 
 def _json(value: Any) -> Any:
@@ -914,7 +919,11 @@ class TeeClient:
         Nov 10 2026), or None where nano-gpt has no such report: a model only
         Chutes or Tinfoil serves (HTTP 400), an outage, or another shape. With
         it, why there was none, where that wasn't RedPill not serving the model
-        (an outage, a rate limit: `_attest_instances`), else "".
+        (an outage, a rate limit, a 200 in a shape that can't be read:
+        `_attest_instances`), else "". Only a 400, nano-gpt's "not offered",
+        says the gateway doesn't answer the model (the standard every DA app
+        keeps, Nov 14 2026: an answer that can't be read is no report, and
+        falls short, never full).
 
         The quote's report data is the SHA-256 of RedPill's attestation
         statement, the gateway's whole keyset and our nonce, zero padded
@@ -933,7 +942,7 @@ class TeeClient:
         evidence = report.get("evidence") if isinstance(report, dict) else None
         keyset = report.get("workload_keyset") if isinstance(report, dict) else None
         if not (isinstance(evidence, dict) and isinstance(keyset, dict) and evidence.get("quote")):
-            return None, ""
+            return None, "its answer wasn't in a shape that can be read"
         try:
             raw = bytes.fromhex(str(evidence["quote"]))
             quote = dcap.parse_quote(raw)
@@ -962,7 +971,9 @@ class TeeClient:
         in force. A keyset that names no such time isn't used for the receipts,
         and falls short (`_take_keyset`)."""
         expires = keyset.get("not_after") if keyset is not None else None
-        if isinstance(expires, (int, float)) and expires < time.time():
+        # an integer: a bool is one to Python, and `not_after: true` (1, in 1970) was refused as expired;
+        # a bool, a float or none at all is unusable, and falls short instead (`_take_keyset`)
+        if _integer(expires) and expires < time.time():
             raise TeeRefused(f"{self.model}'s attested keys expired on {datetime.fromtimestamp(expires, UTC):%Y-%m-%d}")
 
     def _attest_gateway_alone(self, gateway: _Gateway, why: str) -> Attestation:
@@ -1091,7 +1102,8 @@ class TeeClient:
         if keyset is None:
             return
         not_after = keyset.get("not_after")
-        if not isinstance(not_after, int) or not_after <= time.time():
+        if not _integer(not_after) or not_after <= time.time():
+            # past, or no time it can be read as (missing, a bool, a float, text): unused for receipts
             check.note("its receipt keys have expired, so receipts aren't checked")
             check.fall_short("receipt keys expired")
             return
@@ -1460,7 +1472,7 @@ class TeeClient:
         except ProviderError as exc:
             return TeeUpstream(model=model, note=str(exc), session=session, asked=asked)
         served = receipt.get("served_at")
-        if not (isinstance(served, int) and record.established <= served <= record.expires):
+        if not (_integer(served) and record.established <= served <= record.expires):
             return TeeUpstream(model=model, note="it was served outside the session its receipt names",
                                session=session, asked=asked)
         return TeeUpstream(name=record.name or "an unnamed provider", verifier=record.verifier, scope=record.scope,
@@ -1521,7 +1533,7 @@ class TeeClient:
             # The gateway renews its keys now and then: not a failed reply.
             raise ProviderError("the gateway's keys changed since it was attested")
         served = receipt.get("served_at")
-        if receipt.get("api_version") != "aci/1" or not isinstance(served, int):
+        if receipt.get("api_version") != "aci/1" or not _integer(served):
             return False
         if served >= self.keyset.get("not_after", 0):
             return False

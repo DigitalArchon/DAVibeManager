@@ -758,6 +758,10 @@ def shaped(respond, *, model: str = "TEE/kimi-k3", seen: dict | None = None) -> 
         if url.startswith(NRAS_URL):
             seen.setdefault("nras_nonces", []).append(json.loads(request.content)["nonce"])
             return httpx.Response(200, json=[["JWT", jwt({"x-nvidia-overall-att-result": True})]])
+        if "/tee/attestation" in url and request.url.params.get("report") == "aci":
+            # as nano-gpt answers for a model it has no gateway report of (a 200 that can't be read is
+            # another matter: GATEWAY_UNCHECKED)
+            return httpx.Response(400, json={"error": "report=aci is only available for models served through RedPill"})
         if "/tee/attestation" in url:
             status, body = respond(request.url.params["nonce"])
             return httpx.Response(status, json=body)
@@ -1110,6 +1114,8 @@ def receipt_server(
                         400, json={"error": "report=aci is only available for models served through RedPill"})
                 if aci == "429":
                     return httpx.Response(429, json={"error": "Rate limit exceeded"})
+                if aci == "shapeless":
+                    return httpx.Response(200, json={"api_version": "aci/1", "attestation": "soon"})
                 bound_to = nonce if aci == "bound" else "ab" * 32
                 statement = (
                     f'{{"keyset_digest":"{keyset_digest}","nonce":"{bound_to}",'
@@ -2242,3 +2248,27 @@ async def test_naming_a_tee_replys_provider_is_a_setting_off_by_default(env):
     assert config_mod.from_dict(engine.cfg.to_dict()).settings.tee_name_upstreams is True
     engine.save_settings({"tee_name_upstreams": False})
     assert engine.cfg.settings.tee_name_upstreams is False
+
+
+def test_a_gateway_report_that_cant_be_read_is_no_report_and_falls_short(instances):
+    """A 200 to report=aci in a shape that can't be read is no report, as an outage is, and whether
+    the gateway may answer isn't known: GATEWAY_UNCHECKED (the standard every DA app keeps, Nov 14
+    2026; DA Toolkit's copy). It was taken as RedPill not serving the model, and a Chutes model read
+    in full."""
+    from davibemanager.llm.tee import GATEWAY_UNCHECKED
+
+    client = receipt_client(model="TEE/glm-5.1", aci="shapeless", plain=lambda nonce: (200, instances.body(nonce)))
+    result = client.attest()
+    assert result.level == "partial" and result.shortfalls == [GATEWAY_UNCHECKED]
+    assert "shape that can be read" in result.detail
+
+
+@pytest.mark.parametrize("not_after", [True, False, 1.5e9, None, "2100-01-01"])
+def test_a_keyset_whose_time_isnt_an_integer_is_unused_never_refused_as_expired(not_after):
+    """Only an integer in the past refuses (never a bool: Python counts True as 1, which read as
+    1970 and refused the attestation); anything else leaves the receipt keys unused, short of them."""
+    client = receipt_client(tied="statement", not_after=not_after)
+    result = client.attest()
+    assert client.keyset is None and "receipt keys expired" in result.shortfalls
+    with pytest.raises(TeeRefused, match="attested keys expired"):
+        receipt_client(tied="statement", not_after=1_000_000_000)

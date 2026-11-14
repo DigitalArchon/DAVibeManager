@@ -206,7 +206,10 @@ with what was attested and what that leaves to someone's word:
   NanoGPT routes each request, and a model may be served elsewhere when its provider is busy. Where
   RedPill's gateway answers some of their requests instead (GLM 5.1 and 5.2, Kimi K2.6), the gateway
   is attested too, and their attestation is partial like the gateway's own models'; if NanoGPT
-  couldn't give the gateway's report just then, it says "RedPill's gateway unchecked".
+  couldn't give the gateway's report just then (an outage, a rate limit, an answer that can't be
+  read), it says "RedPill's gateway unchecked". Receipt keys that say no time they expire, or one that
+  isn't a whole number, are left unused ("receipt keys expired"); only keys past the time they say are
+  refused.
 
 The Tinfoil-hosted TEE models are refused: NanoGPT can't attest them for a fresh number. Some
 have a private version, which is attested its own way.
