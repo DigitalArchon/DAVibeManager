@@ -22,6 +22,34 @@ from .hostenv import HOST_TYPELIB_DIRS, set_for_self
 from .server.app import Launches, create_app, runtime_dir
 
 
+PR_SET_DUMPABLE = 4
+
+
+def no_core_dumps() -> None:
+    """A native crash must not write the process's memory to disk: the API key, the conversation,
+    a private model's replies opened in memory, the sync group's keys. `RLIMIT_CORE` 0 stops a core
+    file; not dumpable stops the system's collector (systemd-coredump reads the flag, not the limit)
+    and, as a side effect, a debugger or another program of this user's reading the process's memory
+    or its environment. What it starts runs dumpable again (the flag is reset when a program is
+    started), and the sandbox's guard still reads the start time in /proc/<pid>/stat, which stays
+    readable. Failures are ignored: the app runs as before (SealedLore's gui/app.py, Sept 2026)."""
+    try:
+        import resource
+
+        resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
+    except (ImportError, ValueError, OSError):
+        pass
+    if not sys.platform.startswith("linux"):
+        return
+    try:
+        import ctypes
+
+        libc = ctypes.CDLL(None, use_errno=True)
+        libc.prctl(PR_SET_DUMPABLE, 0, 0, 0, 0)
+    except (OSError, AttributeError):
+        pass
+
+
 def _free_port() -> int:
     with socket.socket() as s:
         s.bind(("127.0.0.1", 0))
@@ -257,6 +285,7 @@ def server_config(app, port: int) -> uvicorn.Config:
 
 
 def main(argv: list[str] | None = None) -> None:
+    no_core_dumps()     # first: nothing the app holds is ever written out by a crash, its arguments' handling included
     ap = argparse.ArgumentParser(prog="davibemanager", description="Your Linux helper, in the tray")
     mode = ap.add_mutually_exclusive_group()
     mode.add_argument("--browser", action="store_true",

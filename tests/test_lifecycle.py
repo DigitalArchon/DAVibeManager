@@ -141,3 +141,47 @@ async def test_on_quit_the_sandbox_is_stopped_before_claude_code_is_closed(env, 
     monkeypatch.setattr(engine, "_close_builder", close)
     await engine.stop()
     assert order == ["sandbox", "claude code"]
+
+
+# --- a crash writes nothing out (SealedLore's gui/app.py _no_core_dumps) ------------------------------------
+
+def test_a_crash_writes_no_core_and_nothing_reads_the_apps_memory():
+    """A core file would hold the API key, the conversation and a private model's replies opened in memory. Run in
+    a process of its own: the flag is the process's."""
+    import sys
+    import textwrap
+
+    code = textwrap.dedent("""
+        import ctypes, os, resource, subprocess, sys
+        from davibemanager.app import no_core_dumps
+        no_core_dumps()
+        libc = ctypes.CDLL(None, use_errno=True)
+        print(resource.getrlimit(resource.RLIMIT_CORE), libc.prctl(3, 0, 0, 0, 0))   # PR_GET_DUMPABLE
+        # the sandbox's guard, another program, still reads when the app started
+        pid = str(os.getpid())
+        mine = open(f"/proc/{pid}/stat").read().rsplit(") ", 1)[1].split()[19]
+        seen = subprocess.run(["/bin/sh", "-c", "sed 's/.*) //' /proc/$1/stat | cut -d' ' -f20", "x", pid],
+                              capture_output=True, text=True).stdout.strip()
+        print(seen == mine)
+        # a program it starts is dumpable again: the flag isn't handed on
+        print(subprocess.run([sys.executable, "-c", "import ctypes; print(ctypes.CDLL(None).prctl(3, 0, 0, 0, 0))"],
+                             capture_output=True, text=True).stdout.strip())
+    """)
+    out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=60)
+    assert out.returncode == 0, out.stderr
+    assert out.stdout.split("\n")[:3] == ["(0, 0) 0", "True", "1"], out.stdout
+
+
+def test_the_app_turns_core_dumps_off_before_anything_else(monkeypatch):
+    from davibemanager import app
+
+    class First(Exception):
+        pass
+
+    def first():
+        raise First
+
+    monkeypatch.setattr(app, "no_core_dumps", first)
+    monkeypatch.setattr(app.argparse.ArgumentParser, "parse_args", lambda *a, **k: pytest.fail("arguments read first"))
+    with pytest.raises(First):
+        app.main(["--browser"])
