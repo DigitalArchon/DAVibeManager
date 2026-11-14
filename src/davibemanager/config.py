@@ -25,7 +25,7 @@ from urllib.parse import urlparse
 
 import tomli_w
 
-from .netpolicy import in_the_clear, origin, without_password
+from .netpolicy import origin, without_password
 
 NANOGPT_BASE_URL = "https://nano-gpt.com/api/v1"
 ANTHROPIC_BASE_URL = "https://api.anthropic.com"
