@@ -539,9 +539,10 @@ links open in your browser.
   version or the new one, never half of one.
 - **Your keyring**: your API key, a password written into an address, and your backup password when
   backups are made automatically.
-- **Public records the attestation checks fetched**: Tinfoil's software and Sigstore's library keep
-  them in their own cache folders (`~/.cache/tinfoil`, `~/.local/share/sigstore-python` and
-  `~/.cache/sigstore-python`).
+- **Public records the attestation checks fetched**: Sigstore's library keeps its public trust root
+  in its own folders (`~/.local/share/sigstore-python` and `~/.cache/sigstore-python`). Tinfoil's
+  software would cache what it fetches (a processor's certificate, which names the chip, among them)
+  in `~/.cache/tinfoil`; the app keeps it from writing anything there.
 
 Kept only in memory, and gone when the app stops: your API key once read from the keyring, the
 gateway's token, the window's key, attestations and their results, the private models' cache key,

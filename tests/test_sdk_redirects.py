@@ -38,6 +38,8 @@ FILES = {
     "github.py": """
         import requests
 
+        _GITHUB_CACHE_DIR = "/home/someone/.cache/tinfoil"
+
         def fetch_latest_release(repo):
             response = requests.get(f"https://github-proxy.example/repos/{repo}", timeout=5)
             response.raise_for_status()
@@ -58,6 +60,10 @@ FILES = {
             return post(url, json={}, timeout=5).text
         """,
     # a module the package doesn't import until it is wanted
+    # Where the SDK caches (sdk_guard.guard_files points them nowhere).
+    "attestation/__init__.py": "",
+    "attestation/verify_sev.py": "_VCEK_CACHE_DIR = '/home/someone/.cache/tinfoil'\n",
+    "attestation/collateral_tdx.py": "_TDX_CACHE_DIR = '/home/someone/.cache/tinfoil'\n",
     "later/__init__.py": "",
     "later/collateral.py": """
         import requests
@@ -407,3 +413,17 @@ def test_what_the_guard_rests_on_is_where_it_expects(sigstore_unguarded):
     users = sorted(name for name, mod in sys.modules.items() if mod is not None
                    and (name == "sigstore" or name.startswith("sigstore.")) and getattr(mod, "requests", None) is requests)
     assert users == sorted(SIGSTORE_REQUESTS)
+
+
+def test_the_sdks_caches_are_pointed_where_nothing_can_be_made(sdk, monkeypatch):
+    """sdk_guard.guard_files (SealedLore's ac2f7f3): the SDK's three cache folders, which it reads at
+    each use, at one under the null device, where nothing can be made; one not where expected refuses."""
+    import os
+    changed = sdk_guard.guard(is_local_host)
+    assert {"tinfoil.github", "tinfoil.attestation.verify_sev"} <= set(changed)
+    for name, attribute in sdk_guard._SDK_CACHES:
+        assert getattr(sys.modules[name], attribute) == os.path.join(os.devnull, "tinfoil")
+    assert sdk_guard.guard_files() == []
+    monkeypatch.delattr(sys.modules["tinfoil.attestation.verify_sev"], "_VCEK_CACHE_DIR")
+    with pytest.raises(sdk_guard.Unguarded, match="verify_sev has no _VCEK_CACHE_DIR"):
+        sdk_guard.guard_files()
