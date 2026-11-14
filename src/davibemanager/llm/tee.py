@@ -428,14 +428,16 @@ def _jwt_claims(value: Any) -> list[dict[str, Any]]:
 
 def is_tee(model: str) -> bool:
     """A model that runs in a trusted execution environment: nano-gpt's
-    `TEE/*` (attested and signed) or `private/*` (end-to-end encrypted)."""
-    return model.startswith(("TEE/", "private/"))
+    `TEE/*` (attested and signed) or `private/*` (end-to-end encrypted),
+    however it's written ("Tee/…", a space before it)."""
+    return str(model or "").strip().lower().startswith(("tee/", "private/"))
 
 
 def is_private_mode(model: str) -> bool:
     """nano-gpt's Private Mode: end-to-end encrypted to an attested enclave
-    (llm/private_mode.py). Never sent any other way."""
-    return model.startswith("private/")
+    (llm/private_mode.py). Never sent any other way, however it's written
+    ("Private/…", a space before it): when in doubt, sealed."""
+    return str(model or "").strip().lower().startswith("private/")
 
 
 def what_was_attested(attestation: Attestation) -> str:

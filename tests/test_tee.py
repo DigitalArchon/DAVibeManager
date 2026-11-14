@@ -656,6 +656,21 @@ def test_tee_models_are_named_so():
     assert not is_tee("Steelskull/teething")
 
 
+def test_a_tee_or_private_model_is_one_however_its_written():
+    """However the id is written ("Tee/…", "Private/…", a space before it): when in doubt, attested or sealed (DA
+    Toolkit's llm/tee.py)."""
+    from davibemanager.llm.tee import is_private_mode
+
+    for model in ("tee/glm-5.3-flash", " TEE/glm-5.3", "Tee/kimi-k3", "private/glm-5-3", "Private/glm-5-3",
+                  " private/glm-5-3", "PRIVATE/kimi-k3-1-pro"):
+        assert is_tee(model), model
+    for model in ("private/glm-5-3", "Private/glm-5-3", " private/kimi", "PRIVATE/x"):
+        assert is_private_mode(model), model
+    for model in ("Steelskull/teething", "glm-5.3", "", None, "x/private/y"):
+        assert not is_tee(model) and not is_private_mode(model), model
+    assert not is_private_mode("TEE/glm-5.3")
+
+
 # --- per-instance providers (Chutes), relays and outages ---------------------------------
 
 
