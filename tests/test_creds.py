@@ -226,7 +226,8 @@ async def test_the_window_is_told_a_stored_key_is_held_back_and_why(env):
     assert state["ready"] is False and state["keyring_wait"] == ""
     assert state["assistant"]["key_held"] is True
     assert "entered for https://elsewhere.example:443" in state["assistant"]["error"]
-    assert "enter the key again" in state["assistant"]["error"]
+    assert "Pasting your NanoGPT key in Settings → API key saves it for NanoGPT's own address and puts the assistant " \
+           "back on it (https://nano-gpt.com/api/v1), leaving https://fake.example:443 behind" in state["assistant"]["error"]
     prov.key_for, prov.base_url, prov.builder_url = None, "http://192.168.1.5:11434/v1", "http://192.168.1.5:11434"
     state = engine.snapshot()
     assert state["assistant"]["key_held"] is True and "`key_over_http = true` under Fake" in state["assistant"]["error"]
@@ -235,3 +236,23 @@ async def test_the_window_is_told_a_stored_key_is_held_back_and_why(env):
     creds.delete_secret("provider", "Fake")
     state = engine.snapshot()
     assert "key_held" not in state["assistant"] and "No API key is stored" in state["assistant"]["error"]
+
+
+async def test_a_held_keys_way_out_through_the_window_does_what_its_words_say(env):
+    """The words say pasting the key in Settings puts the assistant back on NanoGPT's own address (Engine.quick_setup,
+    what Settings → API key calls): it does, and the key is sent there; the changed address is left behind. They used
+    to say it entered the key again "for" the new address, which the window can't do."""
+    from davibemanager.config import NANOGPT_BASE_URL, Provider
+    from davibemanager.models import key_problem_for
+
+    engine, _, _ = env
+    engine.cfg.providers.append(Provider("NanoGPT", "https://moved.example/api/v1", builder_url="https://moved.example/api/v1",
+                                         key_for=["https://nano-gpt.com:443"]))
+    engine.cfg.settings.builder_provider = "NanoGPT"
+    creds.set_secret("provider", "NanoGPT", "sk-live-1")
+    words = engine.snapshot()["assistant"]["error"]
+    assert "puts the assistant back on it (https://nano-gpt.com/api/v1), leaving https://moved.example:443 behind" in words
+    await engine.quick_setup("sk-live-1")
+    prov = engine.cfg.provider("NanoGPT")
+    assert (prov.base_url, prov.builder_url) == (NANOGPT_BASE_URL, NANOGPT_BASE_URL) and key_problem_for(prov) is None
+    assert engine.cfg.settings.builder_provider == "NanoGPT" and "key_held" not in engine.snapshot()["assistant"]

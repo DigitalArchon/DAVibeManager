@@ -90,9 +90,13 @@ def key_problem_for(prov: Provider) -> str | None:
         return None
     was = ", ".join(shown(o) for o in prov.key_for) or "no address"
     now = ", ".join(shown(o) for o in elsewhere)
+    # the ways out as they work: the window's key field (Engine.quick_setup) saves NanoGPT's key for NanoGPT's own
+    # address and puts the assistant back on it; the window has no field for another address
     return (f"The API key saved for {prov.name} was entered for {was}, and {prov.name}'s address is now {now}: the key "
-            "isn't sent there, so a changed address can't take it anywhere else. If the new address is right, enter "
-            f"the key again for it (Settings → API key, for NanoGPT); otherwise put {prov.name}'s address back.")
+            "isn't sent there, so a changed address can't take it anywhere else. Pasting your NanoGPT key in Settings → "
+            f"API key saves it for NanoGPT's own address and puts the assistant back on it ({shown(config_mod.NANOGPT_BASE_URL)}), "
+            f"leaving {now} behind. To use {now}, enter the key again for it through the app's API, or put "
+            f"{prov.name}'s address back in config.toml.")
 
 
 class Models:

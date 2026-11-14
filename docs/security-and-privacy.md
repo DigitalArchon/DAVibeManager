@@ -226,7 +226,9 @@ then fetches from your distribution's own servers, as it always does.
   address had when you saved the key. If the address is changed afterwards (by hand in the settings
   file, or through the app's API) to another host or port, the key isn't sent there: the window
   says so in place of the chat, and each request is refused, saying which address the key was for and
-  what to do (enter the key again for the new address, or put the address back). Nothing is deleted. A key saved before this rule takes the
+  what to do: pasting your NanoGPT key in Settings saves it for NanoGPT's own address and puts the
+  assistant back on it; to use the new address, enter the key again for it through the app's API (the
+  window has no field for an address), or put the address back in the settings file. Nothing is deleted. A key saved before this rule takes the
   address saved beside it, the first time the app starts.
 - **A key never crosses your network unencrypted unless you say so.** Plain `http://` is allowed to
   a model server on this computer or your local network, but to another machine the key (and
