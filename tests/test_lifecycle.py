@@ -185,3 +185,28 @@ def test_the_app_turns_core_dumps_off_before_anything_else(monkeypatch):
     monkeypatch.setattr(app.argparse.ArgumentParser, "parse_args", lambda *a, **k: pytest.fail("arguments read first"))
     with pytest.raises(First):
         app.main(["--browser"])
+
+
+def test_the_window_asks_gtk_for_its_own_file_dialogs_where_the_desktop_asks_for_the_portals(monkeypatch):
+    """xdg-desktop-portal refuses every request of a process that isn't dumpable ("Unable to open /proc/PID/root"):
+    where GTK_USE_PORTAL=1 (some KDE desktops) the window's dialogs for attaching a file, importing a .vibe or
+    restoring a backup would never open (DA Toolkit's app.own_dialogs). For the app's own process only."""
+    from davibemanager import app, hostenv
+
+    monkeypatch.setattr(hostenv, "ORIGINAL", {})
+    monkeypatch.setenv("GTK_USE_PORTAL", "1")
+    app.own_dialogs()
+    assert os.environ["GTK_USE_PORTAL"] == "0" and hostenv.host_env()["GTK_USE_PORTAL"] == "1"
+    hostenv.put_back("GTK_USE_PORTAL")                  # the browser instead: as the desktop asks
+    assert os.environ["GTK_USE_PORTAL"] == "1" and hostenv.ORIGINAL == {}
+    monkeypatch.delenv("GTK_USE_PORTAL")
+    app.own_dialogs()
+    assert "GTK_USE_PORTAL" not in os.environ and hostenv.ORIGINAL == {}
+
+
+def test_the_test_run_stays_dumpable():
+    """An entry point a test calls turns core dumps off for its process: here that would be the test run's own
+    (conftest keeps app.no_core_dumps a stand-in; the real one is tested in a process of its own)."""
+    import ctypes
+
+    assert ctypes.CDLL(None).prctl(3, 0, 0, 0, 0) == 1

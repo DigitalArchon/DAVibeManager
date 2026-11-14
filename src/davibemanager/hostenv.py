@@ -32,6 +32,17 @@ def set_for_self(name: str, value: str) -> None:
     os.environ[name] = value
 
 
+def put_back(name: str) -> None:
+    """Undo `set_for_self`: the variable as it was before, for this process too (DA Toolkit's hostenv.put_back)."""
+    if name not in ORIGINAL:
+        return
+    value = ORIGINAL.pop(name)
+    if value is None:
+        os.environ.pop(name, None)
+    else:
+        os.environ[name] = value
+
+
 def _set_by_apprun(env) -> set[str]:
     """The variables AppRun set, which the user's environment did not have.
 

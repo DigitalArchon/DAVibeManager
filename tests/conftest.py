@@ -39,6 +39,16 @@ def memory_keyring(tmp_path, monkeypatch):
     keyring.set_keyring(old)
 
 
+@pytest.fixture(autouse=True)
+def dumpable_test_run(monkeypatch):
+    """app.main turns core dumps off for its process (no_core_dumps): here that would be the test run's own, for
+    every test after it, and an undumpable process can't read its own /proc/self/environ, nor may the desktop portal
+    answer it. tests/test_lifecycle.py checks the real thing in a process of its own (DA Toolkit's conftest)."""
+    from davibemanager import app
+
+    monkeypatch.setattr(app, "no_core_dumps", lambda: None)
+
+
 @pytest.fixture
 async def env(tmp_path):
     """An engine with one fake provider ("Fake", serving the assistant and the reviewer) and an

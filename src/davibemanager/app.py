@@ -18,7 +18,7 @@ import uvicorn
 
 from . import config, omarchy
 from .engine import Engine
-from .hostenv import HOST_TYPELIB_DIRS, set_for_self
+from .hostenv import HOST_TYPELIB_DIRS, put_back, set_for_self
 from .server.app import Launches, create_app, runtime_dir
 
 
@@ -231,6 +231,18 @@ def _bundled_girepository() -> None:
         set_for_self("GI_TYPELIB_PATH", ":".join(missing + ([current] if current else [])))
 
 
+def own_dialogs() -> None:
+    """GTK's own file dialogs in the app window, never the desktop portal's, where the environment asks GTK for
+    the portal's (GTK_USE_PORTAL=1, which some KDE desktops set). The app isn't dumpable (no_core_dumps), and
+    xdg-desktop-portal refuses every request of a process that isn't ("Portal operation not allowed: Unable to
+    open /proc/PID/root", DA Toolkit measured with 1.20.0), so the window's dialogs for attaching a file,
+    importing a .vibe or restoring a backup would never open. GTK reads the variable once, at the first dialog:
+    set before GTK starts, for this process only (the programs it starts get the value it was: hostenv). The
+    window uses the portal for nothing else (DA Toolkit's app.own_dialogs)."""
+    if os.environ.get("GTK_USE_PORTAL", "").startswith("1"):
+        set_for_self("GTK_USE_PORTAL", "0")
+
+
 def window_problem() -> str | None:
     """Why the app window can't open here (no WebKitGTK, no display), or None if it can."""
     if not (os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")):
@@ -330,8 +342,10 @@ def main(argv: list[str] | None = None) -> None:
     use_browser = args.browser or args.no_open or (cfg.settings.ui_mode == "browser" and not args.window)
     notice = ""
     if not use_browser:
+        own_dialogs()                           # before GTK starts
         problem = window_problem()
         if problem:
+            put_back("GTK_USE_PORTAL")          # the browser that opens instead uses what the desktop asks
             use_browser, notice = True, f"{problem}. Running in your web browser until then."
             print(notice, file=sys.stderr)
     desktop = None if use_browser else Desktop()
