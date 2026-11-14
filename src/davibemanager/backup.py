@@ -45,6 +45,7 @@ import tomli_w
 from . import __version__, apps, config, creds
 from . import delivery as delivery_mod
 from .conversation import Conversation
+from .llm.secure_http import loads
 from .models import UserError
 from .workspace import podman
 
@@ -131,7 +132,7 @@ def read_header(f: BinaryIO) -> tuple[bytes, dict]:
         raise BackupError("That backup is damaged.")
     header = f.read(size)
     try:
-        info = json.loads(header)
+        info = loads(header)                # nested no deeper than 200 levels (llm/secure_http.loads)
     except ValueError:
         raise BackupError("That backup is damaged.") from None
     if not isinstance(info, dict) or info.get("format") != FORMAT or info.get("kdf") != "scrypt":
@@ -297,7 +298,7 @@ def read_backup(path: Path, password: str, into: Path | None = None) -> dict:
                 if where is None:
                     continue
                 if where == "manifest.json":
-                    manifest = json.loads(tar.extractfile(m).read())
+                    manifest = _backup_json(tar.extractfile(m).read())
                     if into is None:
                         return manifest
                     continue
@@ -316,6 +317,19 @@ def read_backup(path: Path, password: str, into: Path | None = None) -> dict:
             return manifest
 
 
+def _backup_json(data: bytes):
+    """JSON a backup holds, as JSON from outside is read (llm/secure_http.loads: nested no deeper than 200
+    levels): a backup is a file from wherever it was kept. One that can't be read says the backup is
+    damaged, never a ValueError or a RecursionError from the middle of a restore."""
+    try:
+        found = loads(data)
+    except ValueError:
+        raise BackupError("That backup is damaged: part of it can't be read.") from None
+    if not isinstance(found, dict):
+        raise BackupError("That backup is damaged: part of it isn't what it should be.")
+    return found
+
+
 def settle(unpacked: Path, current: config.Config) -> tuple[config.Config, dict]:
     """The unpacked backup made right for this computer: settings with this computer's own kept,
     apps not installed here (their kept builds ready to install), chats without sessions that
@@ -325,7 +339,7 @@ def settle(unpacked: Path, current: config.Config) -> tuple[config.Config, dict]
     for key in OWN_SETTINGS:
         setattr(cfg.settings, key, getattr(current.settings, key))
     for meta_path in (data / "deliveries").glob("D*/delivery.json"):
-        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        meta = _backup_json(meta_path.read_bytes())
         if meta.get("status") in ("installed", "replaced"):
             meta["status"] = "new"
         for k in ("installed_to", "installed_via", "installed_at", "installed_files", "backups", "removed", "tried"):
@@ -334,7 +348,7 @@ def settle(unpacked: Path, current: config.Config) -> tuple[config.Config, dict]
     restored = {p.parent.name for p in (data / "deliveries").glob("D*/delivery.json")}
     named: set[str] = set(restored)             # every build id that means something, here or in a chat
     for app_path in (data / "apps").glob("*/app.json"):
-        a = json.loads(app_path.read_text(encoding="utf-8"))
+        a = _backup_json(app_path.read_bytes())
         was = a.get("installed") or {}
         u = a.get("update") or {}
         named |= {*a.get("builds", []), was.get("build", ""), (a.get("previous") or {}).get("build", ""), u.get("build", "")}
@@ -346,7 +360,7 @@ def settle(unpacked: Path, current: config.Config) -> tuple[config.Config, dict]
         app_path.write_text(json.dumps(a, indent=1, ensure_ascii=False), encoding="utf-8")
     have = {p.stem for p in (unpacked / "sessions").rglob("*.jsonl")} if (unpacked / "sessions").is_dir() else set()
     for state in (data / "conversations").glob("*/state.json"):
-        s = json.loads(state.read_text(encoding="utf-8"))
+        s = _backup_json(state.read_bytes())
         named |= {p.get("id", "") for e in s.get("chat", []) for p in e.get("parts", []) if p.get("t") == "delivery"}
         if s.get("session") and s["session"] not in have:
             s["session"] = ""                   # the assistant starts it afresh; the chat is all there
@@ -356,7 +370,7 @@ def settle(unpacked: Path, current: config.Config) -> tuple[config.Config, dict]
     highest = max((int(d[1:]) for d in named if re.fullmatch(r"D\d{1,9}", d or "")), default=0)
     (data / "deliveries").mkdir(parents=True, exist_ok=True)
     (data / "deliveries" / delivery_mod.LAST_ID).write_text(str(highest))
-    keys = json.loads((unpacked / "secrets.json").read_text(encoding="utf-8")) if (unpacked / "secrets.json").is_file() else {}
+    keys = _backup_json((unpacked / "secrets.json").read_bytes()) if (unpacked / "secrets.json").is_file() else {}
     return cfg, keys.get("providers") or {}
 
 

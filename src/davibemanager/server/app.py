@@ -21,6 +21,7 @@ from urllib.parse import unquote
 
 from fastapi import Depends, FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse
+from fastapi.routing import APIRoute
 
 from fastapi.staticfiles import StaticFiles
 from starlette.datastructures import Headers
@@ -30,6 +31,7 @@ from .. import delivery as delivery_mod
 from .. import share as share_mod
 from ..engine import MAX_ATTACHMENT, Engine, UserError
 from ..hostenv import host_env
+from ..llm.secure_http import loads
 from ..workspace.podman import PodmanError
 
 WEB_DIR = Path(__file__).resolve().parents[1] / "web"
@@ -145,6 +147,30 @@ def upload_dir() -> Path:
     return Path(base) / "davibemanager"
 
 
+class BoundedRequest(Request):
+    """A request whose JSON body is read as JSON from outside is, everywhere (llm/secure_http.loads):
+    nested more than MAX_NESTING levels deep it is refused, a 400, before any of it is used. Python's
+    parser alone went to about a thousand levels, and a body past that raised a RecursionError. (DA
+    Toolkit's server/app.py, the standard every DA app keeps, Nov 2026.)"""
+
+    async def json(self):
+        if not hasattr(self, "_json"):
+            self._json = loads(await self.body())
+        return self._json
+
+
+class BoundedRoute(APIRoute):
+    """Every route's request as a BoundedRequest, FastAPI's own reading of a body included (it reads
+    one through `Request.json`, and answers 400 to what that refuses)."""
+
+    def get_route_handler(self):
+        handler = super().get_route_handler()
+
+        async def bounded(request: Request):
+            return await handler(BoundedRequest(request.scope, request.receive))
+        return bounded
+
+
 def create_app(token: str, make_engine: Callable[[Callable[[dict], None]], Engine],
                desktop=None, on_quit: Callable[[], None] | None = None, launches: Launches | None = None) -> FastAPI:
     """The window's app, for 127.0.0.1 only. `desktop` (app.Desktop, only in the app window)
@@ -182,6 +208,7 @@ def create_app(token: str, make_engine: Callable[[Callable[[dict], None]], Engin
             await app.state.engine.stop()
 
     app = FastAPI(lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
+    app.router.route_class = BoundedRoute     # every body read as JSON from outside is (`BoundedRequest`)
 
     def check(t: str | None) -> bool:
         # as bytes: compare_digest raises on a str with anything but ASCII in it (a 500, not a 403)

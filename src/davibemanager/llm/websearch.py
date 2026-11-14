@@ -8,14 +8,14 @@ every query before it goes). Results are untrusted text, like command output."""
 from __future__ import annotations
 
 import html
-import json
 import re
 from urllib.parse import urlsplit
 
 import httpx
 
 from ..netpolicy import InsecureURL, check_url, key_problem, shown
-from .secure_http import local_http_options
+from .client import reading_options
+from .secure_http import ProviderError, loads
 
 # Best first, from DA-Assistant's measurement (2026-09-21: three queries, eight results each, scored
 # by primary sources): perplexity 10/16 with ~1,300 clean characters per result; valyu 5/16, clean
@@ -103,10 +103,10 @@ async def web_search(base_url: str, api_key: str, query: str, provider: str = "p
             body["fromDate"] = after
         if before:
             body["toDate"] = before
-    client = http or httpx.AsyncClient(timeout=TIMEOUT, **local_http_options(base_url))
+    client = http or httpx.AsyncClient(timeout=TIMEOUT, **reading_options(base_url))
     try:
         r = await client.post(search_url(base_url), json=body, headers={"Authorization": f"Bearer {api_key}"})
-    except httpx.HTTPError as e:
+    except (httpx.HTTPError, ProviderError) as e:     # or an answer that isn't read (secure_http.capped_body)
         raise SearchError(f"could not reach {shown(search_url(base_url))}: {e}") from e
     finally:
         if http is None:
@@ -114,7 +114,7 @@ async def web_search(base_url: str, api_key: str, query: str, provider: str = "p
     if r.status_code != 200:
         detail, code = _ERRORS.get(r.status_code, r.reason_phrase), ""
         try:
-            err = r.json().get("error")
+            err = loads(r.content).get("error")
             msg = err.get("message") if isinstance(err, dict) else err
             code = str(err.get("code") or "") if isinstance(err, dict) else ""
             if msg:
@@ -123,7 +123,7 @@ async def web_search(base_url: str, api_key: str, query: str, provider: str = "p
             pass
         raise SearchError(f"{provider} search failed ({r.status_code} {detail})", code, r.status_code)
     try:
-        payload = r.json()
+        payload = loads(r.content)
     except ValueError as e:
         raise SearchError("search returned something that is not JSON") from e
     meta = payload.get("metadata") if isinstance(payload, dict) else None
@@ -151,7 +151,7 @@ def normalize(data) -> list[dict]:
     shapes: a list of results, or an object holding one under results/data/items/sources."""
     if isinstance(data, str):
         try:
-            data = json.loads(data)
+            data = loads(data)
         except ValueError:
             return [{"title": "", "url": "", "snippet": data[:4000], "date": ""}]
     if isinstance(data, dict):

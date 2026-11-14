@@ -26,6 +26,8 @@ import json
 import secrets
 from pathlib import Path
 
+from ..llm.secure_http import loads
+
 PROTO = 2
 MAX_JSON = 4 << 20                  # a message
 MAX_BYTES = 26 << 20                # an app's bundle (share.MAX_FILE, and some)
@@ -104,7 +106,7 @@ async def recv(reader: asyncio.StreamReader, wait: float = READ_WAIT) -> dict:
     if kind != b"J":
         raise WireError("bytes where a message was due")
     try:
-        msg = json.loads(data)
+        msg = loads(data)                   # nested no deeper than 200 levels, a RecursionError none (secure_http)
     except ValueError:
         raise WireError("a message that can't be read") from None
     if not isinstance(msg, dict):

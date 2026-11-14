@@ -34,8 +34,8 @@ import httpx
 
 from .llm import anthropic_bridge as bridge
 from .llm import routes
-from .llm.client import is_private_mode
-from .llm.secure_http import is_local, local_http_options
+from .llm.client import capped_lines, is_private_mode
+from .llm.secure_http import ACCEPT_ENCODING, ProviderError, is_local, loads, local_http_options
 from .llm.params import effort_unsupported, efforts_named, fit_claude, nearest_effort, with_effort
 from . import netpolicy
 from .netpolicy import InsecureURL, check_url, is_global_ip, is_secure, key_problem, own_networks, scrubbed, shown
@@ -201,7 +201,7 @@ class UsageReader:
         for line in lines:
             if line.startswith(b"data:") and b'"usage"' in line:
                 try:
-                    data = json.loads(line[5:])
+                    data = loads(line[5:])
                 except ValueError:
                     continue
                 if not isinstance(data, dict):
@@ -241,7 +241,7 @@ def refusal_response(e: Refused):
 
 def _error_text(raw: bytes) -> str:
     try:
-        data = json.loads(raw)
+        data = loads(raw)
         err = data.get("error", data) if isinstance(data, dict) else data
         msg = err.get("message") if isinstance(err, dict) else err
         return str(msg or data)[:500]
@@ -460,7 +460,7 @@ class Gateway:
             sealed = any(is_private_mode(m) for m in up.models[:1])     # the assistant's model is private
             if body and request.method == "POST":
                 try:
-                    data = json.loads(body)
+                    data = loads(body)            # nested no deeper than 200 levels (secure_http.loads)
                 except ValueError:
                     return fail(path, 400, "The request body isn't JSON.", "invalid_request_error")
                 if not isinstance(data, dict):
@@ -514,7 +514,7 @@ class Gateway:
             req = client.build_request(request.method, url, content=body, headers=headers)
             try:
                 resp = await client.send(req, stream=True)
-            except httpx.HTTPError as e:
+            except (httpx.HTTPError, ProviderError) as e:     # or an answer refused unread (capped_lines)
                 return fail(path, 502, f"Could not reach {up.provider}: {scrubbed(e)}", "api_error", retry=True,
                             model=sent_model)
             if resp.is_redirect:
@@ -554,7 +554,7 @@ class Gateway:
                     await resp.aclose()
                     if whole:
                         try:
-                            usage.usage = anthropic_usage(json.loads(whole).get("usage"))
+                            usage.usage = anthropic_usage(loads(whole).get("usage"))
                         except (ValueError, AttributeError):
                             pass
                     self.on_event({**rec, "bytes_in": n, "seconds": round(time.monotonic() - started, 2),
@@ -752,8 +752,12 @@ class Gateway:
                 raise httpx.HTTPError(f"redirect to insecure {loc[:100]!r} refused")
 
         def make(**options) -> httpx.AsyncClient:
+            # only gzip and deflate asked for (httpx asks for br too, brotli being installed), and the
+            # provider's answer read only so far as it passes (llm/client.py capped_lines): an error's
+            # to 64 KB, a reply not streamed to 32 MB, a stream's line to 32 MB
             return httpx.AsyncClient(timeout=httpx.Timeout(600, connect=30), follow_redirects=False,
-                                     event_hooks={"response": [refuse_insecure]}, **options)
+                                     headers={"Accept-Encoding": ACCEPT_ENCODING},
+                                     event_hooks={"response": [refuse_insecure, capped_lines]}, **options)
         if self.http is not None and not self._own_http:
             return self.http
         if url and is_local(url):

@@ -197,6 +197,14 @@ then fetches from your distribution's own servers, as it always does.
   `OPENAI_PROJECT_ID`, `OPENAI_CUSTOM_HEADERS`). A model server that takes no connection fails in
   ten seconds, not after the minutes a reply may take; a reply whose stream stops before the
   provider says it's complete is an error, and nothing in it (a half-written command) is used.
+- **An answer is read only so far.** Every client that reads what a model provider, NanoGPT's relay
+  or an attestation service sends asks for gzip or deflate compression alone (never br or zstd, which
+  can unpack without bound) and refuses an answer sent any other way, unread; a reply read whole, a
+  model list or an attestation is read to 32 MB at most, an error's text to 64 KB (the rest left
+  unread), and a stream's line to 32 MB, all counted as unpacked. JSON nested more than 200 levels deep
+  is refused as unreadable wherever it comes from (a provider, the relay, Claude Code's requests to the
+  gateway, another computer in your sync group, a backup, the window's own requests), never left to
+  crash what reads it.
 - **The sandbox** reaches nothing but public internet addresses, over HTTPS, through the app
   ([below](#the-sandbox)).
 - **Links in a reply.** A link that isn't secure (plain `http://` to anywhere but this computer or

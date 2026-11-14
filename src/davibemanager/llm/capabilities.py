@@ -12,7 +12,8 @@ import re
 import httpx
 
 from ..netpolicy import check_key, check_url
-from .secure_http import local_http_options
+from .client import reading_options
+from .secure_http import loads
 
 EFFORTS = ["none", "minimal", "low", "medium", "high", "xhigh", "max"]
 
@@ -70,13 +71,15 @@ def cost(caps: dict | None, usage: dict) -> float | None:
 async def fetch_nanogpt(base_url: str, api_key: str | None, http: httpx.AsyncClient | None = None) -> dict[str, dict]:
     check_url(base_url, "The provider's base URL")          # the key goes with it
     check_key(api_key, "NanoGPT")                           # and only one a header can carry
-    # as every client built for a provider's address: a local one is reached directly
-    client = http or httpx.AsyncClient(timeout=30, **local_http_options(base_url))
+    # as every client built for a provider's address: a local one is reached directly, and its answer read
+    # only so far (llm/client.py reading_options)
+    client = http or httpx.AsyncClient(timeout=30, **reading_options(base_url))
     try:
         r = await client.get(base_url.rstrip("/") + "/models", params={"detailed": "true"},
                              headers={"Authorization": f"Bearer {api_key}"} if api_key else {})
         r.raise_for_status()
-        return parse(r.json().get("data", []))
+        data = loads(r.content)
+        return parse((data.get("data") if isinstance(data, dict) else None) or [])
     finally:
         if http is None:
             await client.aclose()

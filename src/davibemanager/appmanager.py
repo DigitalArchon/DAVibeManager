@@ -40,6 +40,7 @@ from . import delivery as delivery_mod
 from .config import REBUILD, data_dir
 from .conversation import Conversation, fence
 from .llm import prompts
+from .llm.secure_http import loads
 from .models import UserError
 from .netpolicy import InsecureURL, check_url
 from .safety.inject import defang, label
@@ -377,7 +378,7 @@ class AppManager:
         rc, out = await podman.exec_agent(box, ["python3", "-c", scripts.INSPECT, repo, base, head], timeout=120,
                                           env={"GIT_ATTR_SOURCE": EMPTY_TREE})
         try:
-            return json.loads(out.strip().splitlines()[-1]) if rc == 0 else {}
+            return loads(out.strip().splitlines()[-1]) if rc == 0 else {}
         except (ValueError, IndexError):
             return {}
 
@@ -752,7 +753,7 @@ class AppManager:
         rc, out = await podman.exec_agent(
             self.e.sandbox, ["python3", "-I", "-c", scripts.CHANGELOG, a["upstream"], repo, a["base_ref"], tag], timeout=300)
         try:
-            log = json.loads(out.strip().splitlines()[-1]) if rc == 0 else None
+            log = loads(out.strip().splitlines()[-1]) if rc == 0 else None
         except (ValueError, IndexError):
             log = None
         if log is None:
@@ -773,7 +774,7 @@ class AppManager:
         a = self.app(app_id)
         tag = (a.get("update") or {}).get("latest", "")
         try:
-            return json.loads(apps.read_file(app_id, f"changelog-{tag}.json") or "null") or {}
+            return loads(apps.read_file(app_id, f"changelog-{tag}.json") or "null") or {}
         except ValueError:
             return {}
 

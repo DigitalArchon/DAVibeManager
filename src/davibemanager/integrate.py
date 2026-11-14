@@ -24,7 +24,6 @@ Removing an app (the user's click) undoes it the same way: Gear Lever's `--remov
 from __future__ import annotations
 
 import hashlib
-import json
 import os
 import shutil
 import subprocess
@@ -32,6 +31,7 @@ from pathlib import Path
 
 from . import appimage, omarchy
 from .hostenv import host_env
+from .llm.secure_http import loads
 
 GEARLEVER_FLATPAK = "it.mijorus.gearlever"
 TIMEOUT = 300
@@ -66,7 +66,7 @@ def _json_from(text: str):
     if start < 0:
         raise IntegrationError("it printed no JSON")
     try:
-        return json.loads(text[start:])
+        return loads(text[start:])
     except ValueError as e:
         raise IntegrationError(f"its JSON couldn't be read: {e}") from None
 
