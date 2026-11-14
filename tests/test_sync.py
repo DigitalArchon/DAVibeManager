@@ -11,6 +11,7 @@ import time
 from contextlib import contextmanager
 
 import pytest
+from conftest import remove_short_dirs, short_dir
 from fakesandbox import commit_patch
 
 from davibemanager import apps, config, share
@@ -616,7 +617,6 @@ def test_apps_sync_leaves_out_say_why():
 async def test_the_apps_own_tor_is_started_logged_into_and_stopped_with_it(tmp_path, monkeypatch):
     """Against a stand-in for tor (faketor.py), run as tor is: the cookie login, in which tor proves
     it read the cookie; ownership, so it goes with the app; bootstrap; an onion with clients."""
-    import tempfile
     from pathlib import Path
     key = onion.OnionKey.new()
     monkeypatch.setenv("FAKE_TOR_ADDRESS", key.address)
@@ -624,7 +624,7 @@ async def test_the_apps_own_tor_is_started_logged_into_and_stopped_with_it(tmp_p
     clean = tor.tor_environment
     monkeypatch.setattr(tor, "tor_environment", lambda t, environ=None: {
         **clean(t), **{k: v for k, v in os.environ.items() if k.startswith("FAKE_TOR_")}})
-    run = Path(tempfile.mkdtemp(prefix="dvm-", dir="/tmp"))
+    run = short_dir()
     states = []
     t = tor.Tor(tor.paths_for(tmp_path / "state", run), binary=Path(__file__).with_name("faketor.py"), on_change=states.append)
     await t.start()
@@ -647,13 +647,12 @@ async def test_the_apps_own_tor_is_started_logged_into_and_stopped_with_it(tmp_p
 async def test_something_else_at_tors_socket_naming_a_cookie_of_its_own_is_refused(tmp_path, monkeypatch):
     """PROTOCOLINFO's COOKIEFILE comes from whatever answers on the control socket: an impostor names its own
     cookie and proves it read that one. The cookie read is the one in the data folder the app gave its tor."""
-    import tempfile
     from pathlib import Path
     monkeypatch.setenv("FAKE_TOR_IMPOSTOR", "1")
     clean = tor.tor_environment
     monkeypatch.setattr(tor, "tor_environment", lambda t, environ=None: {
         **clean(t), **{k: v for k, v in os.environ.items() if k.startswith("FAKE_TOR_")}})
-    run = Path(tempfile.mkdtemp(prefix="dvm-", dir="/tmp"))
+    run = short_dir()
     t = tor.Tor(tor.paths_for(tmp_path / "state", run), binary=Path(__file__).with_name("faketor.py"))
     with pytest.raises(tor.TorError, match="didn't prove it is tor"):
         await t.start()
@@ -661,10 +660,30 @@ async def test_something_else_at_tors_socket_naming_a_cookie_of_its_own_is_refus
 
 
 async def test_tor_that_isnt_there_or_wont_start_says_so(tmp_path):
-    import tempfile
     from pathlib import Path
-    run = Path(tempfile.mkdtemp(prefix="dvm-", dir="/tmp"))
+    run = short_dir()
     t = tor.Tor(tor.paths_for(tmp_path / "state", run), binary=Path("/bin/false"))
     with pytest.raises(tor.TorError, match="Tor didn't start"):
         await t.start()
     assert t.state["step"] == "failed"
+
+
+def test_the_short_folders_sockets_need_go_with_their_test():
+    """Every folder a test makes outside tmp_path is short_dir's, and goes when the test ends: tempfile.mkdtemp in
+    the sync tests left some 47 empty /tmp/dvm-* folders behind every run (seen on the lab VMs, Nov 14 2026)."""
+    import ast
+    from pathlib import Path
+
+    made = []
+    for path in sorted(Path(__file__).parent.glob("*.py")):
+        if path.name == "conftest.py":
+            continue
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+            if isinstance(node, ast.Call) and getattr(node.func, "attr", getattr(node.func, "id", "")) == "mkdtemp":
+                made.append(f"{path.name}:{node.lineno}")
+    assert made == []
+    folder = short_dir()
+    (folder / "sock").write_text("")
+    assert folder.is_dir() and len(str(folder / "tor" / "sync.sock")) < 107
+    remove_short_dirs()
+    assert not folder.exists()

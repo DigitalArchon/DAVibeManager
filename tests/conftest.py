@@ -1,6 +1,33 @@
+import shutil
+import tempfile
+from pathlib import Path
+
 import keyring
 import pytest
 from keyring.backend import KeyringBackend
+
+# the folders short_dir made for the test running, removed when it ends
+_SHORT_DIRS: list[Path] = []
+
+
+def short_dir() -> Path:
+    """A folder of the test's own with a short path, for unix sockets (a socket's path is at most 107 bytes,
+    which tmp_path's can pass), removed when the test ends (_short_dirs_removed): the sync tests' own
+    tempfile.mkdtemp left some 47 empty /tmp/dvm-* folders behind every run."""
+    path = Path(tempfile.mkdtemp(prefix="dvm-", dir="/tmp"))
+    _SHORT_DIRS.append(path)
+    return path
+
+
+def remove_short_dirs() -> None:
+    while _SHORT_DIRS:
+        shutil.rmtree(_SHORT_DIRS.pop(), ignore_errors=True)
+
+
+@pytest.fixture(autouse=True)
+def _short_dirs_removed():
+    yield
+    remove_short_dirs()
 
 
 class MemoryKeyring(KeyringBackend):

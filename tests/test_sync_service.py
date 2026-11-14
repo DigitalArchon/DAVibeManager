@@ -4,7 +4,6 @@ only them in, and one that isn't up can't be reached)."""
 
 import asyncio
 import contextvars
-import tempfile
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -13,6 +12,7 @@ import pytest
 
 from davibemanager import apps, config, share
 from davibemanager.sync import library, pairing, service, store, tor as tor_mod, wire
+from conftest import short_dir
 from test_sync import commit_patch, make_app
 
 
@@ -91,7 +91,7 @@ class Computer:
         self.net, self.name = net, name
         self.ctx = contextvars.copy_context()
         self.ctx.run(config.ROOTS.set, (root / "config", root / "data"))
-        runtime = Path(tempfile.mkdtemp(prefix="dvm-", dir="/tmp"))       # short: unix sockets' paths
+        runtime = short_dir()       # short: unix sockets' paths
         self.notes = []
         self.engine = SimpleNamespace(runtime_dir=runtime, busy=False, conv=None, loop=None,
                                       backups=SimpleNamespace(running=None),
@@ -497,7 +497,7 @@ async def test_the_window_adds_computers_through_the_api_and_hears_why_when_it_c
     net = FakeNet()
 
     def make(emit):
-        e = Engine(Config(), emit, Path(tempfile.mkdtemp(prefix="dvm-", dir="/tmp")), save_config=lambda c: None)
+        e = Engine(Config(), emit, short_dir(), save_config=lambda c: None)
         e.start_workspace = lambda: None
         return e
     app = create_app("secret", make)
