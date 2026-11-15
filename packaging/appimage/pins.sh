@@ -22,14 +22,26 @@ RUNTIME_SHA256="2fca8b443c92510f1483a883f60061ad09b46b978b2631c807cd873a47ec260d
 # deb.torproject.org archive signing key, fetched over https from deb.torproject.org), Ubuntu's
 # InRelease files by Ubuntu's archive key (Ubuntu Archive Automatic Signing Key (2018), F6EC B376
 # 2474 EDA9 D21B 7022 8719 20D1 991B C93C), and each .deb's sum here the one its Packages index
-# gives. Ubuntu's packages come from Launchpad's file store, which keeps every version;
-# deb.torproject.org keeps only the current tor, so a build from an older tag needs the .deb in
-# the cache. Built with --enable-gpl (the onion services' proof-of-work defence), so that tor is
-# GPL-3: the notice build.sh writes names its source. Bump it for tor's fixes.
+# gives. Ubuntu's packages come from Launchpad's file store, which keeps every version (tor's own
+# repository doesn't: TOR_FALLBACK_URL). Built with --enable-gpl (the onion services' proof-of-work
+# defence), so that tor is GPL-3: the notice build.sh writes names its source. Bump it for tor's
+# fixes.
 TOR_VERSION="0.4.9.17"
 TOR_DEB="tor_0.4.9.17-1~jammy+1_amd64.deb"
 TOR_URL="https://deb.torproject.org/torproject.org/pool/main/t/tor/$TOR_DEB"
 TOR_SHA256="249f3beef647186a7127f1828c7dec9aaf93de900baca8e01c0fb99bb47c2a58"
+# deb.torproject.org keeps only the current tor: the same file, under a name GitHub keeps as it is
+# (no "~" or "+"), is an asset of the DA Vibe Manager release that first carried it, tried when
+# deb.torproject.org fails or no longer has it, so any tag can be rebuilt. Its sum is the same pin.
+# A tor bump points this at the release it comes with, and that release uploads the file (and the
+# Debian source's .dsc and .diff.gz the notice names: packaging/README.md).
+TOR_FALLBACK_URL="https://github.com/DigitalArchon/DAVibeManager/releases/download/v0.1.0b16/tor_0.4.9.17-1.jammy.1_amd64.deb"
+# The source the notice names (tor is GPL-3 here): Tor's tarball, and the Debian source package's
+# .dsc and .diff.gz, by the sums the Sources index under the signed InRelease gives (the tarball
+# is the Debian source's orig.tar.gz); the release above carries those two files too.
+TOR_SOURCE_SHA256="ff372c41ee7013557fe5b7acd96c909950b27a7959c59fcb87c02591682fabe2"
+TOR_DSC_SHA256="68a0a524b1fa657612690e6c551df5dcf8a4e908319612dd055f204d404bb2f2"
+TOR_DIFF_SHA256="e0a065df902ec2a22f6120f4aacf81a4f0e9c6728a7d490e788e2fca56038078"
 TOR_ARCHIVE_KEY="A3C4F0F979CAA22CDBA8F512EE8CBC9E886DDD89"
 UBUNTU_FILES="https://launchpad.net/ubuntu/+archive/primary/+files"
 # The Ubuntu 22.04 packages of tor's libraries: file and sha256 (jammy, and jammy-updates where it

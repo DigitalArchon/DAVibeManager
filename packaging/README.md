@@ -78,6 +78,15 @@ size; every other line stays as pip wrote it.
 A relock keeps the versions the locks already pin, and moves only what a new floor or a new package
 needs; `UPGRADE=1` moves everything.
 
+The Tor Project's repository keeps only the current tor, so the same package is also an asset of the
+DA Vibe Manager release that first carried it (`TOR_FALLBACK_URL` in `appimage/pins.sh`: for tor
+0.4.9.17, v0.1.0b16's `tor_0.4.9.17-1.jammy.1_amd64.deb`, named without the `~` and `+` GitHub
+doesn't keep). A build tries deb.torproject.org first and that asset when it fails or no longer has
+the file; either way the file must have the pinned sum, or the build stops. So any tag can be
+rebuilt. A tor bump points `TOR_FALLBACK_URL` at the release it comes with, and that release uploads
+the package and the Debian source's `.dsc` and `.diff.gz` under the names the notice in
+`usr/share/licenses/tor/NOTICE.txt` gives (the source tarball stays on archive.torproject.org).
+
 ## What is pinned, and where
 
 | What | Pinned in |

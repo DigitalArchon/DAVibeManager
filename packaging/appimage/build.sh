@@ -27,10 +27,35 @@ fetch() {  # url sha256 dest: download once into the cache, always verify
         mv "$dest.part" "$dest"
     fi
 }
+fetch_any() {  # fetch_any <file> <sha256> <url>...: from the first address that has it
+    local file="$1" sum="$2" url
+    shift 2
+    mkdir -p "$(dirname "$file")"
+    if [ -f "$file" ] && echo "$sum  $file" | sha256sum -c --quiet - 2>/dev/null; then
+        return 0
+    fi
+    rm -f "$file"
+    for url in "$@"; do
+        if curl --proto '=https' --tlsv1.2 -fL --retry 3 -o "$file.part" "$url"; then
+            mv "$file.part" "$file"
+            if echo "$sum  $file" | sha256sum -c --quiet - 2>/dev/null; then
+                return 0
+            fi
+            echo "the file from $url isn't the one pinned; trying the next address" >&2
+            rm -f "$file"
+        else
+            rm -f "$file.part"
+            echo "$url couldn't be fetched; trying the next address" >&2
+        fi
+    done
+    echo "no address gave $(basename "$file") with its pinned sum $sum" >&2
+    exit 1
+}
 mkdir -p /cache
 fetch "$PBS_URL" "$PBS_SHA256" /cache/python.tar.gz
 fetch "$RUNTIME_URL" "$RUNTIME_SHA256" /cache/runtime-x86_64
-fetch "$TOR_URL" "$TOR_SHA256" "/cache/$TOR_DEB"
+# deb.torproject.org keeps only the current tor: the same file is an asset of our release (pins.sh)
+fetch_any "/cache/$TOR_DEB" "$TOR_SHA256" "$TOR_URL" "$TOR_FALLBACK_URL"
 mkdir -p /cache/debs
 for entry in "${TOR_LIBRARY_DEBS[@]}"; do              # tor's libraries, Ubuntu 22.04's (pins.sh)
     read -r file sum <<<"$entry"
@@ -234,11 +259,11 @@ done
 for lib in "${TOR_LIBS[@]}"; do
     [ -f "$TORDIR/$lib" ] || { echo "no package brought $lib for tor" >&2; exit 1; }
 done
-# the licence texts the copyright files name from /usr/share/common-licenses (the builder's, Ubuntu's)
-for text in Apache-2.0 GPL-1 GPL-2 GPL-3 LGPL-2 LGPL-2.1 CC0-1.0 Artistic; do
-    install -m 644 "/usr/share/common-licenses/$text" "$LICENCES/texts/$text.txt"
-done
+# the licence texts the copyright files name from /usr/share/common-licenses, Debian's, as committed
+install -m 644 "$P"/licenses/tor/*.txt "$LICENCES/texts/"
 TOR_PACKAGE="${TOR_DEB#tor_}" && TOR_PACKAGE="${TOR_PACKAGE%_amd64.deb}"
+TOR_ASSET="${TOR_PACKAGE//\~/.}" && TOR_ASSET="${TOR_ASSET//+/.}"   # its name as GitHub keeps it
+TOR_RELEASE="${TOR_FALLBACK_URL%/*}" && TOR_RELEASE="${TOR_RELEASE##*/}"  # the release that carries it
 cat > "$LICENCES/NOTICE.txt" <<NOTICE
 DA Vibe Manager syncs the user's apps between their computers through tor $TOR_VERSION, taken
 unmodified from the Tor Project's own package for Ubuntu 22.04 (tor $TOR_PACKAGE, from
@@ -249,17 +274,25 @@ is paired with another.
 
 - Tor is under the 3-clause BSD license, with the licences of the code it includes (tor/copyright).
   This build is made with --enable-gpl (the onion services' proof-of-work defence), so the tor
-  program as a whole is under the GNU General Public License, version 3 (texts/GPL-3.txt), as
+  program as a whole is under the GNU General Public License, version 3 (texts/GPL-3.0.txt), as
   tor --version says.
 - Source: tor $TOR_VERSION is https://archive.torproject.org/tor-package-archive/tor-$TOR_VERSION.tar.gz
-  (git tag tor-$TOR_VERSION of https://gitlab.torproject.org/tpo/core/tor), and the package is built
-  from it by the Debian source package tor_$TOR_PACKAGE (tor_$TOR_PACKAGE.dsc,
-  tor_$TOR_VERSION.orig.tar.gz and tor_$TOR_PACKAGE.diff.gz) in
-  https://deb.torproject.org/torproject.org/pool/main/t/tor/ while it is the current version; its
-  packaging is tag debian-tor-$TOR_VERSION-1 of https://gitlab.torproject.org/tpo/core/debian/tor.
+  (git tag tor-$TOR_VERSION of https://gitlab.torproject.org/tpo/core/tor; sha256
+  $TOR_SOURCE_SHA256, the same file as the Debian source's
+  tor_$TOR_VERSION.orig.tar.gz). The package is built from it by the Debian source package
+  tor_$TOR_PACKAGE, whose packaging is tag debian-tor-$TOR_VERSION-1 of
+  https://gitlab.torproject.org/tpo/core/debian/tor. Its two other files are on
+  https://deb.torproject.org/torproject.org/pool/main/t/tor/ while $TOR_VERSION is Tor's current
+  version, and attached for good to DA Vibe Manager's release $TOR_RELEASE
+  (https://github.com/DigitalArchon/DAVibeManager/releases/tag/$TOR_RELEASE) under names GitHub
+  keeps as they are: tor_$TOR_PACKAGE.dsc as tor_$TOR_ASSET.dsc (sha256
+  $TOR_DSC_SHA256) and tor_$TOR_PACKAGE.diff.gz as
+  tor_$TOR_ASSET.diff.gz (sha256 $TOR_DIFF_SHA256),
+  beside the package itself, tor_${TOR_ASSET}_amd64.deb.
 - The libraries, each with its Debian copyright file (its licence) in <package>/copyright; the
-  licence texts those files name from /usr/share/common-licenses are in texts/. Their source is
-  Ubuntu's source package of the same name and version, at
+  licence texts those files name from /usr/share/common-licenses are in texts/ (Apache-2.0.txt,
+  GPL-2.0.txt, GPL-3.0.txt, LGPL-2.0.txt, LGPL-2.1.txt, CC0-1.0.txt, Artistic-1.0.txt,
+  GPL-1.0.txt). Their source is Ubuntu's source package of the same name and version, at
   https://launchpad.net/ubuntu/+source/SOURCE/VERSION (and in deb-src of the Ubuntu 22.04 archive):
 
   Library                          Ubuntu package (source)     Version                     Licence
@@ -274,6 +307,9 @@ is paired with another.
   liblz4.so.1                      liblz4-1 (lz4)              1.9.3-2build2               2-clause BSD
   libgcrypt.so.20                  libgcrypt20 (libgcrypt20)   1.9.4-3ubuntu3.3            LGPL 2.1 or later
   libgpg-error.so.0                libgpg-error0 (libgpg-error) 1.43-3                     LGPL 2.1 or later
+
+  OpenSSL is Ubuntu's 3.0.2, with the security fixes Ubuntu has backported to it
+  (3.0.2-0ubuntu1.30); tor --version names it 3.0.2.
 
 - Replacing them: extract the AppImage and put your own tor and libraries in usr/lib/tor, or run the
   AppImage with DVM_TOR set to the path of another tor.

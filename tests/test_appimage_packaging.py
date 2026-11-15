@@ -42,7 +42,7 @@ def test_every_download_is_https_only():
             for found in re.finditer(r"\bcurl\s+-[^;&|]*", line):         # each curl of a command, on its own
                 curls.append(path.name)
                 assert "--proto '=https' --tlsv1.2" in found.group(0), f"{path}: {found.group(0).strip()}"
-    assert curls.count("build.sh") == 1 and curls.count("Containerfile") == 2
+    assert curls.count("build.sh") == 2 and curls.count("Containerfile") == 2   # fetch and fetch_any
     # the source archives are fetched by Python, which follows a redirect to http by itself
     assert "class HttpsOnly(urllib.request.HTTPRedirectHandler)" in BUILD
     assert "urllib.request.urlopen(" not in BUILD
@@ -103,7 +103,9 @@ def test_the_base_image_and_downloads_are_pinned():
     assert re.search(r'APT_SNAPSHOT="\d{8}T\d{6}Z"', pins)
     for name in ("PBS", "RUNTIME", "TOR"):
         assert re.search(rf'{name}_SHA256="[0-9a-f]{{64}}"', pins)
+    for name in ("PBS", "RUNTIME"):
         assert f'fetch "${name}_URL" "${name}_SHA256"' in BUILD
+    assert 'fetch_any "/cache/$TOR_DEB" "$TOR_SHA256" "$TOR_URL" "$TOR_FALLBACK_URL"' in BUILD
 
 
 # --- nothing of the build machine in the image
@@ -324,9 +326,16 @@ def test_the_build_takes_tor_and_exactly_the_libraries_it_loads_and_checks_them(
 def test_the_notice_names_what_is_bundled_and_where_its_source_is():
     notice = BUILD.split('cat > "$LICENCES/NOTICE.txt" <<NOTICE\n', 1)[1].split("\nNOTICE\n", 1)[0]
     assert "tor $TOR_VERSION" in notice and "tor $TOR_PACKAGE" in notice
-    assert "--enable-gpl" in notice and "texts/GPL-3.txt" in notice
+    assert "--enable-gpl" in notice and "texts/GPL-3.0.txt" in notice
     assert "https://archive.torproject.org/tor-package-archive/tor-$TOR_VERSION.tar.gz" in notice
     assert "tor_$TOR_PACKAGE.dsc" in notice and "tor_$TOR_VERSION.orig.tar.gz" in notice
+    # The source files that vanish from deb.torproject.org are attached to the release, named and summed so.
+    for name in ("tor_$TOR_ASSET.dsc", "tor_$TOR_ASSET.diff.gz", "tor_${TOR_ASSET}_amd64.deb", "$TOR_SOURCE_SHA256",
+                 "$TOR_DSC_SHA256", "$TOR_DIFF_SHA256", "releases/tag/$TOR_RELEASE"):
+        assert name in notice, name
+    for name in ("TOR_SOURCE_SHA256", "TOR_DSC_SHA256", "TOR_DIFF_SHA256"):
+        assert re.fullmatch(r"[0-9a-f]{64}", _pin(name)), name
+    assert 'TOR_ASSET="${TOR_PACKAGE//\\~/.}" && TOR_ASSET="${TOR_ASSET//+/.}"' in BUILD
     assert "debian-tor-$TOR_VERSION-1" in notice
     assert "A3C4 F0F9 79CA A22C\nDBA8 F512 EE8C BC9E 886D DD89" in notice
     from davibemanager.sync.tor import BUNDLED_LIBRARIES
@@ -336,6 +345,82 @@ def test_the_notice_names_what_is_bundled_and_where_its_source_is():
         name, version = file.split("_")[:2]
         assert f" {name} (" in notice, name
         assert version in notice, file
+
+
+def test_the_licence_texts_the_notice_names_are_committed_and_installed():
+    """The texts the libraries' copyright files name from /usr/share/common-licenses, Debian's, committed: the
+    notice doesn't depend on the builder's base-files."""
+    notice = BUILD.split('cat > "$LICENCES/NOTICE.txt" <<NOTICE\n', 1)[1].split("\nNOTICE\n", 1)[0]
+    named = set(re.findall(r"\b([A-Za-z][A-Za-z0-9]*-[0-9.]+)\.txt\b", notice))
+    committed = {path.stem for path in (PACKAGING / "licenses" / "tor").glob("*.txt")}
+    assert named == committed == {"Apache-2.0", "Artistic-1.0", "CC0-1.0", "GPL-1.0", "GPL-2.0", "GPL-3.0",
+                                  "LGPL-2.0", "LGPL-2.1"}
+    assert 'install -m 644 "$P"/licenses/tor/*.txt "$LICENCES/texts/"' in BUILD
+    assert "/usr/share/common-licenses/$" not in BUILD
+
+
+FAKE_CURL = """#!/bin/sh
+# curl as fetch_any calls it: the URL is the last argument, -o names the file.
+out=""; prev=""
+for arg in "$@"; do [ "$prev" = "-o" ] && out="$arg"; prev="$arg"; url="$arg"; done
+echo "$url" >> "$FAKE_LOG"
+case "$url" in
+  *gone*) exit 22 ;;
+  *wrong*) printf 'not the package' > "$out" ;;
+  *) printf 'the tor package' > "$out" ;;
+esac
+"""
+
+
+def _fetch_any(tmp_path, *urls):
+    """build.sh's fetch_any, on its own, with a stand-in curl: (the run, the file, the addresses asked)."""
+    function = re.search(r"^fetch_any\(\) \{.*?^\}\n", BUILD, re.M | re.S)
+    assert function, "build.sh has no fetch_any"
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir(exist_ok=True)
+    curl = bin_dir / "curl"
+    curl.write_text(FAKE_CURL)
+    curl.chmod(0o755)
+    log = tmp_path / "asked.log"
+    log.write_text("")
+    target = tmp_path / "cache" / "debs" / "tor.deb"
+    target.unlink(missing_ok=True)
+    import hashlib
+    pinned = hashlib.sha256(b"the tor package").hexdigest()
+    done = subprocess.run(["bash", "-c", function.group(0) + 'fetch_any "$@"', "fetch_any", str(target), pinned, *urls],
+                          env={"PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}", "FAKE_LOG": str(log)},
+                          capture_output=True, text=True, timeout=60)
+    return done, target, log.read_text().split()
+
+
+@pytest.mark.skipif(not shutil.which("bash") or not shutil.which("sha256sum"), reason="bash and sha256sum")
+def test_tor_comes_from_its_fallback_when_the_primary_is_gone_its_sum_still_held(tmp_path):
+    """deb.torproject.org keeps only the current tor: once it has gone, the copy on DA Vibe Manager's own release
+    is fetched, and only a file with the pinned sum is used."""
+    done, target, asked = _fetch_any(tmp_path, "https://primary/gone.deb", "https://release/tor.deb")
+    assert done.returncode == 0, done.stderr
+    assert target.read_bytes() == b"the tor package"
+    assert asked == ["https://primary/gone.deb", "https://release/tor.deb"]
+    assert "couldn't be fetched; trying the next address" in done.stderr
+    # A primary that gives another file: refused, and the fallback's taken.
+    done, target, asked = _fetch_any(tmp_path, "https://primary/wrong.deb", "https://release/tor.deb")
+    assert done.returncode == 0 and target.read_bytes() == b"the tor package"
+    assert "isn't the one pinned" in done.stderr
+    # Neither has it: the build stops, and nothing is left to be taken for it.
+    done, target, _asked = _fetch_any(tmp_path, "https://primary/gone.deb", "https://release/wrong.deb")
+    assert done.returncode == 1 and not target.exists()
+    assert "no address gave tor.deb with its pinned sum" in done.stderr
+    # The primary has it: the fallback is never asked.
+    done, target, asked = _fetch_any(tmp_path, "https://primary/tor.deb", "https://release/tor.deb")
+    assert done.returncode == 0 and asked == ["https://primary/tor.deb"]
+
+
+def test_the_fallback_is_this_projects_own_release_asset_named_as_github_keeps_it():
+    fallback, deb = _pin("TOR_FALLBACK_URL"), _pin("TOR_DEB")
+    assert fallback.startswith("https://github.com/DigitalArchon/DAVibeManager/releases/download/v")
+    asset = fallback.rsplit("/", 1)[1]
+    assert asset == deb.replace("~", ".").replace("+", "."), asset
+    assert "~" not in asset and "+" not in asset
 
 
 def test_the_checker_reads_the_pins_it_checks():
