@@ -549,6 +549,17 @@ itself.** Every service the app talks to, what it keeps and what it can't protec
   answers only requests carrying a key made for this start, and refuses the rest before reading
   them. The key is never on a command line (where anyone else logged in could read it), and the
   folders the app runs and listens in are yours alone: one someone else made first is never used.
+- **Your API key goes only where you gave it.** It is sent only to the address it was saved for,
+  and never over plain `http://` to another machine on your network unless the settings file says
+  you chose that. If a provider's address in the settings file is changed by hand, the key isn't
+  sent to the new one: the window says so in place of the chat, with the ways out (pasting your
+  NanoGPT key in **Settings → The assistant** puts the assistant back on NanoGPT). Nothing is
+  deleted. The details are under
+  [Keys and passwords](docs/security-and-privacy.md#keys-and-passwords).
+- **It leaves nothing behind that it needn't.** If the app crashes, none of its memory is written
+  to disk, and no other program of yours can read its memory while it runs. Files you choose in
+  its file dialogs (attaching, importing a `.vibe`, restoring a backup) stay out of your desktop's
+  recent files list.
 - **Your computers talk only to each other.** Sync goes straight between your computers through
   Tor, end to end, with no server in between. Each one's address lets in only the others in your
   group (Tor's client authorization), and each proves which computer it is before anything is
