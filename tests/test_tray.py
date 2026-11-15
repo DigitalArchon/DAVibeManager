@@ -63,7 +63,10 @@ def test_only_this_users_launches_bring_the_window_up(monkeypatch, tmp_path):
     assert tray.claim_single_instance(shown.set) is True
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as c:                  # "another user's" launch
         c.connect(name)
-        c.sendall(b"show\n")
+        try:
+            c.sendall(b"show\n")
+        except (BrokenPipeError, ConnectionResetError):
+            pass                    # the app may close another user's connection before the word arrives
     assert not shown.wait(0.5)
     assert real(socket.socketpair()[0]) == os.getuid()
 

@@ -231,8 +231,10 @@ def test_upnp_gives_the_routers_public_address_from_its_description():
             self.wfile.write(b"<s:Envelope><s:Body><u:GetExternalIPAddressResponse><NewExternalIPAddress>198.51.100.4"
                              b"</NewExternalIPAddress></u:GetExternalIPAddressResponse></s:Body></s:Envelope>")
     server = HTTPServer(("127.0.0.1", 0), Router)
-    threading.Thread(target=server.handle_request, daemon=True).start()
-    threading.Thread(target=lambda: (server.handle_request(), server.server_close()), daemon=True).start()
+    # the description, then the control request, in the order the app asks them: one thread, so the
+    # server can't close after the first while the second waits on it (two threads raced there)
+    threading.Thread(target=lambda: (server.handle_request(), server.handle_request(), server.server_close()),
+                     daemon=True).start()
     assert netpolicy._upnp_ask([f"http://127.0.0.1:{server.server_port}/rootDesc.xml"]) == "198.51.100.4"
     assert netpolicy._upnp_ask(["http://router.example.org/rootDesc.xml"]) is None     # not this network's
 
