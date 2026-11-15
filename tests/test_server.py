@@ -101,6 +101,31 @@ async def test_a_backup_uploaded_to_restore_is_bounded_and_not_kept_when_refused
             assert len(list((tmp_path / "uploads").iterdir())) == 1
 
 
+
+async def test_the_folder_uploads_wait_in_is_this_users_alone_also_when_it_was_there_already(tmp_path, monkeypatch):
+    """A backup to restore and a .vibe being read wait in ~/.cache/davibemanager: mkdir(mode=0o700) left one that was
+    there already (an older version's, or made by hand) open to everyone on the computer."""
+    from davibemanager.server import app as app_mod
+
+    def make(emit):
+        e = Engine(Config(), emit, tmp_path, save_config=lambda c: None)
+        e.start_workspace = lambda: None
+        return e
+    uploads = tmp_path / "cache" / "davibemanager"
+    monkeypatch.setattr(app_mod, "upload_dir", lambda: uploads)
+    app = create_app("secret", make)
+    async with app.router.lifespan_context(app):
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://127.0.0.1",
+                                     headers={"x-token": "secret"}) as c:
+            uploads.mkdir(parents=True)
+            os.chmod(uploads, 0o775)
+            r = await c.post("/api/restore/upload", content=b"x" * 500)
+            assert r.status_code == 200 and (uploads.stat().st_mode & 0o777) == 0o700
+            os.chmod(uploads, 0o775)
+            await c.post("/api/share/upload", content=b"not a shared app")
+            assert (uploads.stat().st_mode & 0o777) == 0o700
+
+
 def test_an_event_is_sent_as_it_was_when_it_happened(tmp_path):
     """A state's chat is the conversation's own list: written out only when the window's socket got to it,
     it held a message added after it too, which that message's own event then added again (an update's

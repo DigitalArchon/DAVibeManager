@@ -533,6 +533,11 @@ links open in your browser.
   files only you can read; tor's own data in `~/.local/state/davibemanager/tor`.
 - **The sandbox**: in Podman's storage (`~/.local/share/containers`): its files, the tools it
   installed, and the assistant's own memory of each chat.
+- **A file you hand over to be read**: a backup from elsewhere that you restore waits in
+  `~/.cache/davibemanager` until it is restored (one never restored is deleted once it is a day old,
+  the next time the app starts or takes another); a `.vibe` you import, only while it is read. The
+  folder is made openable by you alone whenever something is put there, also if it was there
+  already, and each file in it is readable by you alone.
 - **How they are written.** The app's own folders (`~/.config/davibemanager`,
   `~/.local/share/davibemanager`, `~/.local/state/davibemanager`) are made openable by you alone each
   time it starts, also if they were there already. Settings, chats, apps, builds' records and sync's

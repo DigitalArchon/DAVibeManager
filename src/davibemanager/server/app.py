@@ -27,6 +27,7 @@ from fastapi.staticfiles import StaticFiles
 from starlette.datastructures import Headers
 
 from .. import backup as backup_mod
+from .. import config as config_mod
 from .. import delivery as delivery_mod
 from .. import share as share_mod
 from ..engine import MAX_ATTACHMENT, Engine, UserError
@@ -142,9 +143,17 @@ class WindowGate:
 
 
 def upload_dir() -> Path:
-    """Where a backup the user uploads to restore waits (outside the data folder a restore replaces)."""
+    """Where a backup the user uploads to restore waits (outside the data folder a restore replaces), and a .vibe
+    while it is read. Made this user's alone by `_upload_folder` whenever something is put there."""
     base = os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache")
     return Path(base) / "davibemanager"
+
+
+def _upload_folder() -> Path:
+    """upload_dir(), this user's alone: made 0700, and made so again if it was there already open to others (mkdir
+    leaves a folder it didn't make as it is: one an older version, another program or the user made took the
+    umask's), as the settings, data and state folders are at every start (config.private_folder)."""
+    return config_mod.private_folder(upload_dir())
 
 
 class BoundedRequest(Request):
@@ -529,8 +538,7 @@ def create_app(token: str, make_engine: Callable[[Callable[[dict], None]], Engin
     @app.post("/api/share/upload")
     async def share_upload(request: Request, e: Engine = Depends(auth)):
         """A .vibe file someone gave the user: read (strictly) and reviewed, then deleted."""
-        d = upload_dir()
-        d.mkdir(parents=True, exist_ok=True, mode=0o700)
+        d = _upload_folder()
         path = d / f"share-{secrets.token_hex(16)}{share_mod.SUFFIX}"
         try:
             size = 0
@@ -600,8 +608,7 @@ def create_app(token: str, make_engine: Callable[[Callable[[dict], None]], Engin
     async def restore_upload(request: Request, e: Engine = Depends(auth)):
         """A backup file from elsewhere (another computer's): kept in the cache until it's restored."""
         token = secrets.token_hex(16)
-        d = upload_dir()
-        d.mkdir(parents=True, exist_ok=True, mode=0o700)
+        d = _upload_folder()
         for old in d.glob(f"restore-*{backup_mod.SUFFIX}"):
             if time.time() - old.stat().st_mtime > 86400:
                 old.unlink(missing_ok=True)
