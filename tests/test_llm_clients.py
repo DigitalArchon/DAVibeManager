@@ -351,6 +351,30 @@ async def _provider_errors(*answers):
     return out
 
 
+async def test_a_key_the_provider_refuses_is_told_in_words_never_as_statuses():
+    """A key NanoGPT refuses read in the turn as "API Error: 403 glm: NanoGPT refused the request (HTTP 401): Error
+    code: 401 - Invalid session (the provider said: ...)": two statuses, neither the user's to read. Now what happened
+    and what to do, with the provider's own message; still a 403 to Claude Code (a 401 it takes for its own login)."""
+    from davibemanager.gateway import upstream_refusal
+
+    (key, key_later), (barred, barred_later) = await _provider_errors(
+        httpx.Response(401, json={"error": {"message": "Invalid session", "type": "invalid_api_key",
+                                            "code": "invalid_api_key", "status": 401}}),
+        httpx.Response(403, json={"error": {"message": "This model isn't available on your plan"}}))
+    for error in (key, key_later):
+        told = upstream_refusal("z-ai/glm-5.3", error, "NanoGPT")
+        assert told.status == 403
+        assert str(told) == ("NanoGPT didn't accept the API key, so z-ai/glm-5.3 wasn't asked anything. Check the "
+                             "API key in Settings. (NanoGPT said: Invalid session)")
+    for error in (barred, barred_later):
+        told = upstream_refusal("z-ai/glm-5.3", error, "NanoGPT")
+        assert told.status == 403
+        assert str(told) == ("NanoGPT wouldn't run z-ai/glm-5.3 for this API key. (NanoGPT said: This model isn't "
+                             "available on your plan)")
+    plain = (await _provider_errors(httpx.Response(401, text="no")))[0][0]
+    assert str(upstream_refusal("glm", plain, "NanoGPT")).endswith("(NanoGPT said: no)")
+
+
 async def test_a_providers_words_are_read_whole_and_told_labelled_short_whichever_openai_wrote_them():
     """llm/errors.py (DA Toolkit's): what Claude Code is told of a refusal, and Sandbox activity shows, is the status,
     the provider's message and the rest of its answer labelled as its own, on one line and cut short, on either

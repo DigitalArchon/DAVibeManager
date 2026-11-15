@@ -237,6 +237,36 @@ async def test_the_refusal_tells_the_assistant_what_to_answer(monkeypatch):
     assert "never sees your thinking" in out["content"][0]["text"]
 
 
+def test_claude_codes_line_for_a_refused_request_is_the_gateways_words_alone():
+    told = "NanoGPT didn't accept the API key, so glm wasn't asked anything. Check the API key in Settings."
+    assert bridge.api_error_words(f"Failed to authenticate. API Error: 403 {told}") == told
+    assert bridge.api_error_words(f"API Error: 402 {told}") == told
+    assert bridge.api_error_words('API Error: 500 {"type":"error","error":{"type":"api_error","message":"boom"}}') \
+        == "boom"
+    assert bridge.api_error_words("API Error: Connection error.") == "Connection error."
+    assert bridge.api_error_words("You have 3.12.6. API Error: 403 is what it said.") == \
+        "You have 3.12.6. API Error: 403 is what it said."     # a sentence of the assistant's own, left alone
+
+
+async def test_a_refused_key_reads_in_the_turn_in_words(builder_env):
+    """Claude Code reports the gateway's refusal as "Failed to authenticate. API Error: 403 <the gateway's words>",
+    in the reply and as the turn's error: the user is shown the gateway's words."""
+    engine, fake, events, clients = builder_env
+    told = ("NanoGPT didn't accept the API key, so z-ai/glm-5.3 wasn't asked anything. Check the API key in "
+            "Settings. (NanoGPT said: Invalid session)")
+    line = f"Failed to authenticate. API Error: 403 {told}"
+
+    async def script(c, text):
+        await c.queue.put(AssistantMessage([TextBlock(line)], "<synthetic>", error="authentication_failed"))
+        await c.queue.put(ResultMessage("success", 1, 1, True, 1, "sess-1", result=line))
+    engine._script = script
+    engine.send("hello")
+    await wait_for(lambda: engine.conv.chat[-1]["kind"] == "assistant" and not engine.busy, "turn end")
+    entry = engine.conv.chat[-1]
+    assert entry["parts"] == [{"t": "text", "text": told}]
+    assert entry["error"] == told
+
+
 async def test_a_turn_that_ends_without_a_message_is_asked_for_one_once(builder_env):
     """DA Toolkit's fix for Opus: it thought its answer, worked, and ended the turn without a word."""
     engine, _, _, _ = builder_env

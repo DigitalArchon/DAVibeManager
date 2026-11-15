@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import shlex
 import time
 from pathlib import Path
@@ -74,6 +75,32 @@ QUESTION_NUDGE = (
     "[DA Vibe Manager] Your message asks the user something, but there's nothing for them to tap. Call "
     "ask_user now with the question(s) from your message, each with short quick replies (e.g. \"Yes, build "
     "it\" / \"No thanks\"); don't write your message again. If you weren't asking them anything, end your turn.")
+
+
+# Claude Code's own line for a request the gateway refused: "API Error: 403 <the gateway's words>", after a sentence
+# of its own for some ("Failed to authenticate." for a 401 or 403), its status the gateway's, not the provider's
+_CLI_API_ERROR = re.compile(r"\A(?:[A-Z][^.\n]{0,80}\.\s+)?API Error:\s*(?:\d{3}\b\s*)?(?P<rest>.*)\Z", re.S)
+
+
+def api_error_words(text: str) -> str:
+    """What the user is shown of a request Claude Code reports refused: the gateway's own words, which say what
+    happened and what to do (gateway.upstream_refusal), without the CLI's sentence and status around them. A
+    refused API key read "Failed to authenticate. API Error: 403 glm: NanoGPT refused the request (HTTP 401): ...",
+    two statuses and neither the user's to read. A body the CLI passed on as JSON gives its error's message."""
+    m = _CLI_API_ERROR.match(text.strip())
+    if not m:
+        return text
+    rest = m["rest"].strip()
+    if rest.startswith("{"):
+        try:
+            body = json.loads(rest)
+        except ValueError:
+            body = None
+        error = body.get("error") if isinstance(body, dict) else None
+        message = error.get("message") if isinstance(error, dict) else None
+        if isinstance(message, str) and message.strip():
+            rest = message.strip()
+    return rest or text
 
 
 def asks_in_text(entry: dict) -> bool:
@@ -407,7 +434,8 @@ class BuilderSession:
                 entry.setdefault("errors", []).append(str(msg.error))
             for block in msg.content:
                 if isinstance(block, TextBlock) and not msg.parent_tool_use_id and block.text.strip():
-                    self._text(entry, block.text)
+                    # a request refused: Claude Code's own line for it, the gateway's words shown alone
+                    self._text(entry, api_error_words(block.text) if msg.error else block.text)
                 elif isinstance(block, ThinkingBlock) and not msg.parent_tool_use_id and block.thinking.strip():
                     self._thinking(entry, block.thinking)
                 elif isinstance(block, ToolUseBlock) and block.name not in CARD_TOOLS:
@@ -439,7 +467,8 @@ class BuilderSession:
             if msg.terminal_reason in ("aborted_streaming", "aborted_tools"):
                 error = "stopped"
             elif msg.is_error:
-                error = "; ".join(msg.errors or []) or (msg.result or "") or msg.subtype
+                error = "; ".join(api_error_words(e) for e in msg.errors or []) or api_error_words(msg.result or "") \
+                    or msg.subtype
             self._ended = [error]
             # more to come while it's running (the user stopping it is the end, whatever runs on)
             if self._state in (None, "idle") or error == "stopped":

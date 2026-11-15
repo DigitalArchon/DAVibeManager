@@ -33,7 +33,7 @@ from typing import Awaitable, Callable
 import httpx
 
 from .llm import anthropic_bridge as bridge
-from .llm.errors import error_words, shown_error
+from .llm.errors import error_words, said as one_line, shown_error
 from .llm import routes
 from .llm.client import capped_lines, is_private_mode
 from .llm.secure_http import ACCEPT_ENCODING, ProviderError, is_local, loads, local_http_options
@@ -93,6 +93,13 @@ def _may_pass(e: BaseException | None) -> bool:
     return False
 
 
+def _their_words(e: BaseException) -> str:
+    """The provider's own message alone ("Invalid session"), one line and cut short; "" where it gave none."""
+    body = getattr(e, "body", None)
+    message = body.get("message") if isinstance(body, dict) else body if isinstance(body, str) else None
+    return one_line(message) if isinstance(message, str) else ""
+
+
 def upstream_refusal(model: str, e: BaseException, provider: str, answering: bool = False) -> Refused:
     """What Claude Code is told of a request for `model` that failed on its way to the provider (or,
     `answering`, while it answered), by the provider's HTTP status. NanoGPT answers an empty balance
@@ -111,9 +118,13 @@ def upstream_refusal(model: str, e: BaseException, provider: str, answering: boo
         return Refused(402, f"{model}: your {name} balance is too low for this request, so it wasn't run. Top it up, "
                             f"then try again. ({name} said: {words})", "billing_error")
     if status in (401, 403):
-        # never a 401 to Claude Code: it would take its own login for the one refused
-        check = " Check the API key in Settings." if status == 401 else ""
-        return Refused(403, f"{model}: {name} refused the request (HTTP {status}): {words}{check}")
+        # never a 401 to Claude Code: it would take its own login for the one refused. In words, not statuses: the
+        # user read "API Error: 403 … refused the request (HTTP 401): Error code: 401 - Invalid session"
+        theirs = _their_words(e) or words
+        if status == 401:
+            return Refused(403, f"{name} didn't accept the API key, so {model} wasn't asked anything. Check the API "
+                                f"key in Settings. ({name} said: {theirs})")
+        return Refused(403, f"{name} wouldn't run {model} for this API key. ({name} said: {theirs})")
     if status == 429:
         return Refused(429, said, "rate_limit_error", retry=True)
     if status is not None and 400 <= status < 500:
