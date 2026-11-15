@@ -844,7 +844,7 @@ def test_on_hyprland_the_room_is_what_stays_on_the_area_centred_on_the_parent():
     room, area = (1152, 720), (0, 0, 1280, 800)
     assert recentguard.around_centre(room, (646, 38, 622, 750), area) == (614, 720)
     assert recentguard.around_centre(room, (12, 38, 1256, 750), area) == (1152, 720)
-    assert recentguard.around_centre(room, (1100, 600, 180, 200), area) == (480, 360)    # never under the floor
+    assert recentguard.around_centre(room, (1100, 600, 180, 200), area) == (148, 168)    # what is free there
     assert recentguard.within_parent(room, (874, 700)) == (874, 700)
     assert recentguard.within_parent(room, (300, 200)) == (480, 360)
     assert recentguard.within_parent(room, (2000, 900)) == (1152, 720)
@@ -936,6 +936,35 @@ def test_fit_on_hyprland_holds_the_chooser_to_the_room_around_its_parent():
         recentguard.fit(window)                    # the place not known: the parent's size
     hints = window.set_geometry_hints.call_args[0][1]
     assert (hints.max_width, hints.max_height) == (874, 720)
+
+
+def test_the_name_is_narrowed_no_further_than_it_takes_nor_than_its_least():
+    class Entry:
+        def __init__(self, chars):
+            self.chars = chars
+
+        def get_width_chars(self):
+            return self.chars
+
+        def set_width_chars(self, chars):
+            self.chars = chars
+
+        def get_preferred_width(self):
+            return self.chars * 8, self.chars * 8
+
+    window, entry = mock.Mock(), Entry(45)
+
+    def least(_window):
+        return 300 + entry.chars * 8, 400
+
+    with mock.patch.object(recentguard, "_least", side_effect=least), \
+            mock.patch.object(recentguard, "_name_entries", return_value=[entry]):
+        recentguard._narrow_name(window, 700)       # wide enough: untouched
+        assert entry.chars == 45
+        recentguard._narrow_name(window, 600)       # 60 px too wide: 8 characters
+        assert entry.chars == 37
+        recentguard._narrow_name(window, 100)       # no room at all: as narrow as it goes
+        assert entry.chars == recentguard.NAME_CHARS_LEAST
 
 
 def test_run_fits_choosers_while_it_runs_and_stops_after():
@@ -1139,6 +1168,77 @@ def shown_chooser(tmp_path, guarded):
     seen = json.loads(results[0])
     assert "frame" in seen, done.stderr[-3000:]
     return seen["frame"], seen["area"]
+
+
+SAVE_SCRIPT = textwrap.dedent('''
+    import json, sys
+    from unittest import mock
+    sys.path.insert(0, {src!r})
+    import gi
+    gi.require_version("Gtk", "3.0")
+    from gi.repository import Gtk
+    from davibemanager import recentguard
+
+    parent = Gtk.Window()
+
+    def made(action):
+        dialog = Gtk.FileChooserDialog(title="x", transient_for=parent, action=action,
+                                       use_header_bar=True)      # as GNOME and Omarchy have it
+        dialog.add_buttons("_Cancel", Gtk.ResponseType.CANCEL, "_Save", Gtk.ResponseType.ACCEPT)
+        return dialog
+
+    save, folder = made(Gtk.FileChooserAction.SAVE), made(Gtk.FileChooserAction.SELECT_FOLDER)
+    seen = {{"wide": recentguard._least(save)[0], "narrow": recentguard._least(folder)[0]}}
+    names = recentguard._name_entries(save)
+    seen["chars_before"] = [entry.get_width_chars() for entry in names]
+    seen["folder_names"] = len(recentguard._name_entries(folder))
+    room = (seen["wide"] + seen["narrow"]) // 2
+    free = room + 2 * recentguard.FIT_MARGIN_MIN
+    tile = (int(1280 - free / 2 - 300), 38, 600, 750)       # centred `free` from the edge
+    seen["room"], seen["after"], seen["parent_kept"] = room, [], []
+    for dialog in (save, folder):
+        with mock.patch.object(recentguard, "_area", return_value=(0, 0, 1280, 800)), \\
+                mock.patch.object(recentguard, "_centres_on_parent", return_value=True), \\
+                mock.patch.object(recentguard, "_hyprland_place", return_value=tile):
+            recentguard.fit(dialog)
+        seen["after"].append(recentguard._least(dialog)[0])
+        seen["parent_kept"].append(dialog.get_transient_for() is parent)
+    seen["chars_after"] = names[0].get_width_chars() if names else None
+    seen["least_chars"] = recentguard.NAME_CHARS_LEAST
+    print("RESULT", json.dumps(seen), flush=True)
+''')
+
+
+def test_a_save_chooser_too_wide_for_its_room_has_its_name_entry_narrowed(tmp_path):
+    """GTK's real dialogs, with a header bar as GNOME and Omarchy have it: a Save chooser's name, 45 characters,
+    makes it wider than a folder chooser. Given a room between the two (the room around a parent tiled to half a
+    1280 px screen, on Omarchy), its name entry is narrowed until the chooser fits, and it keeps its parent; a
+    folder chooser, which fits, is left as it is."""
+    if not shutil.which("xvfb-run") or importlib.util.find_spec("gi") is None:
+        pytest.skip("needs Xvfb and PyGObject")
+    top = tmp_path / "save"
+    top.mkdir()
+    env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "LANG": "C.UTF-8", "GTK_USE_PORTAL": "0",
+           "NO_AT_BRIDGE": "1", "GSETTINGS_BACKEND": "memory", "GIO_USE_VFS": "local"}
+    for name, sub in (("HOME", "home"), ("XDG_DATA_HOME", "data"), ("XDG_CONFIG_HOME", "config"),
+                      ("XDG_CACHE_HOME", "cache"), ("XDG_RUNTIME_DIR", "run")):
+        env[name] = str(top / sub)
+        os.mkdir(env[name], 0o700)
+    script = top / "save.py"
+    script.write_text(SAVE_SCRIPT.format(src=str(SRC)), encoding="utf-8")
+    command = ["xvfb-run", "-a", "-s", "-screen 0 1280x800x24"]
+    command += ["dbus-run-session", "--"] if shutil.which("dbus-run-session") else []
+    command += [sys.executable, "-I", str(script)]
+    done = subprocess.run(command, env=env, capture_output=True, text=True, timeout=180, check=False)
+    assert done.returncode == 0, done.stderr[-3000:]
+    results = [line[len("RESULT "):] for line in done.stdout.splitlines() if line.startswith("RESULT ")]
+    assert len(results) == 1, done.stdout[-3000:] + done.stderr[-3000:]
+    seen = json.loads(results[0])
+    assert seen["wide"] > seen["narrow"] + 20, seen
+    assert seen["chars_before"] == [45] and seen["folder_names"] == 0, seen
+    assert seen["after"][0] <= seen["room"] and seen["parent_kept"] == [True, True], seen
+    assert seen["least_chars"] <= seen["chars_after"] < 45, seen
+    assert seen["after"][1] == seen["narrow"], seen
 
 
 def test_a_pages_file_input_lies_inside_the_work_area(tmp_path):
