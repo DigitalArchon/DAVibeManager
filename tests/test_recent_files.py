@@ -284,6 +284,134 @@ def test_a_write_leaves_no_temp_file(folder):
     assert os.listdir(folder.data) == ["recently-used.xbel"]
 
 
+# --- a write of GTK's that lands before the chooser's answer (a name typed into a Save dialog, or a place
+# into the location bar, reaches the app 250 ms after GTK took the file in: GtkButton holds the default
+# button pressed so long; a write already on its way, its "changed" timer started by another program's
+# change or by the list put back after the app's previous choice, lands first, the file in it)
+
+STAMP_NOW = time.strftime("%Y-%m-%dT%H:%M:%S.000000Z", time.gmtime(NOW))
+
+
+def theirs(folder):
+    """Another program's write to the list, which GTK re-reads."""
+    data = folder.seed.replace(b"</xbel>", entry("file:///srv/theirs.odt") + b"</xbel>")
+    folder.write(data, 0o640)
+    folder.manager.changed()
+    return data
+
+
+def gtk_writes_first(folder, *uris):
+    for uri in uris:
+        folder.manager.model[uri] = NOW
+    gtk_writes(folder.recent, xbel(entry("file:///srv/theirs.odt"), *(entry(uri, STAMP_NOW, APP) for uri in uris)))
+    folder.manager.changed()
+
+
+def test_a_write_landing_before_the_answer_is_put_back_byte_for_byte(folder):
+    folder.write(folder.seed)
+    keeper = folder.keeper()
+    keeper.opened()
+    before = theirs(folder)
+    gtk_writes_first(folder, "file:///home/u/new.pdf")
+    keeper.chose(["file:///home/u/new.pdf"])
+    keeper.closed()
+    assert folder.read() == before and stat.S_IMODE(os.lstat(folder.recent).st_mode) == 0o640
+    assert not keeper.pending and folder.timers.waiting == []
+
+
+def test_the_files_in_the_write_that_came_first_are_taken_in_whatever_the_manager_says(folder):
+    """The write held them: nothing more is awaited, even where the manager's model is not yet heard from."""
+    folder.write(folder.seed)
+    keeper = folder.keeper()
+    keeper.opened()
+    gtk_writes(folder.recent, xbel(entry("file:///home/u/new.pdf", STAMP_NOW, APP)))
+    keeper.chose(["file:///home/u/new.pdf"])
+    keeper.closed()
+    assert folder.read() == folder.seed
+    assert not keeper.pending and folder.timers.waiting == []
+
+
+def test_without_the_chooser_open_the_write_that_came_first_stays(folder):
+    """What opened() is for: told only of the answer, the list holding the file already is taken for the clean
+    copy."""
+    folder.write(folder.seed)
+    keeper = folder.keeper()
+    theirs(folder)
+    gtk_writes_first(folder, "file:///home/u/new.pdf")
+    keeper.chose(["file:///home/u/new.pdf"])
+    assert b"new.pdf" in folder.read()
+
+
+def test_another_programs_write_while_it_is_open_stands_when_gtk_writes_after(folder):
+    folder.write(folder.seed)
+    keeper = folder.keeper()
+    keeper.opened()
+    before = theirs(folder)
+    folder.choose(keeper, "file:///home/u/report.pdf")
+    keeper.closed()
+    assert folder.read() == before and not keeper.pending
+
+
+def test_a_file_the_list_already_held_from_before_counts_only_as_added_since(folder):
+    """notes.txt is in the list from September: the list as the answer comes is clean."""
+    folder.write(folder.seed)
+    keeper = folder.keeper()
+    keeper.opened()
+    before = theirs(folder)
+    keeper.chose(["file:///srv/notes.txt"])
+    keeper.closed()
+    assert keeper.clean == recentguard.look(folder.recent) and folder.read() == before
+
+
+def test_a_list_that_was_not_there_before_a_write_that_came_first_is_taken_away_again(folder):
+    keeper = folder.keeper()
+    keeper.opened()
+    gtk_writes_first(folder, "file:///home/u/new.pdf")
+    keeper.chose(["file:///home/u/new.pdf"])
+    keeper.closed()
+    assert not os.path.lexists(folder.recent)
+
+
+def test_the_list_it_opened_on_and_the_newest_are_kept(folder):
+    folder.write(folder.seed)
+    keeper = folder.keeper()
+    keeper.opened()
+    for n in range(recentguard.SEEN * 2):
+        folder.write(folder.seed + str(n).encode())
+        folder.manager.changed()
+    assert len(keeper._seen) == recentguard.SEEN
+    assert keeper._seen[0][1] == folder.seed
+    assert keeper._seen[-1][1] == folder.seed + str(recentguard.SEEN * 2 - 1).encode()
+    keeper.closed()
+    assert keeper._seen == [] and not keeper.watching
+
+
+def test_two_choosers_open_keep_the_lists_until_both_have_answered(folder):
+    folder.write(folder.seed)
+    keeper = folder.keeper()
+    keeper.opened()
+    keeper.opened()
+    keeper.closed()
+    assert keeper.watching
+    before = theirs(folder)
+    gtk_writes_first(folder, "file:///home/u/new.pdf")
+    keeper.chose(["file:///home/u/new.pdf"])
+    keeper.closed()
+    assert folder.read() == before
+
+
+def test_what_a_list_holds_is_read_from_gtks_layout():
+    data = xbel(entry("file:///srv/a%20b.txt", STAMP_NOW, APP), entry("file:///srv/old.txt"),
+                entry("https://example.com/x", STAMP_NOW))
+    found = recentguard.added(data)
+    assert found["/srv/a b.txt"] == NOW and found["/srv/old.txt"] < NOW and found["https://example.com/x"] == NOW
+    listing = (recentguard.FILE, data, 0o600)
+    assert recentguard.holds(listing, ["file:///srv/a b.txt"], NOW)
+    assert not recentguard.holds(listing, ["file:///srv/old.txt"], NOW)
+    assert not recentguard.holds((recentguard.ABSENT,), ["file:///srv/a"], NOW)
+    assert recentguard.added(b"not a list") == {}
+
+
 @pytest.fixture
 def fresh_keeper(monkeypatch):
     monkeypatch.setattr(recentguard, "_keeper", None)
@@ -353,6 +481,94 @@ def test_run_tells_the_keeper_what_an_accepted_chooser_chose_as_it_answers(respo
     assert chooser.told_by_then == (1 if chose else 0)
     assert keeper.chose.call_args_list == ([mock.call(["file:///a.txt"])] if chose else [])
 
+
+
+def test_run_tells_the_keeper_the_chooser_opened_before_it_runs_and_closed_after():
+    keeper = mock.Mock()
+    with mock.patch.object(recentguard, "keeper", return_value=keeper):
+        recentguard.run(Chooser(-3, keeper))
+    assert [name for name, *_ in keeper.method_calls] == ["opened", "chose", "closed"]
+
+
+def test_a_chooser_that_fails_is_still_closed():
+    keeper = mock.Mock()
+    chooser = mock.Mock(spec=["run", "connect"])
+    chooser.run.side_effect = RuntimeError("gone")
+    with mock.patch.object(recentguard, "keeper", return_value=keeper), pytest.raises(RuntimeError):
+        recentguard.run(chooser)
+    assert [name for name, *_ in keeper.method_calls] == ["opened", "closed"]
+
+
+def test_a_pages_file_input_is_open_from_show_until_it_answers():
+    """The window's choosers (attaching, importing a .vibe, restoring a backup) are the page's file inputs."""
+    keeper, calls, made = mock.Mock(), [], []
+
+    class Native:
+        def __init__(self):
+            self.handlers = []
+
+        def connect(self, name, handler):
+            self.handlers.append(handler)
+
+        def show(self):
+            calls.append("show")
+
+        def get_uris(self):
+            return ["file:///a.txt"]
+
+        def get_filenames(self):
+            return ["/a.txt"]
+
+        def destroy(self):
+            calls.append("destroy")
+
+        def __getattr__(self, name):
+            return lambda *a: None
+
+    class FileChooserNative:
+        @staticmethod
+        def new(*_args):
+            made.append(Native())
+            return made[-1]
+
+    gtk = mock.Mock(FileChooserNative=FileChooserNative)
+    gtk.Window, gtk.OffscreenWindow = type("W", (), {}), type("O", (), {})
+    gtk.ResponseType.ACCEPT = -3
+    keeper.opened.side_effect = lambda: calls.append("opened")
+    keeper.closed.side_effect = lambda: calls.append("closed")
+    keeper.chose.side_effect = lambda uris: calls.append("chose")
+    request = mock.Mock()
+    request.get_select_multiple.return_value = False
+    request.get_mime_types_filter.return_value = None
+    request.get_selected_files.return_value = None
+    with mock.patch.object(recentguard, "keeper", return_value=keeper), \
+            mock.patch.object(recentguard, "_gtk", return_value=(None, gtk)):
+        assert recentguard.answer_file_input(mock.Mock(), request)
+        assert calls == ["opened", "show"]
+        made[0].handlers[0](made[0], -3)
+    assert calls == ["opened", "show", "chose", "closed", "destroy"]
+
+
+def test_pywebviews_own_dialog_is_open_while_it_runs():
+    keeper, calls = mock.Mock(), []
+    keeper.opened.side_effect = lambda: calls.append("opened")
+    keeper.closed.side_effect = lambda: calls.append("closed")
+
+    class BrowserView:
+        def create_file_dialog(self, *args, **kwargs):
+            calls.append("dialog")
+            return ("/a.txt",)
+
+    backend = mock.Mock(BrowserView=BrowserView)
+    platforms = mock.Mock(gtk=backend)
+    modules = {"webview": mock.Mock(platforms=platforms), "webview.platforms": platforms,
+               "webview.platforms.gtk": backend}
+    with mock.patch.dict(sys.modules, modules), \
+            mock.patch.object(recentguard, "keeper", return_value=keeper), \
+            mock.patch.object(recentguard, "_hook_responses", return_value=lambda: None):
+        recentguard._wrap_pywebview_dialogs()
+        assert BrowserView().create_file_dialog() == ("/a.txt",)
+    assert calls == ["opened", "dialog", "closed"]
 
 def test_a_stand_in_chooser_with_no_signals_is_told_once_it_has_answered():
     chooser = mock.Mock(spec=["run", "get_uris"])

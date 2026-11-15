@@ -566,8 +566,9 @@ The window's file dialogs (attaching files, importing a `.vibe`, restoring a bac
 recent files list as it was: GTK's chooser adds every file chosen to the desktop's recent files list
 (`~/.local/share/recently-used.xbel`) and rewrites the whole list as it does, dropping entries older
 than 30 days, then again as the app quits, and the app puts the list back as it was, byte for byte,
-after each of those writes. A change another program makes to the list in the quarter of a second
-after you choose a file, or as the app quits, is lost, as GTK's own write would lose it.
+after each of those writes, and after one that comes before your choice reaches the app (as a place
+typed into the dialog's location bar can). A change another program makes to the list in the quarter
+of a second around your choice, or as the app quits, is lost, as GTK's own write would lose it.
 
 A backup holds your apps, chats, settings and API key, locked with your backup password; it doesn't
 hold sync's keys.
