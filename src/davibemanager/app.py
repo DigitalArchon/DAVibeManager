@@ -16,7 +16,7 @@ from pathlib import Path
 
 import uvicorn
 
-from . import config, omarchy
+from . import config, omarchy, recentguard
 from .engine import Engine
 from . import hostenv
 from .hostenv import HOST_TYPELIB_DIRS, put_back, set_for_self
@@ -476,10 +476,14 @@ def main(argv: list[str] | None = None) -> None:
                 for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
                     GLib.unix_signal_add(GLib.PRIORITY_DEFAULT, sig, close)
 
+            # the page's file choosers (attaching files, importing a .vibe, restoring a backup) keep
+            # their files out of the desktop's recent files list (recentguard)
+            recentguard.guard_pywebview(window)
             webview.start(on_started, gui="gtk", private_mode=True, icon=window_icon())
     except KeyboardInterrupt:
         pass
     finally:
+        recentguard.put_back()          # GTK writes the list from its model as the loop ends
         server.should_exit = True
         # the engine stops the sandbox first (well under a second), then Claude Code and the gateway
         thread.join(timeout=20)

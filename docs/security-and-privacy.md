@@ -557,6 +557,13 @@ dialogs, the app window uses GTK's own. That setting is the app's alone: your br
 the app or from a link in its window, and every other program it starts, the `podman exec` that
 starts the assistant in its sandbox included, get your environment as it was.)
 
+The window's file dialogs (attaching files, importing a `.vibe`, restoring a backup) leave your
+recent files list as it was: GTK's chooser adds every file chosen to the desktop's recent files list
+(`~/.local/share/recently-used.xbel`) and rewrites the whole list as it does, dropping entries older
+than 30 days, then again as the app quits, and the app puts the list back as it was, byte for byte,
+after each of those writes. A change another program makes to the list in the quarter of a second
+after you choose a file, or as the app quits, is lost, as GTK's own write would lose it.
+
 A backup holds your apps, chats, settings and API key, locked with your backup password; it doesn't
 hold sync's keys.
 
