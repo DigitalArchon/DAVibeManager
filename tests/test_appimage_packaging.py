@@ -273,3 +273,74 @@ def test_apprun_takes_the_hosts_bundle_from_any_of_the_five(tmp_path):
         out = subprocess.run(["sh", "-c", text + 'echo "$SSL_CERT_FILE|$REQUESTS_CA_BUNDLE"\n', str(tmp_path / "AppRun")],
                              env={"PATH": os.environ.get("PATH", "")}, capture_output=True, text=True, check=True).stdout
         assert out.strip() == f"{bundle}|{bundle}", keep
+
+
+# --- tor: the Tor Project's Ubuntu 22.04 package, and exactly the libraries it loads
+
+def _pin(name: str) -> str:
+    found = re.search(rf'^{name}="([^"]*)"', (PACKAGING / "pins.sh").read_text(), re.M)
+    assert found, f"pins.sh sets no {name}"
+    return found.group(1)
+
+
+def _library_debs() -> list[tuple[str, str]]:
+    block = re.search(r"^TOR_LIBRARY_DEBS=\(\n(.*?)^\)", (PACKAGING / "pins.sh").read_text(), re.M | re.S)
+    assert block, "pins.sh sets no TOR_LIBRARY_DEBS"
+    return [tuple(line.strip().strip('"').split()) for line in block.group(1).splitlines()]
+
+
+def test_tor_and_its_libraries_are_pinned_over_https():
+    """tor from the Tor Project's own repository, its libraries from Launchpad's file store (which keeps every
+    version), each by its sha256, the archive key by its fingerprint: the same files SealedLore pins."""
+    tor, deb = _pin("TOR_VERSION"), _pin("TOR_DEB")
+    assert tor == "0.4.9.17"
+    assert re.fullmatch(rf"tor_{re.escape(tor)}-1~jammy\+\d+_amd64\.deb", deb), deb
+    assert _pin("TOR_URL").replace("$TOR_DEB", deb) == f"https://deb.torproject.org/torproject.org/pool/main/t/tor/{deb}"
+    assert re.fullmatch(r"[0-9a-f]{64}", _pin("TOR_SHA256"))
+    assert _pin("TOR_ARCHIVE_KEY") == "A3C4F0F979CAA22CDBA8F512EE8CBC9E886DDD89"
+    assert _pin("UBUNTU_FILES") == "https://launchpad.net/ubuntu/+archive/primary/+files"
+    debs = _library_debs()
+    assert len(debs) == 11
+    for file, sum_ in debs:
+        assert re.fullmatch(r"[a-z0-9.+-]+_[A-Za-z0-9.+~:-]+_amd64\.deb", file), file
+        assert re.fullmatch(r"[0-9a-f]{64}", sum_), file
+    assert 'fetch "$UBUNTU_FILES/${file//\\~/%7E}" "$sum" "/cache/debs/$file"' in BUILD
+
+
+def test_the_build_takes_tor_and_exactly_the_libraries_it_loads_and_checks_them():
+    """The build stops unless tor is the version pinned, the --enable-gpl build, has the onion services' proof-of-work
+    defence, loads every library but glibc's from its own folder and exactly BUNDLED_LIBRARIES, and needs no glibc
+    past 2.34."""
+    from davibemanager.sync.tor import BUNDLED_LIBRARIES
+    assert len(BUNDLED_LIBRARIES) == 12 and len(set(BUNDLED_LIBRARIES)) == 12
+    assert 'install -m 755 "$W/tor-x/usr/bin/tor" "$TORDIR/tor"' in BUILD
+    assert "from davibemanager.sync.tor import BUNDLED_LIBRARIES" in BUILD
+    for check in ("if loaded != set(BUNDLED_LIBRARIES):", '"pow: yes" not in modules.splitlines()',
+                  '"GNU General Public License" not in said', "if newest > (2, 34):"):
+        assert check in BUILD, check
+    assert 'export DVM_TOR="$HERE/usr/lib/tor/tor"' in APPRUN
+
+
+def test_the_notice_names_what_is_bundled_and_where_its_source_is():
+    notice = BUILD.split('cat > "$LICENCES/NOTICE.txt" <<NOTICE\n', 1)[1].split("\nNOTICE\n", 1)[0]
+    assert "tor $TOR_VERSION" in notice and "tor $TOR_PACKAGE" in notice
+    assert "--enable-gpl" in notice and "texts/GPL-3.txt" in notice
+    assert "https://archive.torproject.org/tor-package-archive/tor-$TOR_VERSION.tar.gz" in notice
+    assert "tor_$TOR_PACKAGE.dsc" in notice and "tor_$TOR_VERSION.orig.tar.gz" in notice
+    assert "debian-tor-$TOR_VERSION-1" in notice
+    assert "A3C4 F0F9 79CA A22C\nDBA8 F512 EE8C BC9E 886D DD89" in notice
+    from davibemanager.sync.tor import BUNDLED_LIBRARIES
+    for library in BUNDLED_LIBRARIES:
+        assert library in notice, library
+    for file, _sum in _library_debs():
+        name, version = file.split("_")[:2]
+        assert f" {name} (" in notice, name
+        assert version in notice, file
+
+
+def test_the_checker_reads_the_pins_it_checks():
+    check = (PACKAGING / "check-tor-debs.sh").read_text()
+    assert 'source "$HERE/pins.sh"' in check
+    for name in ("TOR_ARCHIVE_KEY", "TOR_DEB", "TOR_SHA256", "TOR_LIBRARY_DEBS"):
+        assert f"${name}" in check or f"${{{name}" in check, name
+    assert "gpgv --keyring" in check

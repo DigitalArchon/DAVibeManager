@@ -30,7 +30,12 @@ fetch() {  # url sha256 dest: download once into the cache, always verify
 mkdir -p /cache
 fetch "$PBS_URL" "$PBS_SHA256" /cache/python.tar.gz
 fetch "$RUNTIME_URL" "$RUNTIME_SHA256" /cache/runtime-x86_64
-fetch "$TOR_URL" "$TOR_SHA256" /cache/tor-expert-bundle.tar.gz
+fetch "$TOR_URL" "$TOR_SHA256" "/cache/$TOR_DEB"
+mkdir -p /cache/debs
+for entry in "${TOR_LIBRARY_DEBS[@]}"; do              # tor's libraries, Ubuntu 22.04's (pins.sh)
+    read -r file sum <<<"$entry"
+    fetch "$UBUNTU_FILES/${file//\~/%7E}" "$sum" "/cache/debs/$file"
+done
 
 # a Python for building (with the build tools) and a clean copy that becomes the AppImage's
 mkdir -p "$W/buildpy"
@@ -196,47 +201,91 @@ find "$W/AppDir" -name __pycache__ -type d -prune -exec rm -rf {} +
 "$PY" -B -m compileall -q -j1 --invalidation-mode unchecked-hash -s "$W/AppDir" -p / \
     "$W/AppDir/usr/python/lib" >/dev/null
 
-# Tor, for syncing the user's apps between their computers: the Tor Expert Bundle's tor and the
-# libraries it was built against (sync/tor.py BUNDLED_LIBRARIES), unmodified, in a folder of their
-# own: the bundle has no RUNPATH, so tor finds them through LD_LIBRARY_PATH, which the app sets to
-# this folder for tor alone (tor_environment). Never in usr/lib: this OpenSSL must not stand in
-# for anything else's. Left out: pluggable transports, geoip files (onion services need none).
+# Tor, for syncing the user's apps between their computers: tor from the Tor Project's own Ubuntu
+# 22.04 package and exactly the libraries it loads (sync/tor.py BUNDLED_LIBRARIES: every one but
+# glibc's), from the Ubuntu 22.04 packages pins.sh pins, unmodified, in a folder of their own: tor has
+# no RUNPATH, so it finds them through LD_LIBRARY_PATH, which the app sets to this folder for tor
+# alone (tor_environment). Never in usr/lib: this OpenSSL and libsystemd must not stand in for
+# anything else's. Only the program: no service, configuration or geoip files (onion services need
+# none).
 TORDIR="$W/AppDir/usr/lib/tor"
 LICENCES="$W/AppDir/usr/share/licenses/tor"
 read -r -a TOR_LIBS <<<"$(PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$W/AppDir/usr/python/lib/python3.12/site-packages" "$PY" -s -c \
     'from davibemanager.sync.tor import BUNDLED_LIBRARIES; print(*BUNDLED_LIBRARIES)')"
-rm -rf "$W/tor-x" && mkdir -p "$W/tor-x" "$TORDIR" "$LICENCES"
-tar -xzf /cache/tor-expert-bundle.tar.gz -C "$W/tor-x" --no-same-owner tor/tor "${TOR_LIBS[@]/#/tor/}" \
-    docs/tor.txt docs/libevent.txt docs/openssl.txt
-install -m 755 "$W/tor-x/tor/tor" "$TORDIR/tor"
-for lib in "${TOR_LIBS[@]}"; do
-    install -m 644 "$W/tor-x/tor/$lib" "$TORDIR/$lib"
+rm -rf "$W/tor-x" && mkdir -p "$W/tor-x" "$TORDIR" "$LICENCES/texts"
+dpkg-deb -x "/cache/$TOR_DEB" "$W/tor-x"
+install -m 755 "$W/tor-x/usr/bin/tor" "$TORDIR/tor"
+install -D -m 644 "$W/tor-x/usr/share/doc/tor/copyright" "$LICENCES/tor/copyright"
+for entry in "${TOR_LIBRARY_DEBS[@]}"; do
+    read -r file sum <<<"$entry"
+    rm -rf "$W/tor-x/lib" && mkdir -p "$W/tor-x/lib"
+    dpkg-deb -x "/cache/debs/$file" "$W/tor-x/lib"
+    pkg="${file%%_*}"
+    # each package's Debian copyright file: its licence (the texts it names from common-licenses: texts/)
+    install -D -m 644 "$W/tor-x/lib/usr/share/doc/$pkg/copyright" "$LICENCES/$pkg/copyright"
+    for lib in "${TOR_LIBS[@]}"; do
+        for dir in lib/x86_64-linux-gnu usr/lib/x86_64-linux-gnu; do
+            if [ -e "$W/tor-x/lib/$dir/$lib" ]; then
+                install -m 644 "$(readlink -f "$W/tor-x/lib/$dir/$lib")" "$TORDIR/$lib"
+            fi
+        done
+    done
 done
-install -m 644 "$W"/tor-x/docs/{tor,libevent,openssl}.txt "$LICENCES/"
-install -m 644 /usr/share/common-licenses/GPL-3 "$LICENCES/GPL-3.0.txt"
+for lib in "${TOR_LIBS[@]}"; do
+    [ -f "$TORDIR/$lib" ] || { echo "no package brought $lib for tor" >&2; exit 1; }
+done
+# the licence texts the copyright files name from /usr/share/common-licenses (the builder's, Ubuntu's)
+for text in Apache-2.0 GPL-1 GPL-2 GPL-3 LGPL-2 LGPL-2.1 CC0-1.0 Artistic; do
+    install -m 644 "/usr/share/common-licenses/$text" "$LICENCES/texts/$text.txt"
+done
+TOR_PACKAGE="${TOR_DEB#tor_}" && TOR_PACKAGE="${TOR_PACKAGE%_amd64.deb}"
 cat > "$LICENCES/NOTICE.txt" <<NOTICE
-DA Vibe Manager syncs the user's apps between their computers through tor, taken unmodified from
-the Tor Expert Bundle $TOR_BUNDLE_VERSION for Linux x86_64 (https://www.torproject.org/download/tor/):
-tor $TOR_VERSION and the libraries it was built against, libevent and OpenSSL 3, in usr/lib/tor. Tor
-is a program of its own, which the app starts only while the computer is paired with another.
+DA Vibe Manager syncs the user's apps between their computers through tor $TOR_VERSION, taken
+unmodified from the Tor Project's own package for Ubuntu 22.04 (tor $TOR_PACKAGE, from
+https://deb.torproject.org/torproject.org, signed by the Tor Project's archive key A3C4 F0F9 79CA A22C
+DBA8 F512 EE8C BC9E 886D DD89), with the libraries it loads, taken unmodified from Ubuntu 22.04's
+packages, in usr/lib/tor. Tor is a program of its own, which the app starts only while the computer
+is paired with another.
 
-- Tor is under the 3-clause BSD license, with the licences of the code it includes (tor.txt). This
-  build is made with --enable-gpl (the onion services' proof-of-work defence), so the tor program
-  as a whole is under the GNU General Public License, version 3 (GPL-3.0.txt), as tor --version says.
-- libevent is under the 3-clause BSD license (libevent.txt); OpenSSL 3 under the Apache License 2.0
-  (openssl.txt).
+- Tor is under the 3-clause BSD license, with the licences of the code it includes (tor/copyright).
+  This build is made with --enable-gpl (the onion services' proof-of-work defence), so the tor
+  program as a whole is under the GNU General Public License, version 3 (texts/GPL-3.txt), as
+  tor --version says.
 - Source: tor $TOR_VERSION is https://archive.torproject.org/tor-package-archive/tor-$TOR_VERSION.tar.gz
-  (git tag tor-$TOR_VERSION of https://gitlab.torproject.org/tpo/core/tor). The bundle is built from it
-  by Tor Browser's build system, tag tbb-$TOR_BUNDLE_VERSION-build1 of
-  https://gitlab.torproject.org/tpo/applications/tor-browser-build (projects/tor, projects/libevent
-  and projects/openssl), which also names the libraries' sources.
-- Replacing it: extract the AppImage and put your own tor in usr/lib/tor, or run the AppImage with
-  DVM_TOR set to the path of another tor.
+  (git tag tor-$TOR_VERSION of https://gitlab.torproject.org/tpo/core/tor), and the package is built
+  from it by the Debian source package tor_$TOR_PACKAGE (tor_$TOR_PACKAGE.dsc,
+  tor_$TOR_VERSION.orig.tar.gz and tor_$TOR_PACKAGE.diff.gz) in
+  https://deb.torproject.org/torproject.org/pool/main/t/tor/ while it is the current version; its
+  packaging is tag debian-tor-$TOR_VERSION-1 of https://gitlab.torproject.org/tpo/core/debian/tor.
+- The libraries, each with its Debian copyright file (its licence) in <package>/copyright; the
+  licence texts those files name from /usr/share/common-licenses are in texts/. Their source is
+  Ubuntu's source package of the same name and version, at
+  https://launchpad.net/ubuntu/+source/SOURCE/VERSION (and in deb-src of the Ubuntu 22.04 archive):
+
+  Library                          Ubuntu package (source)     Version                     Licence
+  libevent-2.1.so.7                libevent-2.1-7 (libevent)   2.1.12-stable-1ubuntu0.2    3-clause BSD
+  libssl.so.3, libcrypto.so.3      libssl3 (openssl)           3.0.2-0ubuntu1.30           Apache 2.0
+  libz.so.1                        zlib1g (zlib)               1:1.2.11.dfsg-2ubuntu9.2    zlib
+  liblzma.so.5                     liblzma5 (xz-utils)         5.2.5-2ubuntu1.2            public domain
+  libzstd.so.1                     libzstd1 (libzstd)          1.4.8+dfsg-3build1          BSD or GPL-2
+  libcap.so.2                      libcap2 (libcap2)           1:2.44-1ubuntu0.22.04.3     BSD or GPL-2
+  libseccomp.so.2                  libseccomp2 (libseccomp)    2.5.3-2ubuntu3~22.04.1      LGPL 2.1
+  libsystemd.so.0                  libsystemd0 (systemd)       249.11-0ubuntu3.23          LGPL 2.1 or later
+  liblz4.so.1                      liblz4-1 (lz4)              1.9.3-2build2               2-clause BSD
+  libgcrypt.so.20                  libgcrypt20 (libgcrypt20)   1.9.4-3ubuntu3.3            LGPL 2.1 or later
+  libgpg-error.so.0                libgpg-error0 (libgpg-error) 1.43-3                     LGPL 2.1 or later
+
+- Replacing them: extract the AppImage and put your own tor and libraries in usr/lib/tor, or run the
+  AppImage with DVM_TOR set to the path of another tor.
 NOTICE
 rm -rf "$W/tor-x"
 # the bundled tor, run with the environment the app gives it (from one holding a library path tor
-# must not inherit): it says it's the version pinned, and finds its libraries in its own folder only
+# must not inherit): it says it's the version pinned, the --enable-gpl build with the onion services'
+# proof-of-work defence, loads every library but glibc's from its own folder and exactly those, and
+# nothing in its folder needs a glibc newer than 2.34 (Ubuntu 22.04's packages: they run wherever the
+# AppImage does)
 PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$W/AppDir/usr/python/lib/python3.12/site-packages" "$PY" -s - "$TORDIR/tor" "$TOR_VERSION" <<'TOR'
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -248,16 +297,37 @@ env = tor_environment(tor, {"HOME": "/nonexistent", "PATH": "/usr/bin:/bin", "LD
 if env.get("LD_LIBRARY_PATH") != str(tor.parent):
     sys.exit(f"the app wouldn't give tor its own libraries: {env}")
 said = subprocess.run([tor, "--version"], env=env, capture_output=True, text=True, check=True).stdout
-if f"Tor version {version}" not in said:
+if not re.match(rf"Tor version {re.escape(version)}[ .]", said):
     sys.exit(f"the bundled tor says {said!r}, not version {version}")
+if "GNU General Public License" not in said:
+    sys.exit(f"the bundled tor isn't the --enable-gpl build the notice says: {said!r}")
+modules = subprocess.run([tor, "--list-modules"], env=env, capture_output=True, text=True, check=True).stdout
+if "pow: yes" not in modules.splitlines():
+    sys.exit(f"the bundled tor has no onion services' proof-of-work defence: {modules!r}")
+# every library it loads is its own, but glibc's (the system's, as every program's)
+GLIBC = {"linux-vdso.so.1", "libc.so.6", "libm.so.6", "libdl.so.2", "libpthread.so.0", "librt.so.1"}
 links = subprocess.run(["ldd", tor], env=env, capture_output=True, text=True, check=True).stdout
+loaded = set()
 for line in links.splitlines():
     name, _, found = line.strip().partition(" => ")
+    name = name.split(" ")[0]
     if "not found" in found:
         sys.exit(f"tor can't find {name}")
-    if name in BUNDLED_LIBRARIES and not found.startswith(f"{tor.parent}/"):
+    if name.startswith("/") or name in GLIBC:
+        continue
+    loaded.add(name)
+    if not found.startswith(f"{tor.parent}/"):
         sys.exit(f"tor would load {name} from {found}, not its own folder")
-print(said.splitlines()[0])
+if loaded != set(BUNDLED_LIBRARIES):
+    sys.exit(f"tor loads {sorted(loaded)}, BUNDLED_LIBRARIES says {sorted(BUNDLED_LIBRARIES)}")
+newest = (0, 0)
+for elf in sorted(tor.parent.iterdir()):
+    symbols = subprocess.run(["objdump", "-T", elf], capture_output=True, text=True, check=True).stdout
+    for major, minor in re.findall(r"GLIBC_(\d+)\.(\d+)", symbols):
+        newest = max(newest, (int(major), int(minor)))
+if newest > (2, 34):
+    sys.exit(f"tor or a library beside it needs glibc {newest[0]}.{newest[1]}, past the floor of 2.34")
+print(said.splitlines()[0], f"with pow, its {len(loaded)} libraries its own, glibc {newest[0]}.{newest[1]} at most")
 TOR
 
 # AppDir layout (AppImage spec): entry point, desktop entry, icon, AppStream metadata

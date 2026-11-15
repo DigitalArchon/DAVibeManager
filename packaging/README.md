@@ -12,7 +12,7 @@ release from its commit and get the same file, byte for byte.
 | The Claude Code CLI, inside the pinned `claude-agent-sdk` (its hash is in `workspace/pins.py`) | The tray: XApp (Mint), Ayatana or AppIndicator (KDE, CachyOS) |
 | PyGObject and pycairo, built from pinned sources | The Secret Service keyring (GNOME Keyring, KWallet) |
 | A fallback `libgirepository-2.0` for hosts that lack it | `xdg-open`, `lspci` (optional) |
-| tor 0.4.9.15 and its libraries, unmodified from the Tor Expert Bundle 16.0 (pinned with its hash in `appimage/pins.sh`), for sync; its licences in `usr/share/licenses/tor` | |
+| tor 0.4.9.17, unmodified from the Tor Project's own Ubuntu 22.04 package, and the Ubuntu 22.04 packages of exactly the libraries it loads (each pinned with its hash in `appimage/pins.sh`, checked against the repositories' signed indexes by `appimage/check-tor-debs.sh`), for sync; their licences in `usr/share/licenses/tor` | |
 
 WebKitGTK is deliberately **not** bundled: it renders the AI's output, so it should get the
 distribution's security updates, not wait for a DA Vibe Manager release. Without it, DA Vibe
@@ -82,7 +82,7 @@ needs; `UPGRADE=1` moves everything.
 
 | What | Pinned in |
 |---|---|
-| Base image (digest), apt snapshot, Python build, AppImage runtime | `appimage/pins.sh` |
+| Base image (digest), apt snapshot, Python build, AppImage runtime; tor's package and its libraries' (`appimage/check-tor-debs.sh` checks them against the signed indexes when they're bumped) | `appimage/pins.sh` |
 | Runtime Python packages (wheels, with hashes) | `appimage/requirements.lock` |
 | PyGObject, pycairo (source archives, with hashes) | `appimage/sdists.lock` |
 | meson, meson-python, ninja, setuptools (with hashes) | `appimage/build-requirements.lock` |

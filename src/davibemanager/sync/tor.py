@@ -8,7 +8,8 @@ anything else) and says why one can't be reached (ExtendedErrors). It exits when
 __OwningControllerProcess, and TAKEOWNERSHIP once the app is logged in. Its onion services
 aren't detached, so none outlives the control connection either.
 
-The tor run is the AppImage's own (the Tor Expert Bundle's, in usr/lib/tor: AppRun sets DVM_TOR),
+The tor run is the AppImage's own (the Tor Project's Ubuntu 22.04 package, with the libraries it loads,
+in usr/lib/tor: AppRun sets DVM_TOR),
 else one on PATH. It's given its own folder as its library path and nothing else of the app's
 environment.
 
@@ -42,7 +43,23 @@ CONTROLLER_TO_SERVER = b"Tor safe cookie authentication controller-to-server has
 SOCKET_PATH_MOST = 100              # under the 107 bytes a unix socket's path may have
 CONTROL_WAIT = 30                   # seconds tor has to open its control socket
 BOOTSTRAP_WAIT = 300                # and to reach the network
-BUNDLED_LIBRARIES = ("libevent-2.1.so.7", "libssl.so.3", "libcrypto.so.3")
+# The libraries the AppImage keeps beside its tor: every one it loads but glibc's, from their Ubuntu 22.04
+# packages (packaging/appimage/pins.sh). No RUNPATH: it finds them by LD_LIBRARY_PATH, which only its own
+# process is given. The build stops if tor loads any library not named here.
+BUNDLED_LIBRARIES = (
+    "libevent-2.1.so.7",
+    "libssl.so.3",
+    "libcrypto.so.3",
+    "libz.so.1",
+    "liblzma.so.5",
+    "libzstd.so.1",
+    "libcap.so.2",
+    "libseccomp.so.2",
+    "libsystemd.so.0",
+    "liblz4.so.1",
+    "libgcrypt.so.20",
+    "libgpg-error.so.0",
+)
 _SERVICE_ID = re.compile(r"[a-z2-7]{56}")
 _UNSAFE = set(' \t\n"\\')
 
@@ -273,8 +290,8 @@ def find_tor(environ: dict | None = None) -> Path | None:
 
 
 def tor_environment(tor: Path, environ: dict | None = None) -> dict:
-    """A clean environment for tor: nothing of the app's own, and the bundle's folder as its library
-    path when the bundle's libraries are beside it."""
+    """A clean environment for tor: nothing of the app's own, and tor's folder as its library path when
+    every library the AppImage keeps beside it is there."""
     env = os.environ if environ is None else environ
     out = {k: env[k] for k in ("HOME", "LANG", "PATH") if k in env}
     out.setdefault("PATH", "/usr/bin:/bin")

@@ -82,5 +82,5 @@ public issue.
 
 AGPL-3.0-or-later. See [LICENSE](LICENSE). Vendored libraries:
 [src/davibemanager/web/vendor/NOTICE](src/davibemanager/web/vendor/NOTICE). The AppImage also
-carries tor, unmodified from the Tor Expert Bundle, under its own licences (in the AppImage's
-`usr/share/licenses/tor`).
+carries tor and the libraries it loads, unmodified from the Tor Project's and Ubuntu's 22.04 packages, under
+their own licences (in the AppImage's `usr/share/licenses/tor`).

@@ -687,3 +687,19 @@ def test_the_short_folders_sockets_need_go_with_their_test():
     assert folder.is_dir() and len(str(folder / "tor" / "sync.sock")) < 107
     remove_short_dirs()
     assert not folder.exists()
+
+
+def test_tor_gets_its_own_folder_as_its_library_path_only_with_every_library_beside_it(tmp_path):
+    """The AppImage keeps beside its tor every library it loads but glibc's (BUNDLED_LIBRARIES, twelve since tor
+    is the Tor Project's Ubuntu 22.04 package); a tor without all of them beside it (the system's) gets none."""
+    from davibemanager.sync.tor import BUNDLED_LIBRARIES, tor_environment
+    tor = tmp_path / "tor"
+    tor.write_text("")
+    env = {"HOME": "/home/me", "PATH": "/usr/bin", "LD_LIBRARY_PATH": "/elsewhere", "SECRET": "x"}
+    assert tor_environment(tor, env) == {"HOME": "/home/me", "PATH": "/usr/bin"}
+    for name in BUNDLED_LIBRARIES[:-1]:
+        (tmp_path / name).write_text("")
+    assert "LD_LIBRARY_PATH" not in tor_environment(tor, env), "one of them missing"
+    (tmp_path / BUNDLED_LIBRARIES[-1]).write_text("")
+    assert tor_environment(tor, env)["LD_LIBRARY_PATH"] == str(tmp_path)
+    assert {"libsystemd.so.0", "libgcrypt.so.20", "libseccomp.so.2"} <= set(BUNDLED_LIBRARIES)
