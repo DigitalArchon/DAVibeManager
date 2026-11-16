@@ -26,7 +26,7 @@ from .llm.client import LLMClient, detect_tier, is_private_mode
 from .llm.errors import error_words, shown_error
 from .llm.private_mode import (Enclave, PrivateModeClient, list_private_models, offers_private_mode, relay_said,
                                relay_url)
-from .netpolicy import InsecureURL, UnusableKey, check_url, in_the_clear, key_problem, scrubbed, shown
+from .netpolicy import InsecureURL, UnusableKey, check_url, in_the_clear, key_problem, origin, scrubbed, shown
 
 # A TEE model's attestation is made again, with a fresh nonce, before a send once it is this old: on a
 # clock that runs on while the computer sleeps (dcap.since_boot), so one made before a night's suspend
@@ -71,32 +71,54 @@ class KeyHeldBack(UserError):
 
 def key_problem_for(prov: Provider) -> str | None:
     """Why the key stored for `prov` isn't sent with its requests, or None: it was entered for other addresses
-    than the provider has now (Provider.key_for). An address changed in config.toml by hand, or through the API,
-    never takes the key with it: the key would go, with everything sent, to whatever the new address is. Nothing
-    is deleted; entering the key again for the new address, or putting the address back, sends it again (the
-    design every DA app keeps, Nov 2026; DA Private Coder's creds.account keys it by host and port)."""
+    than the provider has now (Provider.key_for). An address changed in Settings without the key, in config.toml by
+    hand, or through the API, never takes the key with it: the key would go, with everything sent, to whatever the
+    new address is. Nothing is deleted; entering the key again for the new address, saying Yes to using it there
+    (Settings asks), or putting the address back, sends it again (the design every DA app keeps, Nov 2026; DA
+    Private Coder's creds.account keys it by host and port). One stated exception: a key entered for one of Chutes'
+    own hosts goes to any of them (config.key_reaches). And Tinfoil's key goes to Tinfoil's own API alone."""
     clear = [url for url in (prov.base_url, prov.builder_url) if url and in_the_clear(url)]
     if clear and not prov.key_over_http:
-        # plain http to another machine on the network: anyone on it reads the key (SealedLore's keys_in_the_clear;
-        # where the address is typed in a window, every DA app asks first: here there is no such field)
+        # plain http to another machine on the network: anyone on it reads the key (SealedLore's keys_in_the_clear):
+        # Settings asks before it is saved so, No the default; one already going so is held back until asked
         return (f"{prov.name}'s address {shown(clear[0])} is plain http to another machine on your network, so its API "
                 "key would cross the network unencrypted, readable by anyone on it (a café's or a hotel's Wi-Fi too): "
-                "it isn't sent. Use the server's https:// address, or, if the network is yours alone, add the line "
-                f"`key_over_http = true` under {prov.name} in config.toml.")
+                "it isn't sent. Use the server's https:// address, or, if the network is yours alone, say so in "
+                f"Settings → AI providers → {prov.name} (Send it unencrypted…).")
+    if prov.sealed_service() == "tinfoil" and prov.base_url and origin(prov.base_url) != config_mod.TINFOIL_KEY_ORIGIN:
+        # its key opens the account at Tinfoil's own API: never to another of its hosts, nor one typed beside it
+        return (f"{prov.name} is a Tinfoil endpoint at {shown(prov.base_url)}, and a Tinfoil API key goes only to "
+                f"Tinfoil's own API, {shown(config_mod.TINFOIL_BASE_URL)}: it isn't sent. Set its address to that "
+                "in Settings → AI providers.")
     if prov.key_for is None:
         return None
-    elsewhere = [o for o in prov.origins() if o not in prov.key_for]
+    elsewhere = [o for o in prov.origins() if not config_mod.key_reaches(prov.key_for, o)]
     if not elsewhere:
         return None
     was = ", ".join(shown(o) for o in prov.key_for) or "no address"
     now = ", ".join(shown(o) for o in elsewhere)
-    # the ways out as they work: the window's key field (Engine.quick_setup) saves NanoGPT's key for NanoGPT's own
-    # address and puts the assistant back on it; the window has no field for another address
+    # the ways out as they work: Settings → AI providers asks whether to use the saved key at the new address (Ask
+    # again), or takes it typed again; the setup's key field (Engine.quick_setup) saves NanoGPT's key for NanoGPT's own
+    # address and puts the assistant back on it
     return (f"The API key saved for {prov.name} was entered for {was}, and {prov.name}'s address is now {now}: the key "
-            "isn't sent there, so a changed address can't take it anywhere else. Pasting your NanoGPT key in Settings → "
-            f"API key saves it for NanoGPT's own address and puts the assistant back on it ({shown(config_mod.NANOGPT_BASE_URL)}), "
-            f"leaving {now} behind. To use {now}, enter the key again for it through the app's API, or put "
-            f"{prov.name}'s address back in config.toml.")
+            "isn't sent there, so a changed address can't take it anywhere else. In Settings → AI providers, type the "
+            f"key again for {now}, choose Ask again to use the saved one there, or put {prov.name}'s address back. "
+            f"For NanoGPT, pasting your NanoGPT key there saves it for NanoGPT's own address and puts the assistant back "
+            f"on it ({shown(config_mod.NANOGPT_BASE_URL)}), leaving {now} behind.")
+
+
+def sealing_problem(prov: Provider, model: str) -> str | None:
+    """Why `model` on `prov` can't be sent at all, or None: its requests must be sealed end to end (config.model_sealing:
+    any model on a Tinfoil endpoint, a Chutes -TEE model), and this app has no client that seals them yet. Sent as any
+    other model's, the text would be read in the clear on its way, so nothing is sent (when in doubt, sealed)."""
+    sealing = config_mod.model_sealing(prov, model)
+    if sealing == "tinfoil":
+        return (f"{prov.name} is Tinfoil's end-to-end encrypted API: {model or 'its models'} can only be sent sealed on "
+                "this computer, which this version of DA Vibe Manager can't do yet, so nothing is sent to it.")
+    if sealing == "chutes":
+        return (f"{model} is one of Chutes' TEE models, always sent end-to-end encrypted: this version of DA Vibe Manager "
+                "can't seal it yet, so nothing is sent to it. Chutes' other models work as any provider's.")
+    return None
 
 
 class Models:
@@ -129,12 +151,34 @@ class Models:
 
     # ---------------------------------------------------------------- providers
 
-    def save_provider(self, data: dict, api_key: str | None = None, original_name: str | None = None) -> None:
+    def save_provider(self, data: dict, api_key: str | None = None, original_name: str | None = None,
+                      is_new: bool = False) -> None:
+        """Save a provider (Settings → AI providers, or the API). Its key is held to the addresses it is entered for
+        (Provider.key_for, key_problem_for): a new key is for the addresses as saved; a saved one stays for its own,
+        so an address changed without a new key doesn't take it along, unless `use_saved_key` (a JSON true) says the
+        user chose to use it there (Settings asks, No the default). Their No (`use_saved_key` false) is kept for those
+        addresses (Provider.key_declined), so Settings doesn't ask again at each save. A key over plain http to another
+        machine is sent only with `key_over_http` (a JSON true: Settings asks first, No the default), or where it
+        already went at these same addresses. `is_new`: a provider added, never one saved over another of its name."""
         name = str(data.get("name", "")).strip()
         base_url = str(data.get("base_url", "")).strip().rstrip("/")
         builder_url = str(data.get("builder_url", "")).strip().rstrip("/")
         if not name or not (base_url or builder_url):
-            raise UserError("A provider needs a name and a base URL.")
+            raise UserError("A provider needs a name and an address: a chat address (OpenAI-compatible), an address "
+                            "for the assistant (Anthropic's Messages API), or both.")
+        old = self.cfg.provider(original_name or name)
+        if is_new and old is not None:
+            raise UserError(f"There is already a provider called {name}. Give this one a name of its own (such as "
+                            f"\"{name} 2\"), or edit that one.")
+        if original_name and original_name != name and self.cfg.provider(name) is not None:
+            raise UserError(f"There is already a provider called {name}: choose another name.")
+        if "|" in name and not (old and old.name == name):
+            # "provider|model" is how a setting names a model (the reviewer, the vision helper), split at the first "|"
+            raise UserError("A provider's name can't contain | (it separates the provider from the model where a "
+                            "setting names both).")
+        chat_api = str(data.get("chat_api") or (old.chat_api if old else "auto")).strip().lower()
+        if chat_api not in config_mod.CHAT_APIS:
+            raise UserError(f"A chat endpoint speaks one of: {', '.join(config_mod.CHAT_APIS)}.")
         try:
             if base_url:
                 check_url(base_url, "The provider's base URL")
@@ -148,11 +192,14 @@ class Models:
         builder_auth = str(data.get("builder_auth", "bearer")).strip() or "bearer"
         if builder_auth not in ("bearer", "x-api-key"):
             raise UserError("The key goes in a bearer header or x-api-key.")
-        overrides = {k.strip(): v.strip() for k, v in (data.get("tier_overrides") or {}).items() if k.strip()}
+        overrides = {k.strip(): v.strip() for k, v in (data.get("tier_overrides") or {}).items() if k.strip()} \
+            if "tier_overrides" in data or not old else dict(old.tier_overrides)
         prov = provider_defaults(Provider(
             name=name, base_url=base_url, default_model=str(data.get("default_model", "")).strip(),
-            builder_url=builder_url, builder_auth=builder_auth, tier_overrides=overrides))
-        old = self.cfg.provider(original_name or name)
+            builder_url=builder_url, builder_auth=builder_auth, tier_overrides=overrides, chat_api=chat_api,
+            # what the window's form doesn't show stays as it was
+            vision_overrides=dict(old.vision_overrides) if old else {},
+            context_overrides=dict(old.context_overrides) if old else {}))
         # a key over plain http to another machine (netpolicy.in_the_clear): only where the caller says the user
         # chose it (a JSON true), or the provider had it at these same addresses (key_problem_for)
         prov.key_over_http = data.get("key_over_http") is True or bool(
@@ -160,12 +207,18 @@ class Models:
         # the key goes only where it was entered for: a new one is for these addresses; an older one stays for its
         # own, so an address changed here without it doesn't take it along (key_problem_for), unless the caller
         # says the user chose to use it there (`use_saved_key`). A provider new here has none until one is given
-        if api_key or (old and data.get("use_saved_key") is True):
+        use_saved = data.get("use_saved_key")
+        if api_key or (old and use_saved is True):
             prov.key_for = prov.origins()
         elif old:
             prov.key_for = list(old.key_for) if old.key_for is not None else old.origins()
         else:
             prov.key_for = []
+        # a No for these addresses is kept, and Settings asks no more at each save; asked again and Yes, a key typed, or
+        # the address put back, it goes
+        away = [o for o in prov.origins() if not config_mod.key_reaches(prov.key_for, o)]
+        if old and not api_key and away and use_saved is not True:
+            prov.key_declined = sorted(set(old.key_declined) | set(away)) if use_saved is False else list(old.key_declined)
         # a password written into an address goes to the keyring, as the API key does (config.py)
         renamed = bool(original_name and original_name != name and old)
         try:
@@ -262,6 +315,8 @@ class Models:
             return self.client_factory(prov, model)
         if not prov.base_url:
             raise UserError(f"{prov.name} has no chat endpoint, so it can't be the reviewer.")
+        if problem := sealing_problem(prov, model):
+            raise UserError(problem)            # never a plain client for a model that must be sealed
         key = self.key(prov)
         enclave = None
         if is_private_mode(model):
@@ -514,6 +569,9 @@ class Models:
             tier = "e2ee"       # the gateway seals the chat's every request, or refuses it (and no clear image helper)
         if not prov.base_url and not all(m.lower().startswith(("anthropic/", "claude")) for m in (s.builder_model, small)):
             raise UserError(f"Models other than Claude need {prov.name}'s chat endpoint (Settings).")
+        for model in (s.builder_model, small):
+            if problem := sealing_problem(prov, model):
+                raise UserError(problem)
         return prov, s.builder_model, small, tier
 
     def review_target(self) -> tuple[Provider, str, str]:

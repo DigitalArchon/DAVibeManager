@@ -498,8 +498,9 @@ class Engine:
         self._changed()
         self.start_workspace()
 
-    def save_provider(self, data: dict, api_key: str | None = None, original_name: str | None = None) -> None:
-        self.models.save_provider(data, api_key, original_name)
+    def save_provider(self, data: dict, api_key: str | None = None, original_name: str | None = None,
+                      is_new: bool = False) -> None:
+        self.models.save_provider(data, api_key, original_name, is_new=is_new)
 
     def delete_provider(self, name: str) -> None:
         self.models.delete_provider(name)

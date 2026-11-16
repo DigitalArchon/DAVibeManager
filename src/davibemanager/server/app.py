@@ -301,7 +301,8 @@ def create_app(token: str, make_engine: Callable[[Callable[[dict], None]], Engin
 
     @app.post("/api/providers")
     async def save_provider(body: dict, e: Engine = Depends(auth)):
-        e.save_provider(body.get("provider", {}), body.get("api_key") or None, body.get("original_name"))
+        e.save_provider(body.get("provider", {}), body.get("api_key") or None, body.get("original_name"),
+                        is_new=body.get("new") is True)
         return {"ok": True}
 
     @app.delete("/api/providers/{name}")

@@ -163,8 +163,9 @@ async def test_the_gateway_refuses_a_request_whose_key_was_entered_for_another_a
 
 def test_a_key_never_crosses_the_network_unencrypted_unless_the_config_says_so(tmp_path):
     """Plain http is allowed to this computer and the local network, but to another machine the key crosses that
-    network unencrypted. With no field for the address in the window, nothing asks: it isn't sent, in words naming
-    the address and the ways out, until config.toml says `key_over_http = true` beside it."""
+    network unencrypted. Settings asks before it sends one so (tests/js/providers.test.cjs); saved any other way it
+    isn't sent, in words naming the address and the ways out, until the user says so (Settings' question, a JSON true
+    through the API, or `key_over_http = true` in config.toml)."""
     from davibemanager import netpolicy
     assert netpolicy.in_the_clear("http://192.168.1.5:11434/v1") and netpolicy.in_the_clear("http://nas.local/v1")
     for here in ("http://localhost:11434/v1", "http://127.0.0.2/v1", "http://[::1]:8080/v1", "https://192.168.1.5/v1"):
@@ -174,7 +175,7 @@ def test_a_key_never_crosses_the_network_unencrypted_unless_the_config_says_so(t
     m = _models(cfg)
     m.save_provider({"name": "Mine", "base_url": "http://192.168.1.5:11434/v1"}, "sk-lan")
     with pytest.raises(UserError, match=r"http://192.168.1.5:11434/v1 is plain http to another machine.*https://.*"
-                                        r"`key_over_http = true` under Mine in config.toml"):
+                                        r"Settings → AI providers → Mine \(Send it unencrypted…\)"):
         m.key(cfg.provider("Mine"))
     with pytest.raises(UserError, match="plain http to another machine"):
         m.client(cfg.provider("Mine"), "llama3")
@@ -208,7 +209,7 @@ def test_a_provider_already_sending_its_key_over_plain_http_is_held_back_once_se
     assert cfg.provider("Lan").key_for == cfg.provider("Lan").origins()
     held = models.key_problem_for(cfg.provider("Lan")) or ""
     assert re.search(r"http://192.168.1.5:11434/v1 is plain http to another machine.*"
-                     r"`key_over_http = true` under Lan in config.toml", held), held
+                     r"Settings → AI providers → Lan \(Send it unencrypted…\)", held), held
     assert models.key_problem_for(cfg.provider("NanoGPT")) is None
     config.save(cfg, path)
     cfg = config.load(path)
@@ -226,11 +227,12 @@ async def test_the_window_is_told_a_stored_key_is_held_back_and_why(env):
     assert state["ready"] is False and state["keyring_wait"] == ""
     assert state["assistant"]["key_held"] is True
     assert "entered for https://elsewhere.example:443" in state["assistant"]["error"]
-    assert "Pasting your NanoGPT key in Settings → API key saves it for NanoGPT's own address and puts the assistant " \
-           "back on it (https://nano-gpt.com/api/v1), leaving https://fake.example:443 behind" in state["assistant"]["error"]
+    assert "In Settings → AI providers, type the key again for https://fake.example:443, choose Ask again" in state["assistant"]["error"]
+    assert "pasting your NanoGPT key there saves it for NanoGPT's own address and puts the assistant back on it " \
+           "(https://nano-gpt.com/api/v1), leaving https://fake.example:443 behind" in state["assistant"]["error"]
     prov.key_for, prov.base_url, prov.builder_url = None, "http://192.168.1.5:11434/v1", "http://192.168.1.5:11434"
     state = engine.snapshot()
-    assert state["assistant"]["key_held"] is True and "`key_over_http = true` under Fake" in state["assistant"]["error"]
+    assert state["assistant"]["key_held"] is True and "Settings → AI providers → Fake" in state["assistant"]["error"]
     prov.key_over_http = True
     assert "key_held" not in engine.snapshot()["assistant"] and engine.ready
     creds.delete_secret("provider", "Fake")
@@ -240,7 +242,7 @@ async def test_the_window_is_told_a_stored_key_is_held_back_and_why(env):
 
 async def test_a_held_keys_way_out_through_the_window_does_what_its_words_say(env):
     """The words say pasting the key in Settings puts the assistant back on NanoGPT's own address (Engine.quick_setup,
-    what Settings → API key calls): it does, and the key is sent there; the changed address is left behind. They used
+    what the setup key field calls): it does, and the key is sent there; the changed address is left behind. They used
     to say it entered the key again "for" the new address, which the window can't do."""
     from davibemanager.config import NANOGPT_BASE_URL, Provider
     from davibemanager.models import key_problem_for

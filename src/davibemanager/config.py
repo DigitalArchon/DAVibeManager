@@ -29,6 +29,27 @@ from .netpolicy import origin, without_password
 
 NANOGPT_BASE_URL = "https://nano-gpt.com/api/v1"
 ANTHROPIC_BASE_URL = "https://api.anthropic.com"
+# Tinfoil's own API: every request to it is sealed on this computer to the attested router it reaches (SealedLore's
+# providers/tinfoil_direct.py), and its key goes to TINFOIL_KEY_ORIGIN alone
+TINFOIL_BASE_URL = "https://inference.tinfoil.sh/v1"
+TINFOIL_KEY_ORIGIN = "https://inference.tinfoil.sh:443"
+# Chutes: its OpenAI-compatible API, its own open-source proxy speaking Anthropic's Messages API (claude.chutes.ai,
+# which hands each request on to the OpenAI-compatible one), and the API its end-to-end encryption goes through. A
+# Chutes endpoint offers every model Chutes lists: its -TEE ones are always sent end-to-end encrypted, never in the
+# clear (chutes_tee), the others as any provider's (SealedLore's D7 as replaced, Nov 15 2026)
+CHUTES_BASE_URL = "https://llm.chutes.ai/v1"
+CHUTES_ANTHROPIC_URL = "https://claude.chutes.ai"
+CHUTES_E2EE_ORIGIN = "https://api.chutes.ai:443"
+# Chutes' own hosts, a fixed list: a key entered for one of them goes to any of them, over https, and nowhere else (the
+# one stated exception to "a key goes only to the origin it was entered for": the cross-app standard, Nov 15 2026)
+CHUTES_KEY_ORIGINS = frozenset({"https://llm.chutes.ai:443", "https://api.chutes.ai:443", "https://claude.chutes.ai:443"})
+CHUTES_DOMAINS = ("chutes.ai", "chutes.dev")
+# what a provider's chat endpoint speaks (Provider.chat_api): "auto" reads it from the address (chat_api_of). "tinfoil"
+# seals every request; an endpoint on a host SEALED_HOSTS names speaks it whatever the field says: when in doubt,
+# sealed (a plain request there would carry the text in the clear)
+CHAT_APIS = ("auto", "openai", "tinfoil")
+SEALED_APIS = frozenset({"tinfoil"})
+SEALED_HOSTS = {"tinfoil.sh": "tinfoil"}
 APP_ID = "davibemanager"
 # NanoGPT models. The defaults are GLM 5.3, routed by NanoGPT (included in a NanoGPT subscription);
 # GLM 5.3 can't see images, GLM 5.3 Flash can and is fast
@@ -103,19 +124,178 @@ class Provider:
     # (models.key_problem_for). Never set for one already sending its key so before this was asked: it is held back
     # until the line is added (the author, Nov 14 2026: nothing is grandfathered)
     key_over_http: bool = False
+    # the origins the user said No to sending the saved key to (Settings asks once for an address changed without a
+    # new key, No the default): not asked again at each save, until they ask (the cross-app standard, Nov 2026)
+    key_declined: list[str] = field(default_factory=list)
+    # what its chat endpoint speaks: "auto" (from the address), "openai" or "tinfoil" (CHAT_APIS). Never less than its
+    # address says: a host of Tinfoil's is sealed whatever this is (sealed_service)
+    chat_api: str = "auto"
 
     def origins(self) -> list[str]:
         """The origins its key would go to now: its chat endpoint's and the assistant's."""
         return sorted({origin(url) for url in (self.base_url, self.builder_url) if url} - {""})
 
+    def sealed_service(self) -> str:
+        """The end-to-end encrypted protocol every request to its chat endpoint must be sealed in ("tinfoil"), or ""."""
+        return sealed_service(self.base_url, self.chat_api)
+
+    def service(self) -> str:
+        """Which service it is, as its addresses say (service_of)."""
+        return service_of(self)
+
+
+def _host_of(url: str) -> str:
+    """An address's host as a request would reach it: lowercased, a trailing dot gone ("inference.tinfoil.sh." is the
+    same machine)."""
+    try:
+        return (urlparse(str(url or "").strip()).hostname or "").lower().rstrip(".")
+    except ValueError:
+        return ""
+
+
+def _under(host: str, domain: str) -> bool:
+    return host == domain or host.endswith("." + domain)
+
+
+def sealed_service(base_url: str, api: str = "auto") -> str:
+    """The end-to-end encrypted protocol a chat endpoint must be spoken in ("tinfoil"), or "": the one `api` names, else
+    the one its host is known for, whatever `api` says. When in doubt, sealed: an endpoint set to "openai" on Tinfoil's
+    host is still Tinfoil's (SealedLore's models/config.py)."""
+    if api in SEALED_APIS:
+        return api
+    host = _host_of(base_url)
+    return next((name for domain, name in SEALED_HOSTS.items() if _under(host, domain)), "")
+
+
+def chat_api_of(p: Provider) -> str:
+    """What `p`'s chat endpoint speaks: a sealed protocol where its field or its host says so, else "openai"."""
+    return sealed_service(p.base_url, p.chat_api) or "openai"
+
+
+def on_chutes(url: str) -> bool:
+    """Whether `url` is on one of Chutes' hosts (chutes.ai, chutes.dev, any host under them)."""
+    host = _host_of(url)
+    return any(_under(host, domain) for domain in CHUTES_DOMAINS)
+
+
+def is_tee_id(model: str) -> bool:
+    """Whether a model id names one of Chutes' TEE models: it ends "-TEE", in any case and whatever stray spaces, less
+    a ":variant" after it ("Qwen/Qwen3-32B-TEE:THINKING"). Read generously, every ":" taken as where a variant might
+    begin: a TEE model judged ordinary would be sent in the clear (SealedLore's is_tee_id)."""
+    bare = str(model or "").strip()
+    pieces = [bare] + [bare[:at] for at, char in enumerate(bare) if char == ":"]
+    return any(piece.strip().upper().endswith("-TEE") for piece in pieces)
+
+
+def chutes_tee(model: str, url: str) -> bool:
+    """Whether `model` at `url` is one of Chutes' TEE models: always sent end-to-end encrypted to an attested Chutes
+    instance, never in the clear, whatever the endpoint speaks."""
+    return on_chutes(url) and is_tee_id(model)
+
+
+def service_of(p: Provider) -> str:
+    """Which service a provider is, as its addresses say, whatever button added it (an address typed, or one an
+    older config.toml had): "nanogpt", "anthropic", "tinfoil", "chutes", or "" for any other. What its key, its
+    sealing and its model presets follow."""
+    if p.sealed_service():
+        return p.sealed_service()
+    hosts = {_host_of(u) for u in (p.base_url, p.builder_url) if u}
+    if any(_under(h, "nano-gpt.com") for h in hosts):
+        return "nanogpt"
+    if any(on_chutes(u) for u in (p.base_url, p.builder_url) if u):
+        return "chutes"
+    if any(_under(h, "anthropic.com") for h in hosts):
+        return "anthropic"
+    return ""
+
+
+def model_sealing(p: Provider, model: str) -> str:
+    """How a request for `model` on `p` must be sealed: "nanogpt-private" (a private/ model: NanoGPT's Private Mode),
+    "tinfoil" (any model on a Tinfoil endpoint), "chutes" (a Chutes -TEE model), or "" for one sent as it is. Never
+    less than the addresses say: when in doubt, sealed."""
+    if str(model or "").strip().lower().startswith("private/"):
+        return "nanogpt-private"
+    if p.sealed_service():
+        return p.sealed_service()
+    if any(chutes_tee(model, u) for u in (p.base_url, p.builder_url) if u):
+        return "chutes"
+    return ""
+
+
+def key_reaches(key_for: list[str] | None, where: str) -> bool:
+    """Whether a key entered for `key_for` may go to the origin `where`: one of those, or, for a key entered for one of
+    Chutes' own hosts, any of them (CHUTES_KEY_ORIGINS, all https)."""
+    if key_for is None:
+        return True
+    return where in key_for or (where in CHUTES_KEY_ORIGINS and any(o in CHUTES_KEY_ORIGINS for o in key_for))
+
+
+def model_ref(value: str) -> tuple[str, str]:
+    """A setting that holds a model, "provider|model" or a bare model id (the assistant's provider): (the provider
+    named, or ""; the model id). Model ids never hold "|", and a provider's name can't (Models.save_provider)."""
+    name, bar, model = str(value or "").strip().partition("|")
+    return (name.strip(), model.strip()) if bar else ("", name)
+
+
+# The buttons Settings → AI providers adds one with (the window builds them from this): each fills in the addresses,
+# the key's header and the name; the key is then typed beside them. Recognised from its address afterwards, not from
+# the button (service_of), so a provider typed by hand is the same as one added here.
+PROVIDER_PRESETS: tuple[dict, ...] = (
+    {"id": "nanogpt", "label": "Add NanoGPT", "name": "NanoGPT", "base_url": NANOGPT_BASE_URL,
+     "builder_url": NANOGPT_BASE_URL, "builder_auth": "bearer", "chat_api": "auto", "primary": True,
+     "key_link": "https://nano-gpt.com/api",
+     "note": "Every model NanoGPT offers, for the assistant and for second opinions: GLM 5.3 (included in a NanoGPT "
+             "subscription), private models sealed end to end, TEE models and Claude."},
+    {"id": "anthropic", "label": "Add Anthropic", "name": "Anthropic", "base_url": "",
+     "builder_url": ANTHROPIC_BASE_URL, "builder_auth": "x-api-key", "chat_api": "auto",
+     "note": "Claude from Anthropic itself, for the assistant (its Claude Code speaks Anthropic's Messages API). It "
+             "has no chat endpoint here, so it can't give second opinions: they come from another provider."},
+    {"id": "openai", "label": "Add other (OpenAI-compatible)", "name": "", "base_url": "", "builder_url": "",
+     "builder_auth": "bearer", "chat_api": "openai",
+     "note": "A service that speaks OpenAI's chat completions at its own address (https://, or http:// only on this "
+             "computer and your local network). The assistant's requests are translated for it."},
+    {"id": "anthropic-compatible", "label": "Add other (Anthropic-compatible)", "name": "", "base_url": "",
+     "builder_url": "", "builder_auth": "x-api-key", "chat_api": "auto",
+     "note": "A service that speaks Anthropic's Messages API (/v1/messages) at its own address, for the assistant's "
+             "Claude models. Give it a chat address too if it has one, for other models and second opinions."},
+)
+
+# The usual choices for the assistant on each service (Settings → The assistant): each sets the assistant's models,
+# and a reviewer on the same provider where it names one. A preset is shown for a provider of its `service`
+# (service_of). `sealed`: every model of it is private, and it's only shown as chosen while all of the assistant's are.
+MODEL_PRESETS: tuple[dict, ...] = (
+    {"id": "glm", "service": "nanogpt", "label": "GLM 5.3",
+     "note": "Included with a NanoGPT subscription. Screenshots are described to it by GLM 5.3 Flash.",
+     "settings": {"builder_model": DEFAULT_MODEL, "builder_small_model": DEFAULT_FAST_MODEL,
+                  "builder_vision_model": DEFAULT_FAST_MODEL}},
+    {"id": "private", "service": "nanogpt", "label": "Private GLM 5.3", "sealed": True,
+     "note": "End-to-end encrypted: only an attested enclave can read what it sees, its quick tasks and second "
+             "opinions too. Screenshots are described to it by private DeepSeek V4.1 Flash, sealed the same way. Paid "
+             "per use.",
+     "settings": {"builder_model": PRIVATE_MODEL, "builder_small_model": "",
+                  "builder_vision_model": "private/deepseek-v4-1-flash"},
+     "review_model": PRIVATE_MODEL},
+    {"id": "claude", "service": "nanogpt", "label": "Claude Opus 5.5",
+     "note": "The strongest, especially for building apps. Paid per use; NanoGPT passes what it sees to Anthropic.",
+     "settings": {"builder_model": CLAUDE_MODEL, "builder_small_model": ""}},
+    {"id": "anthropic-opus", "service": "anthropic", "label": "Claude Opus 5.5",
+     "note": "The strongest, especially for building apps, from Anthropic itself. Paid per use.",
+     "settings": {"builder_model": "claude-opus-5-5", "builder_small_model": "", "builder_vision_model": ""}},
+)
+
 
 def provider_defaults(p: Provider) -> Provider:
-    """Fill in the builder endpoint for the providers we know."""
+    """Fill in the builder endpoint for the providers we know: NanoGPT serves Anthropic's Messages API on its chat
+    base, Anthropic itself at api.anthropic.com (its key in x-api-key), and Chutes through its own proxy at
+    claude.chutes.ai (its key as a bearer token). A Tinfoil endpoint has none: its every request is sealed, so the
+    assistant's go through the app's translation (gateway.py) and are sealed with the rest."""
     host = (urlparse(p.base_url or p.builder_url).hostname or "").lower()
     if host in ("nano-gpt.com", "api.nano-gpt.com") and not p.builder_url:
         p.builder_url, p.builder_auth = p.base_url, "bearer"
     elif host == "api.anthropic.com" and not p.builder_url:
         p.builder_url, p.builder_auth = ANTHROPIC_BASE_URL, "x-api-key"
+    elif p.base_url and on_chutes(p.base_url) and not p.builder_url:
+        p.builder_url, p.builder_auth = CHUTES_ANTHROPIC_URL, "bearer"
     return p
 
 
@@ -265,6 +445,9 @@ def from_dict(data: dict) -> Config:
     cfg.settings = _build(Settings, settings)
     if cfg.settings.builder_context not in CONTEXTS or isinstance(cfg.settings.builder_context, bool):
         cfg.settings.builder_context = CONTEXTS[0]      # a hand-edited size Settings doesn't offer
+    for p in cfg.providers:
+        if p.chat_api not in CHAT_APIS:
+            p.chat_api = "auto"         # a hand-edited protocol there's no client for: read from the address again
     if cfg.settings.builder_reasoning not in BUILDER_EFFORTS:
         cfg.settings.builder_reasoning = BUILDER_EFFORT  # likewise a level ("xhigh", "none")
     apply_search_default(cfg.settings)
