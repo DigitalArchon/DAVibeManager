@@ -543,28 +543,32 @@ class Engine:
                     "container_cpus", "install_dir", "ui_mode")
 
     def _privacy_settings_check(self, chosen: dict) -> None:
-        """The assistant's models, vision helper and reviewer as about to be saved: how private the assistant would
-        be, and what is given what it is given, each at its level or higher (the three levels, llm/privacy.py: a chat
-        moves only to a model at its own level or higher, on any service)."""
+        """The assistant's models, vision helper and reviewer as about to be saved: every model that gets what the
+        assistant's chat holds at the assistant's level or higher (the three levels, llm/privacy.py: a chat moves only
+        to a model at its own level or higher, on any service). Refused in words naming the helper and both levels."""
         asst = self.cfg.provider(chosen["builder_provider"])
-        kept = self.models.privacy(asst, chosen["builder_model"])
-        helpers = [(asst, chosen["builder_small_model"])]
+        main = chosen["builder_model"]
+        kept = self.models.privacy(asst, main)
+        if not kept.private:
+            return
         vname, vmodel = config_mod.model_ref(chosen["builder_vision_model"])
-        if vmodel:
-            helpers.append((self.cfg.provider(vname) if vname else asst, vmodel))
-        for prov, model in helpers:
-            if model and privacy_mod.rank(self.models.privacy(prov, model)) < privacy_mod.rank(kept):
-                raise UserError(
-                    f"With a private model ({privacy_mod.level_phrase(kept)}), the models for quick tasks and for images "
-                    "must be private too, at that level or higher (or empty, to use the same one): what the assistant "
-                    f"is given would otherwise go to them with less. {privacy_mod.move_note(kept, 'The assistant')}.")
         rname, rmodel = config_mod.model_ref(chosen["review_model"])
-        if rmodel and kept.private and privacy_mod.rank(
-                self.models.privacy(self.cfg.provider(rname), rmodel)) < privacy_mod.rank(kept):
-            raise UserError(
-                f"With a private model ({privacy_mod.level_phrase(kept)}), the reviewer must be private too, at that "
-                "level or higher: second opinions read the commands your private chats propose. Choose such a "
-                "reviewer first (Second opinions), or pick a private preset, which sets one.")
+        helpers = [("The model for quick tasks", asst, chosen["builder_small_model"],
+                    "With a private model, the models for quick tasks and for images must be private too",
+                    "(or empty, to use the same one)"),
+                   ("The model that describes pictures", self.cfg.provider(vname) if vname else asst, vmodel,
+                    "With a private model, the models for quick tasks and for images must be private too",
+                    "(or empty, for none)"),
+                   ("The reviewer", self.cfg.provider(rname), rmodel,
+                    "With a private model, the reviewer must be private too: second opinions read the commands your "
+                    "private chats propose", "(Second opinions)")]
+        for helper, prov, model, rule, way in helpers:
+            found = self.models.privacy(prov, model)
+            if model and privacy_mod.rank(found) < privacy_mod.rank(kept):
+                raise UserError(f"{helper}, {model}, has {privacy_mod.level_phrase(found)}, and the assistant's model, "
+                                f"{main}, has {privacy_mod.level_phrase(kept)}: what the assistant is given would go to it "
+                                f"with less, so it isn't saved. {rule}, at that level or higher {way}: "
+                                f"{privacy_mod.LEVEL_CHOICES[kept.level]}.")
 
     def save_settings(self, data: dict) -> None:
         s = self.cfg.settings
@@ -1173,6 +1177,8 @@ class Engine:
     def _chat_privacy(self) -> privacy_mod.Privacy:
         """How private this chat was made: its record (llm/privacy.py record_of), or for one from before Nov 2026 that
         ran sealed, NanoGPT's Private Mode."""
+        if self.conv is None:
+            return privacy_mod.NONE
         held = privacy_mod.held(self.conv.privacy)
         if self.conv.sealed and not held.sealed:
             return privacy_mod.more_private(held, privacy_mod.Privacy("sealed", privacy_mod.NANOGPT_PRIVATE))
@@ -2137,7 +2143,8 @@ class Engine:
         sealed = any(self.models.privacy(prov, m).sealed for m in (model, small))
         chat = (lambda m: self.models.client(prov, m)) if prov.base_url or sealed else None
         vprov, vision = self.models.vision_target()      # on the provider its setting names, else the assistant's
-        if vision and privacy_mod.rank(self.models.privacy(vprov, vision)) < privacy_mod.rank(self.models.privacy(prov, model)):
+        floor = privacy_mod.more_private(self.models.privacy(prov, model), self._chat_privacy())
+        if vision and privacy_mod.rank(self.models.privacy(vprov, vision)) < privacy_mod.rank(floor):
             vision = ""                         # what it's shown would go to it with less privacy: none at all
         return Upstream(base_url=prov.builder_url, auth=prov.builder_auth, key=lambda: self.models.key(prov),
                         models=(model, small), provider=prov.name, tier=tier, chat=chat,
@@ -2153,10 +2160,13 @@ class Engine:
         prov, model = self.models.vision_target()
         if prov is None or not model:
             raise UserError("No model is set to describe pictures (Settings → The assistant).")
-        kept, found = self.models.privacy(aprov, main), self.models.privacy(prov, model)
+        # this chat's own level too: what it ran on before is what its pictures are kept to
+        kept = privacy_mod.more_private(self.models.privacy(aprov, main), self._chat_privacy())
+        found = self.models.privacy(prov, model)
         if privacy_mod.rank(found) < privacy_mod.rank(kept):
-            raise UserError(f"{model} isn't private enough ({privacy_mod.level_phrase(found)}), and the assistant's "
-                            f"model has {privacy_mod.level_phrase(kept)}: the picture isn't sent to it.")
+            raise UserError(f"The model that describes pictures, {model}, isn't private enough: it has "
+                            f"{privacy_mod.level_phrase(found)}, and this chat has {privacy_mod.level_phrase(kept)}. "
+                            "The picture isn't sent to it.")
         messages = [{"role": "system", "content": anthropic_bridge.VISION_PROMPT},
                     {"role": "user", "content": [
                         {"type": "text", "text": "What the assistant is doing: " + (context.strip() or "(not said)")},

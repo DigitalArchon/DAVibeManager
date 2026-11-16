@@ -2049,16 +2049,38 @@ function privacyChip(x) {
   return x.tier === "e2ee" ? h("span", { class: "chip private" }, "private") : x.tier === "tee" ? h("span", { class: "chip" }, "TEE") : null;
 }
 
-function pickModel(title, provider, onPick) {
+// the three levels (llm/privacy.py), ranked: a helper of the assistant's chat is at its level or higher
+const LEVEL_RANK = { highest: 2, partial: 1, none: 0 };
+const LEVEL_WORDS = { highest: "the highest privacy", partial: "partial privacy", none: "no privacy" };
+const levelOf = (x) => x.privacy?.level || (x.tier === "e2ee" ? "highest" : x.tier === "tee" ? "partial" : "none");
+// a chat's record (Conversation.privacy, privacy.record_of) as its level
+const recordLevel = (r) => r?.kind === "sealed" ? (r.service === "chutes" ? "partial" : "highest") : r?.kind === "tee" ? "partial" : "none";
+// the level every model given the assistant's chat must keep (its quick tasks, its pictures, its reviewer): the
+// assistant's, or the open chat's where that is higher
+function helperFloor(st) {
+  const s = st.config.settings;
+  const asst = st.assistant?.privacy?.level || (/^\s*private\//i.test(s.builder_model || "") ? "highest" : /(^|\/)tee\//i.test(s.builder_model || "") ? "partial" : "none");
+  const chat = st.conversation ? recordLevel(st.conversation.privacy || (st.conversation.sealed ? { kind: "sealed" } : null)) : "none";
+  return LEVEL_RANK[chat] > LEVEL_RANK[asst] ? chat : asst;
+}
+
+// `floor`: models less private than it are shown greyed and can't be picked (the server refuses them too)
+function pickModel(title, provider, onPick, floor = "") {
   const listEl = h("div", {}, h("div", { class: "muted" }, "Loading…"));
   const search = h("input", { type: "text", placeholder: "Filter… (opus, private, glm)", style: "width:100%;margin-bottom:6px" });
   let models = [];
   let m;
   const draw = () => {
     const q = search.value.trim().toLowerCase();
-    listEl.replaceChildren(...models.filter((x) => !q || x.id.toLowerCase().includes(q)).slice(0, 300).map((x) =>
-      h("div", { class: "list-item", style: "cursor:pointer", onclick: () => guarded(async () => { await onPick(x.id); m.close(); }) },
-        h("div", { class: "grow mono" }, x.id), privacyChip(x))));
+    listEl.replaceChildren(...models.filter((x) => !q || x.id.toLowerCase().includes(q)).slice(0, 300).map((x) => {
+      const below = floor && LEVEL_RANK[levelOf(x)] < LEVEL_RANK[floor];
+      return below
+        ? h("div", { class: "list-item refused", style: "opacity:.45;cursor:not-allowed", "aria-disabled": "true",
+            title: `${x.id} has ${LEVEL_WORDS[levelOf(x)]}, and the assistant's chat has ${LEVEL_WORDS[floor]}: it would be given it with less, so it can't be chosen here.` },
+          h("div", { class: "grow mono" }, x.id), privacyChip(x))
+        : h("div", { class: "list-item", style: "cursor:pointer", onclick: () => guarded(async () => { await onPick(x.id); m.close(); }) },
+          h("div", { class: "grow mono" }, x.id), privacyChip(x));
+    }));
   };
   search.addEventListener("input", draw);
   const levels = S.state.presets?.privacy_levels;
@@ -2697,13 +2719,13 @@ function providerDialog(p) {
 
 // A model on any of the user's providers with a chat address: the provider chosen first where there are several
 // (the reviewer and the vision helper name theirs: "provider|model")
-function pickProviderModel(title, current, onPick) {
+function pickProviderModel(title, current, onPick, floor = "") {
   const provs = S.state.config.providers.filter((p) => p.base_url);
   if (!provs.length) { toast("Add a provider with a chat address first (Settings → AI providers).", "error"); return; }
-  if (provs.length === 1) { pickModel(title, provs[0].name, (id) => onPick(provs[0].name, id)); return; }
+  if (provs.length === 1) { pickModel(title, provs[0].name, (id) => onPick(provs[0].name, id), floor); return; }
   const want = provs.find((p) => p.name === current) || provs[0];
   modal({ title, body: h("div", { class: "list" }, provs.map((p) => h("div", { class: "list-item", style: "cursor:pointer",
-      onclick: () => { $("#modal-root").lastElementChild?._close?.(); pickModel(title, p.name, (id) => onPick(p.name, id)); } },
+      onclick: () => { $("#modal-root").lastElementChild?._close?.(); pickModel(title, p.name, (id) => onPick(p.name, id), floor); } },
     h("div", { class: "grow" }, h("b", {}, p.name), " ", h("span", { class: "chip" }, providerKind(p))),
     p === want ? h("span", { class: "small muted" }, "now") : null))), buttons: [{ label: "Cancel" }] });
 }
@@ -2726,12 +2748,13 @@ function settingsPanel() {
   const allPrivate = isPrivate(s.builder_model) && [s.builder_small_model, s.builder_vision_model].every((m) => !m || isPrivate(m));
   const presets = assistantPresets(st, asst);
   const preset = presets.find((x) => x.settings.builder_model === s.builder_model && (!x.sealed || allPrivate))?.id || "custom";
-  const pickInto = (input, title) => asst?.base_url ? h("button", { class: "small", onclick: () => pickModel(title, asst.name, async (id) => { input.value = id; }) }, "Choose…") : null;
+  const floor = helperFloor(st);       // the quick-task, picture and reviewer models are at its level or higher
+  const pickInto = (input, title, keep = "") => asst?.base_url ? h("button", { class: "small", onclick: () => pickModel(title, asst.name, async (id) => { input.value = id; }, keep) }, "Choose…") : null;
   const pickVision = h("button", { class: "small", onclick: () => pickProviderModel("Vision helper", bare(s.builder_vision_model) ? (s.builder_vision_model.split("|")[0] || asst?.name) : asst?.name,
-    async (prov, id) => { vision.value = prov === asst?.name ? id : `${prov}|${id}`; }) }, "Choose…");
+    async (prov, id) => { vision.value = prov === asst?.name ? id : `${prov}|${id}`; }, floor) }, "Choose…");
   const customBox = h("div", { class: preset === "custom" ? "" : "hidden" },
     h("div", { class: "field" }, h("span", {}, "Model"), h("div", { class: "row" }, model, pickInto(model, "The assistant's model"))),
-    h("div", { class: "field" }, h("span", {}, "For quick background tasks"), h("div", { class: "row" }, small, pickInto(small, "Quick tasks"))),
+    h("div", { class: "field" }, h("span", {}, "For quick background tasks"), h("div", { class: "row" }, small, pickInto(small, "Quick tasks", floor))),
     h("div", { class: "field" }, h("span", {}, "Describes images to models that can't see (on any of your providers)"), h("div", { class: "row" }, vision, pickVision)),
     h("button", { class: "small", onclick: () => save({ builder_model: model.value.trim(), builder_small_model: small.value.trim(), builder_vision_model: vision.value.trim() }) }, "Save"));
   const [reviewProv, reviewer] = s.review_model && s.review_model.includes("|") ? [s.review_model.split("|")[0], bare(s.review_model)] : ["", ""];
@@ -2760,7 +2783,7 @@ function settingsPanel() {
       h("div", { class: "row small" }, "Reviewer: ", h("span", { class: "mono" }, reviewer || "not set"), reviewProv ? h("span", { class: "muted" }, `on ${reviewProv}`) : null,
         isPrivate(reviewer) ? h("span", { class: "chip private" }, "private") : null,
         st.config.providers.some((p) => p.base_url) ? h("button", { class: "small", onclick: () => pickProviderModel("Reviewer", reviewProv,
-          (prov, id) => api("POST", "/api/settings", { review_model: `${prov}|${id}` })) }, "Change") : null)),
+          (prov, id) => api("POST", "/api/settings", { review_model: `${prov}|${id}` }), floor) }, "Change") : null)),
     providersSettings(st),
     h("div", { class: "section" }, h("h3", {}, "The assistant"),
       h("div", { class: "small muted" }, asst ? `The AI you talk to. It works in its sandbox, through ${asst.name}. ${presets.length ? "These are the usual choices; any of its models works (Something else)." : "Choose its model (Something else)."}`

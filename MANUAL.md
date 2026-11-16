@@ -81,7 +81,8 @@ The model lists show each model's level of privacy: **highest** (NanoGPT's `priv
 Tinfoil's), **partial** (NanoGPT's `TEE/` models and Chutes' `-TEE` ones) or **not private**. A chat
 moves only to a model at its own level or higher: one begun on a private model can't go on with a
 Chutes `-TEE` model, or one begun on a `TEE/` model with an ordinary one; start a new chat for that.
-The assistant's quick-task and picture models, and the reviewer, must be at its level or higher too.
+The assistant's quick-task and picture models, and the reviewer, must be at its level or higher too
+(and at the chat's): their pickers grey the ones that aren't.
 
 **Settings → The assistant → Runs on** chooses the assistant's provider, and below it are that
 provider's usual models (GLM 5.3, private GLM 5.3 and Claude Opus 5.5 on NanoGPT; Claude Opus 5.5 on

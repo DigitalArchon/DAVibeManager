@@ -275,3 +275,34 @@ test("Tinfoil's and Chutes' usual models, and a model's privacy leading its line
 }, { "GET /api/models": { models: [
   { id: "moonshotai/Kimi-K3-TEE", tier: "e2ee", privacy: { kind: "sealed", service: "chutes", level: "partial", level_words: "Partial privacy", note: "n" } },
   { id: "zai-org/GLM-5.3", tier: "standard", privacy: { kind: "", service: "", level: "none", level_words: "Not private", note: "Chutes reads this model's text" } }] } }));
+
+test("the helpers' pickers grey every model less private than the assistant's chat, and it can't be picked", { skip }, () => withPage(async (page) => {
+  const tinfoil = { name: "Tinfoil", base_url: "https://inference.tinfoil.sh/v1", builder_url: "", has_key: true, service: "tinfoil" };
+  const state = stateWith([tinfoil], { builder_provider: "Tinfoil", builder_model: "glm-5-3", review_model: "Tinfoil|glm-5-3" });
+  state.assistant = { provider: "Tinfoil", model: "glm-5-3", privacy: { kind: "sealed", service: "tinfoil", level: "highest", level_words: "Highest privacy" } };
+  await openSettings(page, state);
+  const panel = page.d.querySelector("#panel-body");
+  const change = buttons(panel).find((b) => b.textContent === "Change" && b.closest(".row")?.textContent.startsWith("Reviewer"));
+  change.click();
+  await settle(page);
+  const picker = top(page);
+  const rows = [...picker.querySelectorAll(".list-item")];
+  assert.deepEqual(rows.map((r) => [r.querySelector(".mono").textContent, r.classList.contains("refused")]),
+    [["glm-5-3", false], ["plain-model", true]]);
+  assert.match(rows[1].title, /plain-model has no privacy, and the assistant's chat has the highest privacy/);
+  rows[1].click();
+  await settle(page);
+  assert.deepEqual(posts(page, "/api/settings"), []);
+  rows[0].click();
+  await settle(page);
+  assert.deepEqual(posts(page, "/api/settings"), [{ review_model: "Tinfoil|glm-5-3" }]);
+  // the open chat's own level counts too: a chat that ran sealed, the assistant since made plain
+  const chat = stateWith([tinfoil], { builder_provider: "Tinfoil", builder_model: "plain" });
+  chat.assistant = { privacy: { kind: "", level: "none", level_words: "Not private" } };
+  chat.conversation = { ...(chat.conversation || {}), privacy: { kind: "sealed", service: "tinfoil" } };
+  assert.equal(page.run(`helperFloor(${JSON.stringify(chat)})`), "highest");
+  chat.conversation.privacy = { kind: "sealed", service: "chutes" };
+  assert.equal(page.run(`helperFloor(${JSON.stringify(chat)})`), "partial");
+}, { "GET /api/models": { models: [
+  { id: "glm-5-3", tier: "e2ee", privacy: { kind: "sealed", service: "tinfoil", level: "highest", level_words: "Highest privacy", note: "" } },
+  { id: "plain-model", tier: "standard", privacy: { kind: "", service: "", level: "none", level_words: "Not private", note: "" } }] } }));

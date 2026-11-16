@@ -211,3 +211,69 @@ def test_each_sealed_attestation_is_logged_and_chutes_partial_one_said_once():
     toasts = [k for a, k in events if a == ("toast",)]
     assert len(logged) == 2 and logged[0]["provider"] == "Chutes" and logged[0]["level"] == "partial"
     assert len(toasts) == 1 and "partially (preliminary)" in toasts[0]["text"] and json.dumps(toasts[0]["detail"])
+
+
+# --- every model given what a chat holds is at its level or higher (Toolkit's review, Nov 16 2026) -----------------
+
+TINFOIL_CHAT = {"kind": "sealed", "service": "tinfoil", "origin": "https://inference.tinfoil.sh:443"}
+
+
+def _on_tinfoil(engine):
+    s = engine.cfg.settings
+    s.builder_provider, s.builder_model, s.builder_small_model, s.builder_vision_model = "Tinfoil", "glm-5-3", "", ""
+    s.review_model = "Tinfoil|glm-5-3"
+
+
+async def test_the_quick_tasks_model_is_held_to_the_assistants_level(sealed_env, tmp_path):
+    """In Settings, named with both levels; and in the gateway, where Claude Code's quick tasks and its compaction
+    (summaries of the chat) go: a model less private than the assistant's is never sent the chat."""
+    from davibemanager.gateway import Upstream
+    engine = sealed_env
+    s = engine.cfg.settings
+    s.builder_model, s.review_model = "private/glm-5-3", "Fake|private/glm-5-3"
+    with pytest.raises(UserError, match=r"The model for quick tasks, z-ai/glm-5.3-flash, has no privacy, and the "
+                                        r"assistant's model, private/glm-5-3, has the highest privacy"):
+        engine.save_settings({"builder_small_model": "z-ai/glm-5.3-flash"})
+    tinfoil = engine.cfg.provider("Tinfoil")
+    sent = []
+    up = Upstream("", "bearer", lambda: "sk-test-12345678", ("glm-5-3", "plain-small"), provider="Tinfoil",
+                  privacy=lambda m: config.privacy_of(tinfoil, m) if m == "glm-5-3" else privacy.NONE)
+    g = _gateway(tmp_path, up, sent)
+    await g.start()
+    try:
+        r = await _post(g, "plain-small")
+    finally:
+        await g.stop()
+    assert r.status_code == 403 and "plain-small (no privacy)" in r.text and "the highest privacy" in r.text and sent == []
+
+
+async def test_the_picture_helper_is_held_to_the_assistants_and_the_chats_level(sealed_env):
+    engine = sealed_env
+    _on_tinfoil(engine)
+    with pytest.raises(UserError, match=r"The model that describes pictures, reviewer-model, has no privacy, and the "
+                                        r"assistant's model, glm-5-3, has the highest privacy"):
+        engine.save_settings({"builder_vision_model": "Fake|reviewer-model"})
+    with pytest.raises(UserError, match="describes pictures, moonshotai/Kimi-K3-TEE, has partial privacy"):
+        engine.save_settings({"builder_vision_model": "Chutes|moonshotai/Kimi-K3-TEE"})
+    # a chat that ran on Tinfoil, the assistant since set to a plain model (set by hand): its pictures stay at its level
+    engine.conv.privacy = TINFOIL_CHAT
+    s = engine.cfg.settings
+    s.builder_provider, s.builder_model, s.builder_vision_model, s.review_model = "Fake", "plain-model", "fake-vision", ""
+    assert engine._builder_upstream().describe is None
+    with pytest.raises(UserError, match=r"fake-vision, isn't private enough: it has no privacy, and this chat has the "
+                                        r"highest privacy"):
+        await engine._describe_image("data:image/png;base64,AAAA", "")
+
+
+async def test_the_reviewer_is_held_to_the_assistants_and_the_chats_level(sealed_env):
+    engine = sealed_env
+    _on_tinfoil(engine)
+    with pytest.raises(UserError, match=r"The reviewer, reviewer-model, has no privacy, and the assistant's model, "
+                                        r"glm-5-3, has the highest privacy.*the reviewer must be private too"):
+        engine.save_settings({"review_model": "Fake|reviewer-model"})
+    engine.conv.privacy = TINFOIL_CHAT
+    s = engine.cfg.settings
+    s.builder_provider, s.builder_model, s.review_model = "Fake", "plain-model", "Fake|reviewer-model"
+    with pytest.raises(UserError, match=r"This chat is private \(the highest privacy\), and the reviewer "
+                                        r"\(reviewer-model\) isn't, at that level \(no privacy\)"):
+        engine._private_review_check()

@@ -349,7 +349,11 @@ Chutes' `-TEE` models, encrypted all the way to a key that rests on software Chu
 private**: every other model, Chutes' others included. A chat moves only to a model at its own level
 or higher, on any service: a chat that ran on a `private/` or Tinfoil model is never carried on with
 a Chutes `-TEE` model, nor a `TEE/` one with an ordinary model; the app says so and sends nothing.
-The assistant's quick-task and picture models and the reviewer must be at its level or higher too.
+Every other model given what a chat holds is held to the same: the assistant's quick-task model, the
+model that describes its pictures, and the reviewer, at the assistant's level or the chat's, whichever
+is higher; Settings greys the ones that are less, and refuses them in words naming both levels. Claude
+Code's own requests, its summaries of the chat when it compacts it included, go only to the assistant's
+two models, and the gateway refuses one less private than the assistant's.
 Each chat keeps a note of the level it was made (in its folder, below). The model lists and Settings
 show each model's level.
 

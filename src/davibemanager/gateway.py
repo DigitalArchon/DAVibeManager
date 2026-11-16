@@ -504,7 +504,8 @@ class Gateway:
             if privacy.rank(found) < privacy.rank(kept):
                 # the assistant's model is private: everything of its chat goes at its level or higher, or not at all
                 return fail(path, 403, f"The assistant's model is private ({privacy.level_phrase(kept)}), so "
-                            f"{sent_model or 'a request without a model'} can't be used for its chat in the clear. "
+                            f"{sent_model or 'a request without a model'} ({privacy.level_phrase(found)}) can't be "
+                            "used for its chat in the clear, nor with less privacy. "
                             "Choose private models for quick tasks too (Settings), or leave them empty to use the "
                             "same one.", "permission_error", model=sent_model)
             if found.sealed:
