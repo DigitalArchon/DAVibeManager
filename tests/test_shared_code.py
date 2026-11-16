@@ -1,6 +1,7 @@
 """The code every DA app shares is one copy, byte for byte (the cross-app standard, Nov 2026): the TEE
 verifier and the Private Mode client are DA Toolkit's (src/datoolkit/llm/), and so are dcap.py, nras.py,
-ethsig.py and sdk_guard.py (the last SealedLore's too). This app's copy may differ only in its imports
+ethsig.py and sdk_guard.py (the last SealedLore's too), and the privacy levels, Tinfoil's direct client and
+Chutes' clients (privacy.py, tinfoil_direct.py, chutes_e2ee.py, chutes_client.py). This app's copy may differ only in its imports
 and in naming itself. A drift is a failing test here, not a finding of the next review: a change is made
 in DA Toolkit's copy first, then copied. Skipped where DA Toolkit's repository isn't beside this one."""
 
@@ -11,7 +12,8 @@ import pytest
 
 HERE = Path(__file__).resolve().parents[1] / "src" / "davibemanager" / "llm"
 CANONICAL = Path(__file__).resolve().parents[1].parent / "DAToolkit" / "src" / "datoolkit" / "llm"
-SHARED = ("tee.py", "private_mode.py", "dcap.py", "nras.py", "ethsig.py", "sdk_guard.py", "errors.py")
+SHARED = ("tee.py", "private_mode.py", "dcap.py", "nras.py", "ethsig.py", "sdk_guard.py", "errors.py", "privacy.py",
+          "tinfoil_direct.py", "chutes_e2ee.py", "chutes_client.py")
 
 _NAMES = re.compile(r"datoolkit|davibemanager|daprivatecoder")
 _APPS = re.compile(r"DA Toolkit|DA Vibe Manager|DA Private Coder")

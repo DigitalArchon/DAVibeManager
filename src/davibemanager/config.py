@@ -25,31 +25,28 @@ from urllib.parse import urlparse
 
 import tomli_w
 
+from .llm import privacy
 from .netpolicy import origin, without_password
 
 NANOGPT_BASE_URL = "https://nano-gpt.com/api/v1"
 ANTHROPIC_BASE_URL = "https://api.anthropic.com"
-# Tinfoil's own API: every request to it is sealed on this computer to the attested router it reaches (SealedLore's
-# providers/tinfoil_direct.py), and its key goes to TINFOIL_KEY_ORIGIN alone
-TINFOIL_BASE_URL = "https://inference.tinfoil.sh/v1"
-TINFOIL_KEY_ORIGIN = "https://inference.tinfoil.sh:443"
-# Chutes: its OpenAI-compatible API, its own open-source proxy speaking Anthropic's Messages API (claude.chutes.ai,
-# which hands each request on to the OpenAI-compatible one), and the API its end-to-end encryption goes through. A
-# Chutes endpoint offers every model Chutes lists: its -TEE ones are always sent end-to-end encrypted, never in the
-# clear (chutes_tee), the others as any provider's (SealedLore's D7 as replaced, Nov 15 2026)
-CHUTES_BASE_URL = "https://llm.chutes.ai/v1"
-CHUTES_ANTHROPIC_URL = "https://claude.chutes.ai"
-CHUTES_E2EE_ORIGIN = "https://api.chutes.ai:443"
+# The services' addresses, and which hosts and protocols are sealed, are llm/privacy.py's (DA Toolkit's copy): Tinfoil's
+# own API, where every request is sealed on this computer to its attested router and its key goes to TINFOIL_KEY_ORIGIN
+# alone; Chutes' OpenAI-compatible API, its proxy of Anthropic's Messages API (claude.chutes.ai) and the API its
+# end-to-end encryption goes through. A Chutes endpoint offers every model Chutes lists: its -TEE ones are always sent
+# end-to-end encrypted, never in the clear (chutes_tee), the others as any provider's
+TINFOIL_BASE_URL = privacy.TINFOIL_BASE_URL
+TINFOIL_KEY_ORIGIN = privacy.TINFOIL_ORIGIN
+CHUTES_BASE_URL = privacy.CHUTES_BASE_URL
+CHUTES_ANTHROPIC_URL = privacy.CHUTES_ANTHROPIC_URL
+CHUTES_E2EE_ORIGIN = privacy.key_origin(privacy.CHUTES_E2EE_ORIGIN)
 # Chutes' own hosts, a fixed list: a key entered for one of them goes to any of them, over https, and nowhere else (the
 # one stated exception to "a key goes only to the origin it was entered for": the cross-app standard, Nov 15 2026)
-CHUTES_KEY_ORIGINS = frozenset({"https://llm.chutes.ai:443", "https://api.chutes.ai:443", "https://claude.chutes.ai:443"})
-CHUTES_DOMAINS = ("chutes.ai", "chutes.dev")
+CHUTES_KEY_ORIGINS = privacy.CHUTES_KEY_ORIGINS
 # what a provider's chat endpoint speaks (Provider.chat_api): "auto" reads it from the address (chat_api_of). "tinfoil"
-# seals every request; an endpoint on a host SEALED_HOSTS names speaks it whatever the field says: when in doubt,
-# sealed (a plain request there would carry the text in the clear)
+# seals every request; an endpoint on one of Tinfoil's hosts speaks it whatever the field says: when in doubt, sealed
+# (a plain request there would carry the text in the clear)
 CHAT_APIS = ("auto", "openai", "tinfoil")
-SEALED_APIS = frozenset({"tinfoil"})
-SEALED_HOSTS = {"tinfoil.sh": "tinfoil"}
 APP_ID = "davibemanager"
 # NanoGPT models. The defaults are GLM 5.3, routed by NanoGPT (included in a NanoGPT subscription);
 # GLM 5.3 can't see images, GLM 5.3 Flash can and is fast
@@ -157,14 +154,15 @@ def _under(host: str, domain: str) -> bool:
     return host == domain or host.endswith("." + domain)
 
 
+def _api(api: str) -> str:
+    """Provider.chat_api as llm/privacy.py reads it: "auto" is its "" (from the address)."""
+    return "" if api == "auto" else api
+
+
 def sealed_service(base_url: str, api: str = "auto") -> str:
     """The end-to-end encrypted protocol a chat endpoint must be spoken in ("tinfoil"), or "": the one `api` names, else
-    the one its host is known for, whatever `api` says. When in doubt, sealed: an endpoint set to "openai" on Tinfoil's
-    host is still Tinfoil's (SealedLore's models/config.py)."""
-    if api in SEALED_APIS:
-        return api
-    host = _host_of(base_url)
-    return next((name for domain, name in SEALED_HOSTS.items() if _under(host, domain)), "")
+    the one its host is known for, whatever `api` says (privacy.sealed_service). When in doubt, sealed."""
+    return privacy.sealed_service(base_url, _api(api))
 
 
 def chat_api_of(p: Provider) -> str:
@@ -172,25 +170,9 @@ def chat_api_of(p: Provider) -> str:
     return sealed_service(p.base_url, p.chat_api) or "openai"
 
 
-def on_chutes(url: str) -> bool:
-    """Whether `url` is on one of Chutes' hosts (chutes.ai, chutes.dev, any host under them)."""
-    host = _host_of(url)
-    return any(_under(host, domain) for domain in CHUTES_DOMAINS)
-
-
-def is_tee_id(model: str) -> bool:
-    """Whether a model id names one of Chutes' TEE models: it ends "-TEE", in any case and whatever stray spaces, less
-    a ":variant" after it ("Qwen/Qwen3-32B-TEE:THINKING"). Read generously, every ":" taken as where a variant might
-    begin: a TEE model judged ordinary would be sent in the clear (SealedLore's is_tee_id)."""
-    bare = str(model or "").strip()
-    pieces = [bare] + [bare[:at] for at, char in enumerate(bare) if char == ":"]
-    return any(piece.strip().upper().endswith("-TEE") for piece in pieces)
-
-
-def chutes_tee(model: str, url: str) -> bool:
-    """Whether `model` at `url` is one of Chutes' TEE models: always sent end-to-end encrypted to an attested Chutes
-    instance, never in the clear, whatever the endpoint speaks."""
-    return on_chutes(url) and is_tee_id(model)
+on_chutes = privacy.on_chutes
+is_tee_id = privacy.is_tee_id
+chutes_tee = privacy.chutes_tee
 
 
 def service_of(p: Provider) -> str:
@@ -209,25 +191,28 @@ def service_of(p: Provider) -> str:
     return ""
 
 
+def privacy_of(p: Provider | None, model: str) -> privacy.Privacy:
+    """How private `model` is on `p` (privacy.privacy_at: kind, service, level), judged at its chat address, else the
+    assistant's; with no provider, by the id alone."""
+    if p is None:
+        return privacy.privacy_at(model)
+    return privacy.privacy_at(model, p.base_url or p.builder_url, _api(p.chat_api))
+
+
 def model_sealing(p: Provider, model: str) -> str:
     """How a request for `model` on `p` must be sealed: "nanogpt-private" (a private/ model: NanoGPT's Private Mode),
     "tinfoil" (any model on a Tinfoil endpoint), "chutes" (a Chutes -TEE model), or "" for one sent as it is. Never
     less than the addresses say: when in doubt, sealed."""
-    if str(model or "").strip().lower().startswith("private/"):
-        return "nanogpt-private"
-    if p.sealed_service():
-        return p.sealed_service()
-    if any(chutes_tee(model, u) for u in (p.base_url, p.builder_url) if u):
-        return "chutes"
-    return ""
+    found = privacy_of(p, model)
+    return found.service if found.sealed else ""
 
 
 def key_reaches(key_for: list[str] | None, where: str) -> bool:
     """Whether a key entered for `key_for` may go to the origin `where`: one of those, or, for a key entered for one of
-    Chutes' own hosts, any of them (CHUTES_KEY_ORIGINS, all https)."""
+    Chutes' own hosts, any of them (privacy.key_may_go: CHUTES_KEY_ORIGINS, all https)."""
     if key_for is None:
         return True
-    return where in key_for or (where in CHUTES_KEY_ORIGINS and any(o in CHUTES_KEY_ORIGINS for o in key_for))
+    return where in key_for or any(privacy.key_may_go(o, where) for o in key_for)
 
 
 def model_ref(value: str) -> tuple[str, str]:

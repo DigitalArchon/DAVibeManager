@@ -86,6 +86,15 @@ def origin(url) -> str:
     return f"{scheme}://{f'[{host}]' if ':' in host else host}:{port}"
 
 
+def shown_origin(kept: str) -> str:
+    """An origin (`origin`'s form) as said to the user: without its scheme's own port (DA Toolkit's
+    netguard.shown_origin; llm/privacy.py's)."""
+    for scheme, port in (("https", 443), ("http", 80)):
+        if kept.startswith(f"{scheme}://") and kept.endswith(f":{port}"):
+            return kept[: -len(f":{port}")]
+    return kept
+
+
 def without_password(url) -> str:
     """`url` with the user name and password written into it taken out, as shown() does but leaving an
     address, not a placeholder, where they were: what config.toml keeps of an address whose password is in

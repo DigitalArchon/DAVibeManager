@@ -107,13 +107,16 @@ class PrivateModeError(Exception):
 
 
 class ModelRetired(PrivateModeError):
-    """NanoGPT no longer offers this Private Mode model, so nothing was sent to it. `offered`:
-    the private/ models the relay's list does have, to choose from instead."""
+    """NanoGPT no longer offers this Private Mode model (or Tinfoil this model: `service`,
+    llm/tinfoil_direct.py), so nothing was sent to it. `offered`: the models the service's list
+    does have, to choose from instead."""
 
-    def __init__(self, model: str, offered: list[str] = (), status_code: int | None = None, body: str = ""):
-        super().__init__(f"{model} is no longer offered by NanoGPT's Private Mode; "
+    def __init__(self, model: str, offered: list[str] = (), status_code: int | None = None, body: str = "",
+                 *, service: str = "NanoGPT's Private Mode"):
+        super().__init__(f"{model} is no longer offered by {service}; "
                          f"choose another end-to-end encrypted model", status_code, body)
         self.model = model
+        self.service = service
         self.offered = [m for m in offered if m != model]
 
 
@@ -172,6 +175,25 @@ class Attestation:
     latest_checked: bool
     hpke_key_sha256: str
     verified_at: float
+    # Who carried it: "nanogpt-private" (NanoGPT's relay), or "tinfoil" (Tinfoil's own API,
+    # llm/tinfoil_direct.py, whose connection is pinned to the attested TLS key)
+    service: str = "nanogpt-private"
+
+    @property
+    def what(self) -> str:
+        """What was attested, and what is someone's word, plainly (SealedLore's words for Tinfoil
+        direct): "" for NanoGPT's relay, whose words the app says itself."""
+        if self.service != "tinfoil":
+            return ""
+        release = self.release_tag or f"release {self.release_digest[:12]}"
+        older = (f" (an older release than the latest, {self.latest_release})" if self.latest_release
+                 else "")
+        return (f"Attested: Tinfoil's router enclave at {self.enclave}, running {ROUTER_REPO} {release}{older}, "
+                f"a Sigstore-attested build of its public source, measured by {self.hardware or 'its hardware'}. "
+                "Your text is sealed on this computer to that enclave's key, over a connection pinned to its "
+                "attested TLS key. Tinfoil sees your account, the model, timing, sizes and cost, never the "
+                "text. That the router hands your request only to attested model enclaves is the router's "
+                "published code, not checked by DA Vibe Manager.")
 
     @property
     def summary(self) -> str:
@@ -185,7 +207,7 @@ class Attestation:
         return f"{self.enclave} runs {ROUTER_REPO} {release} ({currency}), measured by {self.hardware}"
 
     def to_dict(self) -> dict:
-        return {**asdict(self), "summary": self.summary}
+        return {**asdict(self), "summary": self.summary, "what": self.what}
 
 
 @dataclass(frozen=True)
@@ -193,6 +215,9 @@ class Verified:
     hpke_public_key: str
     enclave: str
     attestation: Attestation
+    # The sha256 of the enclave's TLS key (its SubjectPublicKeyInfo, DER, in lowercase hex), as the
+    # attestation binds it: what a direct connection pins to (llm/tinfoil_direct.py TlsPin)
+    tls_public_key: str = ""
 
 
 def _hardware(document: dict) -> str:
@@ -204,19 +229,24 @@ def _hardware(document: dict) -> str:
     return kind
 
 
-def tinfoil_verify(relay: str, cache_secret: str) -> Verified:
-    """Attest Tinfoil's router through NanoGPT's relay. Blocking network I/O: run in a thread.
-    The SDK's own fetches (the release and its Sigstore bundle, AMD's and Intel's collateral)
-    follow no redirect off https, nor one from the internet into this network, nor one to an
-    address the app wouldn't use (netguard.check), and read a reply only so far (llm/sdk_guard.py)."""
+def tinfoil_verify(relay: str, cache_secret: str, *, base_url: str | None = None, enclave: str = "",
+                   service: str = "nanogpt-private") -> Verified:
+    """Attest Tinfoil's router from the attestation bundle `relay` serves: NanoGPT's relay, or
+    Tinfoil's own bundle service (llm/tinfoil_direct.py: `base_url` its API, `enclave` the host whose
+    bundle to ask for, `service` "tinfoil"). Never a router looked up by the SDK (its
+    get_router_address fetches with plain urllib, outside the guard): a bundle names its enclave.
+    Blocking network I/O: run in a thread. The SDK's own fetches (the release and its Sigstore
+    bundle, AMD's and Intel's collateral) follow no redirect off https, nor one from the internet
+    into this network, nor one to an address the app wouldn't use (netguard.check), and read a
+    reply only so far (llm/sdk_guard.py)."""
     from tinfoil import SecureClient
     from tinfoil.github import fetch_latest_release
 
     sdk_guard.guard(netguard.is_local, check=netguard.check)
     # The cache secret is passed explicitly, or the SDK would create one under ~/.tinfoil;
     # this client only verifies, it never sends a request.
-    client = SecureClient(base_url=relay + "/", attestation_bundle_url=relay, transport="ehbp",
-                          user_cache_secret=cache_secret)
+    client = SecureClient(enclave=enclave, base_url=(base_url or relay) + "/", attestation_bundle_url=relay,
+                          transport="ehbp", user_cache_secret=cache_secret)
     truth = client.verify()
     document = client.get_verification_document().to_dict()
     steps = document.get("steps") or {}
@@ -235,15 +265,18 @@ def tinfoil_verify(relay: str, cache_secret: str) -> Verified:
             latest = release.tag
     except Exception:  # noqa: BLE001 - reported, never fatal
         pass
+    # the TLS key the report binds, as the SDK read it
+    tls = str(document.get("tlsPublicKey") or getattr(truth, "public_key", "") or "")
     return Verified(
         hpke_public_key=truth.hpke_public_key,
         enclave=client.enclave,
+        tls_public_key=tls.strip().lower(),
         attestation=Attestation(
             enclave=client.enclave, hardware=_hardware(document),
             measurement=str(document.get("enclaveFingerprint") or ""), release_digest=digest,
             release_tag=tag, latest_release=latest, latest_checked=checked,
             hpke_key_sha256=hashlib.sha256(truth.hpke_public_key.encode()).hexdigest(),
-            verified_at=time.time()),
+            verified_at=time.time(), service=service),
     )
 
 
