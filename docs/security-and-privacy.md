@@ -33,8 +33,9 @@ part; this says what each part does, and what it doesn't. To report a vulnerabil
 
 - **What you give the assistant**: your messages, the files and pictures you attach, and the output
   of the commands you choose to send it. With everything the assistant does in its sandbox, it goes
-  to NanoGPT, and from NanoGPT to the company that runs the model you chose. They can read it,
-  unless you choose a private model, which is end-to-end encrypted.
+  to your AI provider (NanoGPT, unless you add another in Settings → AI providers), and from it to the
+  company that runs the model you chose. They can read it, unless you choose a private model, which is
+  end-to-end encrypted.
 - **What the assistant fetches**: source code, tools and web pages, from public websites, over HTTPS
   only, and its web searches, through NanoGPT to a search provider.
 - **The app's checks of a TEE or private model**, before anything is sent to one: to NanoGPT, Intel,
@@ -46,7 +47,7 @@ part; this says what each part does, and what it doesn't. To report a vulnerabil
 - **Your files.** The assistant can't read them. What a command prints on your computer is shown to
   you first, and goes to the assistant only when you send it (unless you choose to send it
   automatically, and then not when anything in it looks private).
-- **Your API key**, except to NanoGPT with your requests. It never reaches the sandbox or a log, nor
+- **Your API key**, except to the provider it was entered for, with your requests. It never reaches the sandbox or a log, nor
   any file but a backup, which is locked with your backup password.
 - **Your backup password**: it stays in your keyring. A password written into an address goes only
   to that address, and into no file but a backup.
@@ -84,6 +85,33 @@ relay.
 NanoGPT can read everything sent to an ordinary or a TEE model. Of a private model's requests it
 sees your account, the model, when, how much and what it costs: the request itself is sealed on
 this computer for the model's enclave.
+
+### Other providers you add (Settings → AI providers)
+
+Settings → AI providers keeps a list of providers: NanoGPT, Anthropic (api.anthropic.com), and any
+other service that speaks OpenAI's chat completions or Anthropic's Messages API at an address you
+give (https, or http only on this computer and your local network). Each has its own key, in your
+keyring. What goes to one depends on what you use it for:
+
+- the provider the assistant **runs on** gets the assistant's requests, through the app's gateway:
+  a Claude model's are passed on as they are to its Anthropic address, with its key in the header
+  it takes (`x-api-key` for Anthropic's own); any other model's are translated to chat completions
+  and sent to its chat address;
+- the provider of the **reviewer** gets the second opinions and the app's other one-off requests
+  (update summaries, import reviews), and the provider of the **vision helper** the pictures it
+  describes; each is named with its model in Settings;
+- **Save & test**, and choosing a model, ask its chat address for its list of models, with its key.
+
+Web searches go only through NanoGPT, with the NanoGPT key: when the assistant runs on another
+provider it has no web search. Attestation (TEE and private models) is NanoGPT's alone here.
+
+**Tinfoil and Chutes** are recognised from their addresses, however they were added (a Tinfoil host
+is taken as Tinfoil's even if set to speak plain OpenAI: when in doubt, sealed). A Tinfoil API key goes
+only to `https://inference.tinfoil.sh`; a key entered for one of Chutes' own hosts (llm.chutes.ai,
+api.chutes.ai, claude.chutes.ai) may go to the others, over https, and to no other host. This version
+can't yet seal requests to Tinfoil's own API or to Chutes' `-TEE` models end to end, so **nothing is
+sent to them**: they are refused in words before any request. Chutes' other models are ordinary
+models, sent as any provider's: Chutes reads them.
 
 ### The companies that run the models
 
@@ -218,26 +246,32 @@ then fetches from your distribution's own servers, as it always does.
 - **Your API key** is kept in your system's keyring (GNOME Keyring or KWallet), never in a file.
   Without a secure keyring the app keeps no key at all, rather than one in a plain file, and says
   what to install. Once read it is kept in memory while the app runs, so that a keyring that locks
-  itself again doesn't stop the assistant. It goes only to your provider, NanoGPT, with your
-  requests: the sandbox never holds it (the gateway adds it on the way out), and it isn't in any
+  itself again doesn't stop the assistant. It goes only to the provider it was entered for, with
+  your requests: the sandbox never holds it (the gateway adds it on the way out), and it isn't in any
   log, message or error. A key with a space, a line break or a character no key has in it is
   refused before anything is sent, without being repeated back.
-- **A key goes only to the address it was entered for**: the scheme, host and port the provider's
-  address had when you saved the key. If the address is changed afterwards (by hand in the settings
-  file, or through the app's API) to another host or port, the key isn't sent there: the window
-  says so in place of the chat, and each request is refused, saying which address the key was for and
-  what to do: pasting your NanoGPT key in Settings saves it for NanoGPT's own address and puts the
-  assistant back on it; to use the new address, enter the key again for it through the app's API (the
-  window has no field for an address), or put the address back in the settings file. Nothing is deleted. A key saved before this rule takes the
-  address saved beside it, the first time the app starts.
+- **A key goes only to the address it was entered for**: the scheme, host and port of the provider's
+  addresses when you saved the key. When you change an address in Settings → AI providers without
+  typing the key again, Settings asks whether to use the saved key there, **No** the default. No is
+  remembered for that address and not asked again at each save; the provider's entry says the key
+  isn't sent there, with **Ask again**, and Save & test asks again too. If an address is changed any
+  other way (by hand in the settings file, or through the app's API), the key isn't sent there: the
+  window says so in place of the chat, and each request is refused, saying which address the key was
+  for and what to do (edit the provider: type the key again, Ask again, or put the address back).
+  Nothing is deleted. A key saved before this rule takes the addresses saved beside it, the first
+  time the app starts. One stated exception: Chutes takes one key on its three hosts, so a key
+  entered for one of them (llm.chutes.ai, api.chutes.ai, claude.chutes.ai) may go to the others, over
+  https; never to another host, and no other key to them. A Tinfoil key goes only to Tinfoil's own
+  API.
 - **A key never crosses your network unencrypted unless you say so.** Plain `http://` is allowed to
   a model server on this computer or your local network, but to another machine the key (and
   everything sent with it) crosses the network readable by anyone on it, a café's or a hotel's Wi-Fi
-  included. There is no field for such an address in the window, so nothing asks: the key isn't
-  sent, and the window and every request say so, unless the provider's entry in the settings file says
-  `key_over_http = true` beside its address (or use the server's `https://` address). A provider
-  already sending its key that way before this version is held back too, until that line is added:
-  nothing is taken as agreed to. To this computer itself (`localhost`, 127.0.0.1, `::1`) a key never
+  included. Settings asks before it saves a key that would go that way, **No** the default, and No
+  saves nothing (use the server's `https://` address, or leave the key empty if it needs none). A
+  key that would go so any other way isn't sent, and the window and every request say so, until you
+  agree in Settings → AI providers (**Send it unencrypted…** on the provider), or the provider's entry
+  in the settings file says `key_over_http = true`. A provider already sending its key that way
+  before this rule is held back too, until agreed to once: nothing is taken as agreed to. To this computer itself (`localhost`, 127.0.0.1, `::1`) a key never
   leaves it, so none of this applies.
 - **A password written into an address** (`https://user:password@host/…`, a provider's or a
   package mirror's) goes to your keyring with the address as typed; the settings file has the

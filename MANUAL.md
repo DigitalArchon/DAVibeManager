@@ -11,6 +11,7 @@ This is the full guide. For what DA Vibe Manager is and how to install it, see t
 - [Chats](#chats)
 - [What it hands over](#what-it-hands-over)
 - [How deep a change goes](#how-deep-a-change-goes)
+- [AI providers](#ai-providers)
 - [What it costs](#what-it-costs)
 - [Which host runs the model](#which-host-runs-the-model)
 - [Keeping your apps up to date](#keeping-your-apps-up-to-date)
@@ -37,6 +38,37 @@ app keeps no key at all, rather than one in a plain file, and says what to insta
 with a space or a line break in it is refused, without being repeated back. The first start prepares
 the sandbox, which takes a few minutes. In Settings you can choose to have it start with your
 computer. With 4 GB of memory, set the sandbox to 2 GB and 2 CPUs (Settings → The sandbox).
+
+Using Anthropic, or another provider, instead of NanoGPT? Follow the first screen's link to
+**Settings → AI providers** ([below](#ai-providers)).
+
+## AI providers
+
+**Settings → AI providers** lists the providers the app can use, each with what its address says it
+is, whether the assistant runs on it, and whether its key is stored. **Add NanoGPT**, **Add
+Anthropic**, **Add other (OpenAI-compatible)** and **Add other (Anthropic-compatible)** open a form
+with the addresses filled in where the button knows them: a name, a chat address (OpenAI's chat
+completions: for second opinions, the vision helper, and the assistant's models other than Claude),
+the assistant's address (Anthropic's Messages API, for its Claude models), which header its key goes
+in, and the key, which goes to your keyring. **Save & test** saves it and lists its models. **Edit**
+changes one, **Remove** removes it and its key.
+
+A key goes only to the addresses it was typed for. Change an address without typing the key again
+and Settings asks whether to send the saved key there: **No** is the default, and is remembered
+(the provider says the key isn't sent there, with **Ask again**). A key that would cross your network
+over plain `http://` to another machine is asked about too, and No saves nothing.
+
+A provider is recognised from its address, whichever button added it. Tinfoil's address
+(inference.tinfoil.sh) and Chutes' (llm.chutes.ai, claude.chutes.ai) are recognised already, but this
+version can't yet seal what is sent to Tinfoil, or to Chutes' `-TEE` models, end to end, so it sends
+nothing to them and says so. Chutes' other models work as any provider's, without privacy.
+
+**Settings → The assistant → Runs on** chooses the assistant's provider, and below it are that
+provider's usual models (GLM 5.3, private GLM 5.3 and Claude Opus 5.5 on NanoGPT; Claude Opus 5.5 on
+Anthropic), or Something else for any of its models. The vision helper, which describes pictures to a
+model that can't see them, and the reviewer, which gives second opinions, can be on any provider with
+a chat address: their **Choose…** asks which provider first. Web searches go through NanoGPT only:
+on another provider the assistant doesn't search the web.
 
 The window opens at the size you last left it (and never larger than your screen); a build's
 buttons (**Try it first**, **Install**) stay in view while any of its card is. The window uses your
@@ -138,15 +170,16 @@ Answering questions costs little, but building an app takes the AI many steps: o
 per use, like Claude Opus, a simple fix can cost a few dollars and a big change $50 or more, and
 nobody can tell which it is until the AI has read the app's code. So before a build, you can ask
 it to find out first whether it's a simple fix, a significant modification or a major rewrite
-(it reads the code, without building anything). Set a spending limit on your API key at
-nano-gpt.com.
+(it reads the code, without building anything). Set a spending limit on your API key with your
+provider (at nano-gpt.com for NanoGPT).
 
 The status line shows about what the open chat has cost so far: the tokens it used, at
 NanoGPT's listed prices (models a NanoGPT subscription includes count as $0; hover over it to see
 what they'd cost without one).
 
 The assistant is Claude Code, on a NanoGPT model: GLM 5.3 by default (included in a NanoGPT
-subscription), or private GLM 5.3, Claude Opus 5.5 or any other in Settings.
+subscription), or private GLM 5.3, Claude Opus 5.5 or any other in Settings; or on another provider
+you add ([AI providers](#ai-providers)).
 
 When a conversation grows long, the assistant summarises it and goes on. **Settings → The
 assistant → Compact the conversation at** sets how long: 200K tokens by default, or 400K or 1M (the
@@ -550,10 +583,10 @@ itself.** Every service the app talks to, what it keeps and what it can't protec
   them. The key is never on a command line (where anyone else logged in could read it), and the
   folders the app runs and listens in are yours alone: one someone else made first is never used.
 - **Your API key goes only where you gave it.** It is sent only to the address it was saved for,
-  and never over plain `http://` to another machine on your network unless the settings file says
-  you chose that. If a provider's address in the settings file is changed by hand, the key isn't
-  sent to the new one: the window says so in place of the chat, with the ways out (pasting your
-  NanoGPT key in **Settings → The assistant** puts the assistant back on NanoGPT). Nothing is
+  and never over plain `http://` to another machine on your network unless you said so when Settings
+  asked. If a provider's address is changed without the key (in Settings, by hand in the settings
+  file, or through the app's API), the key isn't sent to the new one until you say so: the window
+  says so in place of the chat, with the ways out in **Settings → AI providers**. Nothing is
   deleted. The details are under
   [Keys and passwords](docs/security-and-privacy.md#keys-and-passwords).
 - **It leaves nothing behind that it needn't.** If the app crashes, none of its memory is written
