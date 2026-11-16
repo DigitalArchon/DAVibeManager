@@ -96,7 +96,8 @@ keyring. What goes to one depends on what you use it for:
 - the provider the assistant **runs on** gets the assistant's requests, through the app's gateway:
   a Claude model's are passed on as they are to its Anthropic address, with its key in the header
   it takes (`x-api-key` for Anthropic's own); any other model's are translated to chat completions
-  and sent to its chat address;
+  and sent to its chat address, or, for a provider with only an Anthropic address, passed on there as
+  they are too;
 - the provider of the **reviewer** gets the second opinions and the app's other one-off requests
   (update summaries, import reviews), and the provider of the **vision helper** the pictures it
   describes; each is named with its model in Settings;

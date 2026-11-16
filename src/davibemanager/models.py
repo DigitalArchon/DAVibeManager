@@ -738,11 +738,15 @@ class Models:
             # or refuses it, and no image helper less private than it is given anything (Engine._builder_upstream)
             tier = "e2ee"
         claude = [m.lower().startswith(("anthropic/", "claude")) for m in (s.builder_model, small)]
-        chat_less = [m for m, c in zip((s.builder_model, small), claude)
-                     if not c and config_mod.model_sealing(prov, m) != "chutes"]
+        # with no chat address, every model goes to the provider's Messages API as it is (an Anthropic-compatible
+        # server, Chutes' proxy: their own models, not only Claude), but for one sealed by its own client, which a
+        # chat address alone takes (a Chutes -TEE one needs none: it is sealed to api.chutes.ai whatever the provider
+        # speaks)
+        chat_less = [m for m in (s.builder_model, small)
+                     if self.privacy(prov, m).sealed and config_mod.model_sealing(prov, m) != "chutes"]
         if not prov.base_url and chat_less:
-            # a Chutes -TEE model needs none: it is sealed to api.chutes.ai whatever the provider speaks
-            raise UserError(f"Models other than Claude need {prov.name}'s chat address (Settings → AI providers).")
+            raise UserError(f"{chat_less[0]} is end-to-end encrypted, sent only through its own client to a chat "
+                            f"address, and {prov.name} has none (Settings → AI providers).")
         if not prov.builder_url and any(claude):
             raise UserError(f"Claude models need {prov.name}'s address for Anthropic's Messages API (Settings → AI "
                             "providers), or a provider that has one.")

@@ -251,8 +251,9 @@ PROVIDER_PRESETS: tuple[dict, ...] = (
              "computer and your local network). The assistant's requests are translated for it."},
     {"id": "anthropic-compatible", "label": "Add other (Anthropic-compatible)", "name": "", "base_url": "",
      "builder_url": "", "builder_auth": "x-api-key", "chat_api": "auto",
-     "note": "A service that speaks Anthropic's Messages API (/v1/messages) at its own address, for the assistant's "
-             "Claude models. Give it a chat address too if it has one, for other models and second opinions."},
+     "note": "A service that speaks Anthropic's Messages API (/v1/messages) at its own address: the assistant's "
+             "requests are passed on to it as they are, for any of its models. Give it a chat address too if it has "
+             "one, for second opinions and pictures."},
 )
 
 # The usual choices for the assistant on each service (Settings → The assistant): each sets the assistant's models,

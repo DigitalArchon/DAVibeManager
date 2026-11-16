@@ -299,6 +299,23 @@ async def test_the_assistants_provider_is_one_of_the_users_own(env):
         engine.models.builder_target()
 
 
+async def test_a_provider_with_only_a_messages_address_runs_any_of_its_models_through_it(env):
+    """An Anthropic-compatible server, or Chutes' proxy: every model goes to its Messages API as it is (Claude Code's
+    requests passed on), not only Claude; a sealed one is refused there in words."""
+    engine, _, _ = env
+    engine.cfg.providers.append(Provider("Messages only", "", builder_url="https://llm.example",
+                                         key_for=["https://llm.example:443"]))
+    creds.set_secret("provider", "Messages only", "sk-live-9")
+    engine.save_settings({"builder_provider": "Messages only", "builder_model": "their-model", "builder_small_model": "",
+                          "builder_vision_model": "", "review_model": ""})
+    prov, model, _, _ = engine.models.builder_target()
+    up = engine._builder_upstream()
+    assert (prov.name, model, up.base_url, up.chat) == ("Messages only", "their-model", "https://llm.example", None)
+    engine.cfg.settings.builder_model = "private/glm-5-3"
+    with pytest.raises(UserError, match="private/glm-5-3 is end-to-end encrypted.*Messages only has none"):
+        engine.models.builder_target()
+
+
 async def test_the_gateway_passes_nothing_on_for_a_provider_with_no_anthropic_address(tmp_path):
     from davibemanager.gateway import Gateway, Upstream
 

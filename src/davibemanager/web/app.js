@@ -2695,7 +2695,7 @@ function providerDialog(p) {
       note ? h("p", { class: "small muted" }, note) : null,
       h("div", { class: "field" }, h("span", {}, "Name"), name),
       h("div", { class: "field" }, h("span", {}, "Chat address (OpenAI-compatible): for second opinions, the vision helper, and the assistant's models other than Claude"), base),
-      h("div", { class: "field" }, h("span", {}, "The assistant's address (Anthropic's Messages API): for its Claude models, passed on as they are"), builder),
+      h("div", { class: "field" }, h("span", {}, "The assistant's address (Anthropic's Messages API): its Claude models, and any model when there's no chat address, passed on as they are"), builder),
       h("div", { class: "field" }, h("span", {}, "Its key goes in"), auth),
       h("div", { class: "field" }, h("span", {}, "API key"), key, link ? h("div", { class: "small" }, link) : null),
       known, held, status),

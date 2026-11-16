@@ -58,7 +58,8 @@ is, whether the assistant runs on it, and whether its key is stored. **Add NanoG
 Anthropic**, **Add other (OpenAI-compatible)** and **Add other (Anthropic-compatible)** open a form
 with the addresses filled in where the button knows them: a name, a chat address (OpenAI's chat
 completions: for second opinions, the vision helper, and the assistant's models other than Claude),
-the assistant's address (Anthropic's Messages API, for its Claude models), which header its key goes
+the assistant's address (Anthropic's Messages API, for its Claude models, or every model of a provider
+with no chat address), which header its key goes
 in, and the key, which goes to your keyring. **Save & test** saves it and lists its models. **Edit**
 changes one, **Remove** removes it and its key.
 
