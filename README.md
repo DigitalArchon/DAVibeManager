@@ -13,11 +13,10 @@ rebuilt, at a time you choose.
 
 ## What it does
 
-- **Builds the change you want into an app you use.** The AI (Claude Code, on NanoGPT, Anthropic or
-  another provider you add) works in a sealed Podman sandbox on your computer: it reads the app's
-  code, makes the change,
-  builds it and tests it there, then hands you an AppImage to try and install next to your own
-  copy.
+- **Builds the change you want into an app you use.** The AI (Claude Code, on NanoGPT, Anthropic,
+  Tinfoil, Chutes or another provider you add) works in a sealed Podman sandbox on your computer: it
+  reads the app's code, makes the change, builds it and tests it there, then hands you an AppImage to
+  try and install next to your own copy.
 - **Keeps it up to date.** Every app is the project's official release with your changes on
   top. When a new version comes out, DA Vibe Manager carries your changes over and rebuilds it by
   itself, at a quiet time you choose, and the AI only steps in if a change no longer fits.
@@ -59,8 +58,8 @@ its window:
 | Omarchy | `sudo pacman -S podman passt` (it has WebKitGTK) |
 
 If Podman is missing, the first screen offers to install it for you. Then paste your
-[NanoGPT](https://nano-gpt.com) API key (or add Anthropic or another provider in Settings → AI
-providers), and the first start prepares the sandbox, which takes a few minutes. Set a spending limit on the key: building an app can cost from a few dollars to
+[NanoGPT](https://nano-gpt.com) API key (or add Anthropic, Tinfoil, Chutes or another provider in
+Settings → AI providers), and the first start prepares the sandbox, which takes a few minutes. Set a spending limit on the key: building an app can cost from a few dollars to
 $50 or more on a model paid per use.
 
 To uninstall it, first use **Settings → The sandbox → Remove the sandbox…**: it deletes the

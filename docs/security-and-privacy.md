@@ -39,7 +39,7 @@ part; this says what each part does, and what it doesn't. To report a vulnerabil
 - **What the assistant fetches**: source code, tools and web pages, from public websites, over HTTPS
   only, and its web searches, through NanoGPT to a search provider.
 - **The app's checks of a TEE or private model**, before anything is sent to one: to NanoGPT, Intel,
-  NVIDIA, Sigstore and Tinfoil, and to RedPill only if you turn that on.
+  NVIDIA, Sigstore and Tinfoil, to Chutes for its `-TEE` models, and to RedPill only if you turn that on.
 - **Sync** between your own computers, through Tor, end to end.
 
 **What never does:**
@@ -103,15 +103,64 @@ keyring. What goes to one depends on what you use it for:
 - **Save & test**, and choosing a model, ask its chat address for its list of models, with its key.
 
 Web searches go only through NanoGPT, with the NanoGPT key: when the assistant runs on another
-provider it has no web search. Attestation (TEE and private models) is NanoGPT's alone here.
+provider it has no web search. NanoGPT's TEE checks are for NanoGPT's models; Tinfoil and Chutes have
+their own, below.
 
-**Tinfoil and Chutes** are recognised from their addresses, however they were added (a Tinfoil host
-is taken as Tinfoil's even if set to speak plain OpenAI: when in doubt, sealed). A Tinfoil API key goes
-only to `https://inference.tinfoil.sh`; a key entered for one of Chutes' own hosts (llm.chutes.ai,
-api.chutes.ai, claude.chutes.ai) may go to the others, over https, and to no other host. This version
-can't yet seal requests to Tinfoil's own API or to Chutes' `-TEE` models end to end, so **nothing is
-sent to them**: they are refused in words before any request. Chutes' other models are ordinary
-models, sent as any provider's: Chutes reads them.
+Tinfoil and Chutes are recognised from their addresses, however they were added (a Tinfoil host is
+taken as Tinfoil's even if set to speak plain OpenAI: when in doubt, sealed); what goes to each is below.
+
+### Tinfoil (inference.tinfoil.sh, atc.tinfoil.sh): preliminary
+
+With **Add Tinfoil**, or any provider at a Tinfoil address, every model goes straight to Tinfoil's own
+API, with no relay in between, sealed on this computer:
+
+- **Attestation** (before the first request, and again once the last is old): the bundle Tinfoil's
+  attestation service (atc.tinfoil.sh) serves for this host, with no key, checked by Tinfoil's own
+  software as for a private model (Sigstore's trust root and Tinfoil's release through its GitHub
+  proxy, [below](#tinfoil-sigstore-and-github-private-models)); it must name the host the key goes
+  to, or nothing is attested and nothing sent. The router enclave's TLS key, which the attestation
+  binds, is **pinned**: each request's connection is checked against it as the handshake completes,
+  before any of the request leaves (behind a proxy too), and a mismatch sends nothing.
+- **The model list**: `GET /v1/models`, without the key: the chat models, their prices, context
+  windows and reasoning levels. The only unsealed request to the host.
+- **Each request**: sealed to the attested router's key (EHBP), with your Tinfoil key in its header
+  and nothing else of yours in the clear. Only a sealed reply counts; a stream must end as one does.
+  The prompt cache's key is made on this computer, sealed with each request, kept in memory only,
+  one per provider.
+
+Your Tinfoil key goes to `https://inference.tinfoil.sh` alone. Tinfoil sees your account, the model,
+when, how much and what it costs, never the text. That the router hands each request only to attested
+model enclaves is its published code, which the attestation checks the build of, not something the
+app checks.
+
+### Chutes (llm.chutes.ai, api.chutes.ai, claude.chutes.ai): preliminary
+
+With **Add Chutes**, the provider offers every model Chutes lists (llm.chutes.ai's public list, read
+without the key). Its **`-TEE` models** are always sent end-to-end encrypted, whatever the provider's
+addresses speak; **its other models** are ordinary, sent as any provider's (OpenAI's chat completions
+at llm.chutes.ai, Anthropic's Messages API at claude.chutes.ai, Chutes' own open-source proxy, which
+takes the key as a bearer token): Chutes reads them. For a `-TEE` model, at api.chutes.ai:
+
+- **Discovery**, with your key: up to five instances that run the model, each with its key
+  (ML-KEM-768, from the `cryptography` the app already ships; where it is missing, refused) and a few
+  single-use numbers.
+- **Attestation** of each instance not attested in the last 15 minutes: Chutes' evidence for a number
+  of the app's (for the whole model without the key, or one instance's with it), and Chutes' published
+  list of measured machine images, without the key. Each instance's Intel TDX quote is checked as a TEE
+  model's are ([Intel](#intel-apitrustedservicesintelcom-certificatestrustedservicesintelcom), [NVIDIA](#nvidia-nrasattestationnvidiacom)):
+  that it binds sha256 of the number and the instance's key, so the hardware vouches for the key a
+  request is sealed to, and that its measurements are a set Chutes publishes. An instance whose GPUs
+  NVIDIA didn't vouch for is left out, as is one that fails; with none left, nothing is sent.
+- **Each request**, streamed: sealed to the chosen instance's key, its number used once. Each piece of
+  the reply is opened and held to its place: one out of order, missing or repeated, or a reply cut short,
+  is refused in words, and nothing of a refused piece is shown.
+
+Your Chutes key goes to Chutes' own three hosts alone, over https: the one stated exception to a key
+going only to the address it was entered for. Chutes sees your account, the model, when, how much and
+what it costs; the instance's operator, ciphertext. Why only **partial** privacy: that only the model
+can read your text rests on software Chutes signs. The program that makes and holds the key (Chutes'
+aegis library, a closed binary) is admitted by Chutes' signature, not measured, and the list of
+measured images is Chutes' own. The app's client is its own; Chutes' `chutes-e2ee` package isn't used.
 
 ### The companies that run the models
 
@@ -123,7 +172,7 @@ a private model's, which only the attested enclave can open.
 
 ### Intel (api.trustedservices.intel.com, certificates.trustedservices.intel.com)
 
-When a TEE model is attested: Intel's public certificates, revocation lists and ratings of the
+When a TEE model or a Chutes instance is attested: Intel's public certificates, revocation lists and ratings of the
 platform's firmware, to check the enclave's quote up to Intel's root. The request names the platform
 family the quote is from; nothing of yours goes, and no key. What comes back is kept for an hour once
 it has been read and its signatures checked (an answer that isn't Intel's is asked for again the next
@@ -131,7 +180,7 @@ time). A private model's enclave on Intel hardware is checked against the same s
 
 ### NVIDIA (nras.attestation.nvidia.com)
 
-When a TEE model is attested: the GPU evidence in that model's attestation, with the app's fresh
+When a TEE model or a Chutes instance is attested: the GPU evidence in its attestation, with the app's fresh
 number, goes to NVIDIA's attestation service, and its signed verdict is checked with the keys NVIDIA
 publishes there. Nothing of yours goes, and no key.
 
@@ -291,7 +340,18 @@ be added by hand. Anyone on that network could read a key sent to it that way.
 
 Which model reads what you send depends on the model you choose (manual: [What it
 costs](../MANUAL.md#what-it-costs)). The assistant's model, its model for quick tasks, the model that
-describes pictures to it and the reviewer for second opinions are each one of these three kinds.
+describes pictures to it and the reviewer for second opinions are each one of these kinds.
+
+**Three levels of privacy.** **Highest**: end-to-end encrypted to an attested enclave whose software
+is measured (NanoGPT's `private/` models, and every model on Tinfoil). **Partial**: attested, with a
+gap in what is proved (NanoGPT's `TEE/` models, whose text passes NanoGPT's gateway in the clear, and
+Chutes' `-TEE` models, encrypted all the way to a key that rests on software Chutes signs). **Not
+private**: every other model, Chutes' others included. A chat moves only to a model at its own level
+or higher, on any service: a chat that ran on a `private/` or Tinfoil model is never carried on with
+a Chutes `-TEE` model, nor a `TEE/` one with an ordinary model; the app says so and sends nothing.
+The assistant's quick-task and picture models and the reviewer must be at its level or higher too.
+Each chat keeps a note of the level it was made (in its folder, below). The model lists and Settings
+show each model's level.
 
 ### Ordinary models
 
@@ -320,8 +380,9 @@ encrypted:
   to a plain request. A model NanoGPT no longer offers is refused before anything is sent.
 - **The whole chat.** With a private assistant, everything of the chat goes sealed, or not at all:
   its quick tasks, the pictures described to it (by private DeepSeek V4.1 Flash) and second opinions
-  on the commands it proposes (the reviewer must be private too). A chat that ran on a private model
-  can't be carried on with one in the clear: all of it would go along.
+  on the commands it proposes (the reviewer must be private too, at its level: a Tinfoil model will
+  do, a Chutes `-TEE` one won't). A chat that ran on a private model can't be carried on with one in
+  the clear, or with less privacy: all of it would go along.
 - **The prompt cache** is the app's own: the key to it is made on this computer, sealed with each
   request, and kept in memory only, so nobody else, NanoGPT included, can probe it.
 
@@ -613,9 +674,12 @@ hold sync's keys.
   download source code and tools), and what a program in it sends over HTTPS can't be seen. Treat
   anything you send the assistant as something that could leave: that is why a command's output
   waits for you to read it first.
-- **Your provider reads what isn't sealed.** NanoGPT, and the company running an ordinary or TEE
-  model, read what is sent to it. Even a private model's requests show NanoGPT when, how much and
-  what it costs.
+- **Your provider reads what isn't sealed.** NanoGPT, Chutes for its ordinary models, and the
+  company running an ordinary or TEE model, read what is sent to it. Even a sealed model's requests
+  show NanoGPT, Tinfoil or Chutes your account, when, how much and what it costs.
+- **Chutes' encryption rests on Chutes.** Its `-TEE` models' key is made and held by a closed
+  library Chutes signs, not measured, and the list of measured machine images is Chutes' own: partial
+  privacy. Tinfoil's and Chutes' clients here are preliminary.
 - **A TEE attestation shows hardware, not software.** It shows genuine, current hardware holding a
   live key, bound to the app's fresh number; not which software that machine runs. For a model
   RedPill serves, the machine that runs the model is RedPill's word. (A private model's attestation

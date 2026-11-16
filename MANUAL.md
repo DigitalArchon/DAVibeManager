@@ -8,10 +8,10 @@ This is the full guide. For what DA Vibe Manager is and how to install it, see t
 ## Contents
 
 - [First start](#first-start)
+- [AI providers](#ai-providers)
 - [Chats](#chats)
 - [What it hands over](#what-it-hands-over)
 - [How deep a change goes](#how-deep-a-change-goes)
-- [AI providers](#ai-providers)
 - [What it costs](#what-it-costs)
 - [Which host runs the model](#which-host-runs-the-model)
 - [Keeping your apps up to date](#keeping-your-apps-up-to-date)
@@ -42,6 +42,15 @@ computer. With 4 GB of memory, set the sandbox to 2 GB and 2 CPUs (Settings → 
 Using Anthropic, or another provider, instead of NanoGPT? Follow the first screen's link to
 **Settings → AI providers** ([below](#ai-providers)).
 
+The window opens at the size you last left it (and never larger than your screen); a build's
+buttons (**Try it first**, **Install**) stay in view while any of its card is. The window uses your
+system's WebKitGTK. Without it, or with no graphical display, DA Vibe Manager
+opens in your web browser instead and says what to install. You can also choose the browser for
+good under **Settings → This app** (it applies from the next start). The browser is opened on a
+link that works once, for a couple of minutes, and only for you: what a browser is opened with can be
+seen by anyone else logged in to the computer, so the window's key is never in it. If you close the
+tab, open DA Vibe Manager again from its menu entry for a new one.
+
 ## AI providers
 
 **Settings → AI providers** lists the providers the app can use, each with what its address says it
@@ -58,26 +67,29 @@ and Settings asks whether to send the saved key there: **No** is the default, an
 (the provider says the key isn't sent there, with **Ask again**). A key that would cross your network
 over plain `http://` to another machine is asked about too, and No saves nothing.
 
-A provider is recognised from its address, whichever button added it. Tinfoil's address
-(inference.tinfoil.sh) and Chutes' (llm.chutes.ai, claude.chutes.ai) are recognised already, but this
-version can't yet seal what is sent to Tinfoil, or to Chutes' `-TEE` models, end to end, so it sends
-nothing to them and says so. Chutes' other models work as any provider's, without privacy.
+**Add Tinfoil** and **Add Chutes** are there too (both preliminary). A provider is recognised from its
+address, whichever button added it: a Tinfoil address typed by hand is Tinfoil's.
+
+- **Tinfoil**: every model is end-to-end encrypted, sealed on this computer to Tinfoil's attested
+  router, straight to Tinfoil (highest privacy). Its key goes to inference.tinfoil.sh alone.
+- **Chutes**: every model Chutes lists. Its `-TEE` models are always end-to-end encrypted to an
+  attested Chutes instance, with partial privacy: the program that holds the key is Chutes' own
+  signed library, not measured. Its other models aren't private: Chutes reads them. Its key goes to
+  Chutes' own three addresses alone.
+
+The model lists show each model's level of privacy: **highest** (NanoGPT's `private/` models and
+Tinfoil's), **partial** (NanoGPT's `TEE/` models and Chutes' `-TEE` ones) or **not private**. A chat
+moves only to a model at its own level or higher: one begun on a private model can't go on with a
+Chutes `-TEE` model, or one begun on a `TEE/` model with an ordinary one; start a new chat for that.
+The assistant's quick-task and picture models, and the reviewer, must be at its level or higher too.
 
 **Settings → The assistant → Runs on** chooses the assistant's provider, and below it are that
 provider's usual models (GLM 5.3, private GLM 5.3 and Claude Opus 5.5 on NanoGPT; Claude Opus 5.5 on
-Anthropic), or Something else for any of its models. The vision helper, which describes pictures to a
-model that can't see them, and the reviewer, which gives second opinions, can be on any provider with
-a chat address: their **Choose…** asks which provider first. Web searches go through NanoGPT only:
+Anthropic; GLM 5.3 on Tinfoil; Kimi K3 (TEE) and GLM 5.3 on Chutes), or Something else for any of its
+models. The vision helper, which describes pictures to a model that can't see them, and the reviewer,
+which gives second opinions, can be on any provider with a chat address: their **Choose…** asks which
+provider first. Web searches go through NanoGPT only:
 on another provider the assistant doesn't search the web.
-
-The window opens at the size you last left it (and never larger than your screen); a build's
-buttons (**Try it first**, **Install**) stay in view while any of its card is. The window uses your
-system's WebKitGTK. Without it, or with no graphical display, DA Vibe Manager
-opens in your web browser instead and says what to install. You can also choose the browser for
-good under **Settings → This app** (it applies from the next start). The browser is opened on a
-link that works once, for a couple of minutes, and only for you: what a browser is opened with can be
-seen by anyone else logged in to the computer, so the window's key is never in it. If you close the
-tab, open DA Vibe Manager again from its menu entry for a new one.
 
 ## Chats
 
