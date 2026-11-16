@@ -257,8 +257,8 @@ class Models:
             self.cfg.providers[self.cfg.providers.index(old)] = prov
         else:
             self.cfg.providers.append(prov)
-        if not self.cfg.settings.builder_provider and prov.builder_url:
-            self.cfg.settings.builder_provider = name
+        if not self.cfg.settings.builder_provider and (prov.builder_url or prov.base_url):
+            self.cfg.settings.builder_provider = name       # the first provider is the assistant's
         self._models.pop(name, None)
         self._save_config(self.cfg)
         self._changed()
@@ -274,7 +274,7 @@ class Models:
                 pass                    # only what an address with its name kept: nothing uses it now
         s = self.cfg.settings
         if s.builder_provider == name:
-            s.builder_provider = next((p.name for p in self.cfg.providers if p.builder_url), "")
+            s.builder_provider = next((p.name for p in self.cfg.providers if p.builder_url or p.base_url), "")
         if s.review_model.startswith(name + "|"):
             s.review_model = ""
         self._save_config(self.cfg)
@@ -542,12 +542,22 @@ class Models:
 
     # ---------------------------------------------------------------- the two roles
 
+    def vision_target(self) -> tuple[Provider | None, str]:
+        """The vision helper's provider and model: the one its setting names ("provider|model"), else the assistant's
+        provider; (None, "") for none, or for a provider that no longer exists."""
+        named, model = config_mod.model_ref(self.cfg.settings.builder_vision_model)
+        if not model:
+            return None, ""
+        return self.cfg.provider(named or self.cfg.settings.builder_provider), model
+
     def builder_target(self) -> tuple[Provider, str, str, str]:
-        """(provider, model, small model, tier) the assistant uses."""
+        """(provider, model, small model, tier) the assistant uses. Its provider needs an address for Anthropic's
+        Messages API (builder_url) for Claude models, which are passed on as they are, and a chat address (base_url)
+        for any other, whose requests are translated (gateway.py); one of the two at least."""
         s = self.cfg.settings
         prov = self.cfg.provider(s.builder_provider)
-        if not prov or not prov.builder_url:
-            raise UserError("Set up the assistant first: add your NanoGPT key (Settings).")
+        if not prov or not (prov.builder_url or prov.base_url):
+            raise UserError("Set up the assistant first: add your NanoGPT key, or another provider (Settings).")
         try:
             stored = creds.get_secret("provider", prov.name)
         except creds.KeyringUnavailable as e:
@@ -560,15 +570,20 @@ class Models:
             raise UserError("Choose the assistant's model in Settings.")
         small = s.builder_small_model or s.builder_model
         order = ("standard", "tee", "e2ee", "local")
-        # the lower of the two models' tiers; private/ models are sealed by the gateway (e2ee), but it
-        # doesn't attest TEE models, so on the wire those are like any standard model
-        seen = [m for m in (s.builder_model, small, s.builder_vision_model.strip()) if m]
-        tiers = [detect_tier(m, prov.builder_url, prov.tier_overrides) for m in seen]
+        # the lower of the models' tiers; private/ models are sealed by the gateway (e2ee), but it doesn't attest TEE
+        # models, so on the wire those are like any standard model. The vision helper's on its own provider
+        vprov, vision = self.vision_target()
+        seen = [(prov, m) for m in (s.builder_model, small) if m] + ([(vprov, vision)] if vprov and vision else [])
+        tiers = [detect_tier(m, p.builder_url or p.base_url, p.tier_overrides) for p, m in seen]
         tier = min(("standard" if t == "tee" else t for t in tiers), key=order.index)
         if is_private_mode(s.builder_model):
             tier = "e2ee"       # the gateway seals the chat's every request, or refuses it (and no clear image helper)
-        if not prov.base_url and not all(m.lower().startswith(("anthropic/", "claude")) for m in (s.builder_model, small)):
-            raise UserError(f"Models other than Claude need {prov.name}'s chat endpoint (Settings).")
+        claude = [m.lower().startswith(("anthropic/", "claude")) for m in (s.builder_model, small)]
+        if not prov.base_url and not all(claude):
+            raise UserError(f"Models other than Claude need {prov.name}'s chat address (Settings → AI providers).")
+        if not prov.builder_url and any(claude):
+            raise UserError(f"Claude models need {prov.name}'s address for Anthropic's Messages API (Settings → AI "
+                            "providers), or a provider that has one.")
         for model in (s.builder_model, small):
             if problem := sealing_problem(prov, model):
                 raise UserError(problem)

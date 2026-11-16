@@ -51,7 +51,7 @@ from .llm import anthropic_bridge, capabilities, prompts, websearch
 from .llm import routes as routes_mod
 from .llm.client import is_private_mode
 from .llm.errors import shown_error
-from .models import KeyHeldBack, KeyringWait, Models, UserError
+from .models import KeyHeldBack, KeyringWait, Models, UserError, key_problem_for
 from .netpolicy import InsecureURL, check_url
 from .netpolicy import scrubbed
 from .netpolicy import shown as shown_address
@@ -412,6 +412,7 @@ class Engine:
             "ready": self.ready,
             "keyring_wait": self.keyring_wait,
             "config": self._config_view(),
+            "presets": self.presets(),
             "conversation": self.conv.to_dict() if self.conv else None,
             "chat": self.conv.chat if self.conv else [],
             "spend": self.spend(),
@@ -438,9 +439,20 @@ class Engine:
 
     def _config_view(self) -> dict:
         c = self.cfg.to_dict()
-        for p in c["providers"]:
+        for p, prov in zip(c["providers"], self.cfg.providers):
             p["has_key"] = self._has_secret("provider", p["name"])
+            # recognised from its addresses, whatever added it (config.service_of), and why a stored key isn't sent
+            p["service"] = prov.service()
+            p["speaks"] = config_mod.chat_api_of(prov) if prov.base_url else ""
+            p["key_held"] = (key_problem_for(prov) or "") if p["has_key"] else ""
         return c
+
+    @staticmethod
+    def presets() -> dict:
+        """What Settings → AI providers adds providers with, and the assistant's usual models on each service
+        (config.PROVIDER_PRESETS, MODEL_PRESETS); and Chutes' own hosts, where a Chutes key may go (config.key_reaches)."""
+        return {"providers": list(config_mod.PROVIDER_PRESETS), "models": list(config_mod.MODEL_PRESETS),
+                "chutes_key_origins": sorted(config_mod.CHUTES_KEY_ORIGINS)}
 
     @staticmethod
     def _has_secret(kind: str, name: str) -> bool:
@@ -533,7 +545,26 @@ class Engine:
         if "builder_model" in data and not str(data["builder_model"]).strip():
             raise UserError("The assistant needs a model: type one, or pick GLM 5.3, private GLM 5.3 or Claude Opus 5.5.")
         chosen = {k: str(data.get(k, getattr(s, k)) or "").strip()
-                  for k in ("builder_model", "builder_small_model", "builder_vision_model", "review_model")}
+                  for k in ("builder_provider", "builder_model", "builder_small_model", "builder_vision_model",
+                            "review_model")}
+        if "builder_provider" in data:
+            named = self.cfg.provider(chosen["builder_provider"])
+            if named is None or not (named.builder_url or named.base_url):
+                raise UserError(f"{chosen['builder_provider'] or 'That'} isn't one of your providers: add it in "
+                                "Settings → AI providers first.")
+        for key in ("builder_model", "builder_small_model"):
+            if "|" in chosen[key]:
+                # Claude Code sends both to the one provider: only the vision helper and the reviewer name their own
+                raise UserError("The assistant's models are on its own provider: choose the provider above, then the "
+                                "model.")
+        for key, what in (("builder_vision_model", "describe pictures"), ("review_model", "give second opinions")):
+            named, model = config_mod.model_ref(chosen[key])
+            if key in data and named and model:
+                found = self.cfg.provider(named)
+                if found is None or not found.base_url:
+                    raise UserError(f"{named} isn't one of your providers with a chat address, so it can't {what}.")
+        vision = config_mod.model_ref(chosen["builder_vision_model"])[1]
+        chosen["builder_vision_model"] = vision
         if is_private_mode(chosen["builder_model"]) and any(
                 v and not is_private_mode(v) for v in (chosen["builder_small_model"], chosen["builder_vision_model"])):
             raise UserError("With a private model, the models for quick tasks and for images must be private too (or "
@@ -2064,20 +2095,22 @@ class Engine:
     def _builder_upstream(self) -> Upstream:
         prov, model, small, tier = self.models.builder_target()
         chat = (lambda m: self.models.client(prov, m)) if prov.base_url else None
-        vision = self.cfg.settings.builder_vision_model.strip()
+        vprov, vision = self.models.vision_target()      # on the provider its setting names, else the assistant's
         if is_private_mode(model) and vision and not is_private_mode(vision):
             vision = ""                         # what it's shown would go to it in the clear: none at all
         return Upstream(base_url=prov.builder_url, auth=prov.builder_auth, key=lambda: self.models.key(prov),
                         models=(model, small), provider=prov.name, tier=tier, chat=chat,
                         guard=lambda m: self.models.tee_guard(prov, m), reply_check=lambda m: self.models.reply_check(prov, m),
-                        describe=self._describe_image if vision and prov.base_url else None, vision_model=vision,
+                        describe=self._describe_image if vision and vprov and vprov.base_url else None, vision_model=vision,
                         sees=lambda m: self.models.sees(prov, m), efforts=lambda m: self.models.efforts(prov, m),
                         reasoning=self.cfg.settings.builder_reasoning, route=lambda m: self.models.route(prov, m))
 
     async def _describe_image(self, data_url: str, context: str) -> str:
         """The vision helper: a model that can see describes an image for the assistant."""
-        prov, main = self.models.builder_target()[:2]
-        model = self.cfg.settings.builder_vision_model
+        main = self.models.builder_target()[1]
+        prov, model = self.models.vision_target()
+        if prov is None or not model:
+            raise UserError("No model is set to describe pictures (Settings → The assistant).")
         if is_private_mode(main) and not is_private_mode(model):
             raise UserError(f"{model} isn't private, and the assistant's model is: the picture isn't sent to it.")
         messages = [{"role": "system", "content": anthropic_bridge.VISION_PROMPT},

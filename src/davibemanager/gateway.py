@@ -265,7 +265,7 @@ def _error_text(raw: bytes) -> str:
 @dataclass
 class Upstream:
     """Where the builder's model requests go, and what it may ask for."""
-    base_url: str                 # e.g. https://nano-gpt.com/api/v1 (paths like /v1/messages are appended)
+    base_url: str                 # e.g. https://nano-gpt.com/api/v1 (paths like /v1/messages are appended); "" for none
     auth: str                     # "bearer" or "x-api-key"
     key: Callable[[], str | None]  # read from the keyring per request: a key changed in Settings applies at once
     models: tuple[str, ...]        # allowed model ids: (main, small); a request for any other gets the small one
@@ -453,7 +453,8 @@ class Gateway:
                             f"{request.method} {path}.", "not_found_error")
             try:
                 up = self.upstream()
-                base = check_url(up.base_url, "The assistant's endpoint").rstrip("/")
+                # none for a provider with only a chat address: every request translated (below), none passed on
+                base = check_url(up.base_url, "The assistant's endpoint").rstrip("/") if up.base_url else ""
             except InsecureURL as e:
                 return fail(path, 403, str(e))
             except Exception as e:  # noqa: BLE001 - the reason is the user's to see (no provider, no key)
@@ -498,6 +499,10 @@ class Gateway:
                             "(Settings), or leave them empty to use the same one.", "permission_error", model=sent_model)
             if up.chat is not None and not is_anthropic(sent_model):
                 return await self._translated(path, data, up, sent_model, model, len(body))
+            if not base:
+                return fail(path, 403, f"{up.provider} has no address for Anthropic's Messages API, so {sent_model or 'this '
+                            'request'} can't be passed on there. Add one in Settings → AI providers, or choose another "
+                            "model.", model=sent_model)
             if up.guard is not None:
                 # forwarded as it is, but through the guard every translated request takes: a model the provider's
                 # settings mark TEE (tier_overrides) is attested before anything goes to it, or nothing does

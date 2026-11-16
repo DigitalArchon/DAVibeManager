@@ -4,6 +4,7 @@ questions as the server keeps the answers (key_declined, key_over_http); the pre
 buttons and its model choices from; and model settings that name their provider. The window's side is in
 tests/js/providers.test.cjs."""
 
+import httpx
 import pytest
 
 from davibemanager import config, creds
@@ -199,9 +200,94 @@ def test_chutes_address_brings_its_anthropic_proxy_for_the_assistant():
     assert prov.key_for == ["https://claude.chutes.ai:443", "https://llm.chutes.ai:443"]
 
 
+async def test_the_window_gets_the_presets_and_each_providers_recognition(env):
+    engine, _, _ = env
+    engine.cfg.providers.append(Provider("Typed", config.TINFOIL_BASE_URL, chat_api="openai", key_for=[]))
+    creds.set_secret("provider", "Typed", "tk-test-123")
+    state = engine.snapshot()
+    assert [p["id"] for p in state["presets"]["providers"]] == [p["id"] for p in config.PROVIDER_PRESETS]
+    assert state["presets"]["models"] == list(config.MODEL_PRESETS)
+    assert "https://claude.chutes.ai:443" in state["presets"]["chutes_key_origins"]
+    typed = next(p for p in state["config"]["providers"] if p["name"] == "Typed")
+    assert (typed["service"], typed["speaks"], typed["has_key"]) == ("tinfoil", "tinfoil", True)
+    assert "isn't sent" in typed["key_held"]
+    fake = next(p for p in state["config"]["providers"] if p["name"] == "Fake")
+    assert (fake["service"], fake["speaks"], fake["key_held"]) == ("", "openai", "")
+
+
 # --- model settings that name their provider -----------------------------------------------------------------------
 
 def test_a_model_setting_names_its_provider_or_means_the_assistants():
     assert config.model_ref("NanoGPT|z-ai/glm-5.3-flash") == ("NanoGPT", "z-ai/glm-5.3-flash")
     assert config.model_ref(" z-ai/glm-5.3-flash ") == ("", "z-ai/glm-5.3-flash")
     assert config.model_ref("") == ("", "")
+
+
+async def test_the_vision_helper_can_be_on_another_provider(env):
+    engine, _, _ = env
+    engine.cfg.providers.append(Provider("Seer", "https://seer.example/v1", key_for=["https://seer.example:443"]))
+    engine.save_settings({"builder_vision_model": "Seer|qwen-vl"})
+    assert engine.cfg.settings.builder_vision_model == "Seer|qwen-vl"
+    prov, model = engine.models.vision_target()
+    assert (prov.name, model) == ("Seer", "qwen-vl")
+    up = engine._builder_upstream()
+    assert up.vision_model == "qwen-vl" and up.describe is not None
+    with pytest.raises(UserError, match="Nobody isn't one of your providers"):
+        engine.save_settings({"builder_vision_model": "Nobody|x"})
+    with pytest.raises(UserError, match="on its own provider"):
+        engine.save_settings({"builder_small_model": "Seer|qwen"})
+    engine.cfg.settings.builder_vision_model = "fake-vision"                 # bare: the assistant's provider
+    assert engine.models.vision_target()[0].name == "Fake"
+
+
+async def test_a_private_assistant_refuses_a_plain_vision_helper_on_any_provider(env):
+    engine, _, _ = env
+    engine.cfg.providers.append(Provider("Seer", "https://seer.example/v1", key_for=[]))
+    engine.cfg.settings.review_model = "Fake|private/glm-5-3"
+    with pytest.raises(UserError, match="must be private too"):
+        engine.save_settings({"builder_model": "private/glm-5-3", "builder_small_model": "",
+                              "builder_vision_model": "Seer|qwen-vl"})
+    engine.save_settings({"builder_model": "private/glm-5-3", "builder_small_model": "",
+                          "builder_vision_model": "Fake|private/deepseek-v4-1-flash"})
+
+
+async def test_the_assistants_provider_is_one_of_the_users_own(env):
+    engine, _, _ = env
+    with pytest.raises(UserError, match="isn't one of your providers"):
+        engine.save_settings({"builder_provider": "Elsewhere"})
+    engine.cfg.providers.append(Provider("Chat only", "https://llm.example/v1", key_for=["https://llm.example:443"]))
+    creds.set_secret("provider", "Chat only", "sk-live-9")
+    engine.save_settings({"builder_provider": "Chat only", "builder_model": "llama-4", "builder_small_model": ""})
+    prov, model, small, _ = engine.models.builder_target()          # no Anthropic address: translated (gateway.py)
+    assert (prov.name, model, small) == ("Chat only", "llama-4", "llama-4")
+    assert engine._builder_upstream().base_url == ""
+    engine.cfg.settings.builder_model = "anthropic/claude-opus-5.5"
+    with pytest.raises(UserError, match="Claude models need Chat only's address for Anthropic's Messages API"):
+        engine.models.builder_target()
+
+
+async def test_the_gateway_passes_nothing_on_for_a_provider_with_no_anthropic_address(tmp_path):
+    from davibemanager.gateway import Gateway, Upstream
+
+    sent = []
+    g = Gateway(tmp_path / "gw", lambda: Upstream("", "bearer", lambda: "sk-live-1", ("anthropic/claude-opus-5.5",),
+                                                  provider="Chat only"),
+                http=httpx.AsyncClient(transport=httpx.MockTransport(lambda r: sent.append(r) or httpx.Response(200))))
+    await g.start()
+    try:
+        async with httpx.AsyncClient(transport=httpx.AsyncHTTPTransport(uds=str(g.model_socket)), base_url="http://gw") as c:
+            r = await c.post("/v1/messages", headers={"authorization": f"Bearer {g.token}"}, json={
+                "model": "anthropic/claude-opus-5.5", "messages": [{"role": "user", "content": "hi"}]})
+    finally:
+        await g.stop()
+    assert r.status_code == 403 and "Chat only has no address for Anthropic's Messages API" in r.text and sent == []
+
+
+def test_the_first_provider_of_any_kind_is_the_assistants_and_so_is_the_next_when_it_goes():
+    cfg = Config()
+    m = _models(cfg)
+    m.save_provider({"name": "Chat only", "base_url": "https://llm.example/v1"}, "sk-live-1", is_new=True)
+    assert cfg.settings.builder_provider == "Chat only"
+    m.save_provider({"name": "Anthropic", "builder_url": "https://api.anthropic.com"}, "sk-ant-test-1", is_new=True)
+    m.delete_provider("Chat only")
+    assert cfg.settings.builder_provider == "Anthropic"
