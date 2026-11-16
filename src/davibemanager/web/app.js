@@ -722,11 +722,14 @@ function renderMode() {
   const c = S.state.conversation || {};
   const el = $("#mode");
   const kind = c.mode === "computer" ? (c.app ? `🩺 Getting ${chatAppName(c)} working here` : "🩺 Your computer") : c.mode === "app" ? (c.remake ? `📦 ${chatAppName(c)}, made again cleanly` : `📦 Improving ${chatAppName(c)}`) : "";
-  // sealed end to end: a chat that ran on a private model, or one the private model it has now will seal
-  const sealed = c.sealed || /^\s*private\//i.test(S.state.config?.settings?.builder_model || "");
-  const text = kind && sealed ? `${kind} · 🔒 Private` : kind;
+  // sealed end to end: a chat that ran on a sealed model (NanoGPT's private/, Tinfoil's, a Chutes -TEE one), or one the
+  // sealed model it has now will seal; its level, and what it means, in the tooltip (llm/privacy.py)
+  const now = S.state.assistant?.privacy;
+  const sealed = c.sealed || c.privacy?.kind === "sealed" || now?.kind === "sealed" || /^\s*private\//i.test(S.state.config?.settings?.builder_model || "");
+  const partial = sealed && (now?.kind === "sealed" ? now.level === "partial" : c.privacy?.service === "chutes");
+  const text = kind && sealed ? `${kind} · 🔒 Private${partial ? " (partial)" : ""}` : kind;
   el.textContent = text;
-  el.title = sealed ? "Sealed end to end: only the attested enclave can read this chat" : "";
+  el.title = sealed ? (now?.kind === "sealed" && now.note ? now.note : "Sealed end to end: only the attested enclave can read this chat") : "";
   el.classList.toggle("hidden", !text);
 }
 
@@ -2036,6 +2039,16 @@ function searchesEl(evs) {
     h("p", { class: "small muted" }, "Searches go through NanoGPT to the search provider, in the clear. Only what's in the sandbox may be in them: the app refuses any search with something from your computer in it. Linkup keeps nothing (zero data retention); what the others keep is up to their own policies."));
 }
 
+// how private a model is, leading its note (llm/privacy.py Privacy.to_dict): its level's words, what protects it in the
+// tooltip; for a model listed without it, its tier
+function privacyChip(x) {
+  const pv = x.privacy;
+  if (pv?.kind) return h("span", { class: pv.level === "highest" ? "chip private" : "chip warn", title: pv.note || null },
+    pv.kind === "sealed" ? `${pv.level_words} · sealed` : `${pv.level_words} · TEE`);
+  if (pv?.note) return h("span", { class: "chip", title: pv.note }, pv.level_words);
+  return x.tier === "e2ee" ? h("span", { class: "chip private" }, "private") : x.tier === "tee" ? h("span", { class: "chip" }, "TEE") : null;
+}
+
 function pickModel(title, provider, onPick) {
   const listEl = h("div", {}, h("div", { class: "muted" }, "Loading…"));
   const search = h("input", { type: "text", placeholder: "Filter… (opus, private, glm)", style: "width:100%;margin-bottom:6px" });
@@ -2045,10 +2058,11 @@ function pickModel(title, provider, onPick) {
     const q = search.value.trim().toLowerCase();
     listEl.replaceChildren(...models.filter((x) => !q || x.id.toLowerCase().includes(q)).slice(0, 300).map((x) =>
       h("div", { class: "list-item", style: "cursor:pointer", onclick: () => guarded(async () => { await onPick(x.id); m.close(); }) },
-        h("div", { class: "grow mono" }, x.id), x.tier === "e2ee" ? h("span", { class: "chip private" }, "private") : x.tier === "tee" ? h("span", { class: "chip" }, "TEE") : null)));
+        h("div", { class: "grow mono" }, x.id), privacyChip(x))));
   };
   search.addEventListener("input", draw);
-  m = modal({ title, body: h("div", {}, search, listEl), buttons: [{ label: "Close" }] });
+  const levels = S.state.presets?.privacy_levels;
+  m = modal({ title, body: h("div", {}, levels ? h("p", { class: "small muted" }, levels) : null, search, listEl), buttons: [{ label: "Close" }] });
   api("GET", `/api/models?provider=${encodeURIComponent(provider)}`).then((r) => { models = r.models; draw(); })
     .catch((e) => listEl.replaceChildren(h("div", { class: "err" }, e.message)));
 }
@@ -2751,6 +2765,9 @@ function settingsPanel() {
     h("div", { class: "section" }, h("h3", {}, "The assistant"),
       h("div", { class: "small muted" }, asst ? `The AI you talk to. It works in its sandbox, through ${asst.name}. ${presets.length ? "These are the usual choices; any of its models works (Something else)." : "Choose its model (Something else)."}`
         : "The AI you talk to. Add a provider above first."),
+      st.assistant?.privacy ? h("div", { class: "row small", title: st.assistant.privacy.note || null }, "How private it is now:",
+        h("span", { class: st.assistant.privacy.level === "highest" ? "chip private" : st.assistant.privacy.level === "partial" ? "chip warn" : "chip" },
+          st.assistant.privacy.level_words), st.assistant.privacy.label ? h("span", { class: "muted" }, st.assistant.privacy.label) : null) : null,
       usable.length > 1 ? h("div", { class: "row small" }, "Runs on:",
         h("select", { onchange: (e) => save({ builder_provider: e.target.value }, `The assistant now runs on ${e.target.value}. Check its model below.`) },
           usable.map((p) => h("option", { value: p.name, selected: p.name === s.builder_provider }, p.name === providerKind(p) ? p.name : `${p.name} (${providerKind(p)})`)))) : null,

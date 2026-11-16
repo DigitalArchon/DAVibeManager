@@ -235,6 +235,16 @@ PROVIDER_PRESETS: tuple[dict, ...] = (
      "builder_url": ANTHROPIC_BASE_URL, "builder_auth": "x-api-key", "chat_api": "auto",
      "note": "Claude from Anthropic itself, for the assistant (its Claude Code speaks Anthropic's Messages API). It "
              "has no chat endpoint here, so it can't give second opinions: they come from another provider."},
+    {"id": "tinfoil", "label": "Add Tinfoil", "name": "Tinfoil", "base_url": TINFOIL_BASE_URL, "builder_url": "",
+     "builder_auth": "bearer", "chat_api": "tinfoil",
+     "note": "Tinfoil's own API, end-to-end encrypted (preliminary): every request is sealed on this computer to the "
+             "key of Tinfoil's attested router, over a connection pinned to its attested TLS key. Highest privacy. "
+             "Your Tinfoil key goes to https://inference.tinfoil.sh alone."},
+    {"id": "chutes", "label": "Add Chutes", "name": "Chutes", "base_url": CHUTES_BASE_URL,
+     "builder_url": CHUTES_ANTHROPIC_URL, "builder_auth": "bearer", "chat_api": "auto",
+     "note": "Every model Chutes lists. Its -TEE models are always sent end-to-end encrypted to an attested instance "
+             "(partial privacy, preliminary: the program holding the key is Chutes' signed, closed library, not "
+             "measured); its others aren't private. Your Chutes key goes to Chutes' own three hosts alone."},
     {"id": "openai", "label": "Add other (OpenAI-compatible)", "name": "", "base_url": "", "builder_url": "",
      "builder_auth": "bearer", "chat_api": "openai",
      "note": "A service that speaks OpenAI's chat completions at its own address (https://, or http:// only on this "
@@ -263,6 +273,19 @@ MODEL_PRESETS: tuple[dict, ...] = (
     {"id": "claude", "service": "nanogpt", "label": "Claude Opus 5.5",
      "note": "The strongest, especially for building apps. Paid per use; NanoGPT passes what it sees to Anthropic.",
      "settings": {"builder_model": CLAUDE_MODEL, "builder_small_model": ""}},
+    {"id": "tinfoil-glm", "service": "tinfoil", "label": "GLM 5.3, end-to-end encrypted",
+     "note": "Highest privacy: sealed to Tinfoil's attested router, its quick tasks and second opinions too. It can't "
+             "see screenshots. Paid per use.",
+     "settings": {"builder_model": "glm-5-3", "builder_small_model": "", "builder_vision_model": ""},
+     "review_model": "glm-5-3"},
+    {"id": "chutes-kimi", "service": "chutes", "label": "Kimi K3 (TEE), end-to-end encrypted",
+     "note": "Partial privacy: sealed to an attested Chutes instance, its quick tasks and second opinions too, but the "
+             "program holding the key is Chutes' own signed library, not measured. Paid per use.",
+     "settings": {"builder_model": "moonshotai/Kimi-K3-TEE", "builder_small_model": "", "builder_vision_model": ""},
+     "review_model": "moonshotai/Kimi-K3-TEE"},
+    {"id": "chutes-glm", "service": "chutes", "label": "GLM 5.3 (not private)",
+     "note": "Chutes reads what it is sent, as any provider of an ordinary model does. Paid per use.",
+     "settings": {"builder_model": "zai-org/GLM-5.3", "builder_small_model": ""}},
     {"id": "anthropic-opus", "service": "anthropic", "label": "Claude Opus 5.5",
      "note": "The strongest, especially for building apps, from Anthropic itself. Paid per use.",
      "settings": {"builder_model": "claude-opus-5-5", "builder_small_model": "", "builder_vision_model": ""}},

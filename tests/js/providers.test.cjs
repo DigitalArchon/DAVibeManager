@@ -231,3 +231,47 @@ test("the first run is still NanoGPT's quick setup, and a provider set up but no
   assert.match(chat.textContent, /nothing is sent to it/);
   assert.doesNotMatch(chat.textContent, /Paste your API key/);
 }));
+
+test("Add Tinfoil and Add Chutes fill in their addresses, and say how private their models are", { skip }, () => withPage(async (page) => {
+  let section = await openSettings(page, stateWith([]));
+  button(section, "Add Tinfoil").click();
+  let box = top(page);
+  assert.equal(field(box, "Chat address").value, "https://inference.tinfoil.sh/v1");
+  assert.equal(field(box, "The assistant's address").value, "");
+  assert.match(box.textContent, /Recognised as Tinfoil: every request to it must be sealed end to end\./);
+  assert.match(box.textContent, /Highest privacy/);
+  type(page, field(box, "API key"), "tk-test-12345678");
+  button(box, "Save").click();
+  await settle(page);
+  assert.deepEqual(posts(page, "/api/providers").at(-1).provider, { name: "Tinfoil", base_url: "https://inference.tinfoil.sh/v1",
+    builder_url: "", builder_auth: "bearer", chat_api: "tinfoil" });
+  section = page.d.querySelector("#panel-body #settings-providers");
+  button(section, "Add Chutes").click();
+  box = top(page);
+  assert.equal(field(box, "Chat address").value, "https://llm.chutes.ai/v1");
+  assert.equal(field(box, "The assistant's address").value, "https://claude.chutes.ai");
+  assert.equal(field(box, "Its key goes in").value, "bearer");
+  assert.match(box.textContent, /partial privacy, preliminary/);
+}));
+
+test("Tinfoil's and Chutes' usual models, and a model's privacy leading its line in the picker", { skip }, () => withPage(async (page) => {
+  const tinfoil = { name: "Tinfoil", base_url: "https://inference.tinfoil.sh/v1", builder_url: "", has_key: true, service: "tinfoil" };
+  const chutes = { name: "Chutes", base_url: "https://llm.chutes.ai/v1", builder_url: "https://claude.chutes.ai", has_key: true, service: "chutes" };
+  const labels = () => [...page.d.querySelectorAll('#panel-body input[name="am"]')].map((r) => r.closest("label").querySelector(":scope > div > div").textContent);
+  const state = stateWith([tinfoil, chutes], { builder_provider: "Chutes", builder_model: "moonshotai/Kimi-K3-TEE" });
+  state.assistant = { provider: "Chutes", model: "moonshotai/Kimi-K3-TEE", privacy: { kind: "sealed", service: "chutes", level: "partial",
+    level_words: "Partial privacy", label: "🔐 End-to-end encrypted (Chutes, partial)", note: "Partial privacy. …" } };
+  await openSettings(page, state);
+  assert.deepEqual(labels(), ["Kimi K3 (TEE), end-to-end encrypted", "GLM 5.3 (not private)", "Something else"]);
+  assert.match(page.d.querySelector("#panel-body").textContent, /How private it is now:Partial privacy/);
+  await openSettings(page, stateWith([tinfoil, chutes], { builder_provider: "Tinfoil", builder_model: "glm-5-3" }));
+  assert.deepEqual(labels(), ["GLM 5.3, end-to-end encrypted", "Something else"]);
+  page.run(`pickModel("Model", "Chutes", () => {})`);
+  await settle(page);
+  const picker = top(page);
+  assert.match(picker.textContent, /names three levels of privacy: highest/);
+  const rows = [...picker.querySelectorAll(".list-item")].map((r) => [r.querySelector(".mono").textContent, r.querySelector(".chip")?.textContent, r.querySelector(".chip")?.title]);
+  assert.deepEqual(rows, [["moonshotai/Kimi-K3-TEE", "Partial privacy · sealed", "n"], ["zai-org/GLM-5.3", "Not private", "Chutes reads this model's text"]]);
+}, { "GET /api/models": { models: [
+  { id: "moonshotai/Kimi-K3-TEE", tier: "e2ee", privacy: { kind: "sealed", service: "chutes", level: "partial", level_words: "Partial privacy", note: "n" } },
+  { id: "zai-org/GLM-5.3", tier: "standard", privacy: { kind: "", service: "", level: "none", level_words: "Not private", note: "Chutes reads this model's text" } }] } }));
