@@ -2666,6 +2666,11 @@ function providerDialog(p) {
     buttons: [{ label: "Cancel" },
       { label: "Save & test", onClick: async () => {
         const n = await save(true);
+        if (!p.base_url) {
+          // the model list comes from the chat address: Anthropic's own, here, has none
+          status.textContent = "Saved. It has no chat address, so there's no model list to test it with: the assistant's next message will.";
+          return true;
+        }
         status.textContent = "Testing…";
         try {
           const got = (await api("GET", `/api/models?provider=${encodeURIComponent(n)}&refresh=true`)).models || [];

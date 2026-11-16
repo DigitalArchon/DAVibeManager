@@ -72,6 +72,12 @@ test("Add Anthropic is the assistant's address alone, its key in x-api-key; a na
   assert.equal(field(box, "Chat address").value, "");
   assert.equal(field(box, "The assistant's address").value, "https://api.anthropic.com");
   assert.equal(field(box, "Its key goes in").value, "x-api-key");
+  type(page, field(box, "API key"), "sk-ant-test-1234");
+  button(box, "Save & test").click();
+  await settle(page);
+  assert.match(box.textContent, /no chat address, so there's no model list to test it with/);
+  assert.deepEqual(plain(page.calls().filter((c) => c.path === "/api/models").map((c) => c.query)), []);
+  assert.equal(posts(page, "/api/providers")[0].provider.builder_auth, "x-api-key");
 }));
 
 test("an address typed by hand is recognised: Tinfoil's is sealed whatever button added it", { skip }, () => withPage(async (page) => {
