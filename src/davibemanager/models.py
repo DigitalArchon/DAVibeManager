@@ -603,6 +603,9 @@ class Models:
         """Nothing goes to a TEE model whose enclave hasn't attested; an attestation older than
         TEE_REATTEST_SECONDS, or one a reply of failed its check against (reply_check), is made again
         first. None for a model that isn't TEE."""
+        if problem := sealing_problem(prov, model):
+            # a Chutes -TEE model reads as TEE by its name, but isn't NanoGPT's to attest: nothing is asked or sent
+            raise UserError(problem)
         if not self.is_tee(prov, model):
             return None
         key = (prov.name, prov.base_url, model)     # another address: attested again

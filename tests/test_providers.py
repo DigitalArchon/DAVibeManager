@@ -80,6 +80,19 @@ def test_nothing_that_must_be_sealed_goes_through_a_plain_client():
     assert sealing_problem(cfg.provider("Chutes"), "deepseek-ai/DeepSeek-V4") is None
 
 
+async def test_a_chutes_tee_model_isnt_attested_as_nanogpts_tee_models_are():
+    """Its name reads as TEE (detect_tier), but NanoGPT's TEE attestation isn't Chutes': the guard every request to a
+    model takes (the reviewer's, the vision helper's, the gateway's) refuses it before anything is asked of anyone."""
+    cfg = Config(providers=[Provider("Chutes", config.CHUTES_BASE_URL, key_for=["https://llm.chutes.ai:443"])])
+    m = _models(cfg)
+    asked = []
+    m.tee_factory = lambda *a: asked.append(a)
+    creds.set_secret("provider", "Chutes", "cpk-test-123")
+    with pytest.raises(UserError, match="one of Chutes' TEE models"):
+        await m.tee_guard(cfg.provider("Chutes"), "moonshotai/Kimi-K3-TEE")
+    assert asked == [] and await m.tee_guard(cfg.provider("Chutes"), "deepseek-ai/DeepSeek-V4") is None
+
+
 # --- key origins --------------------------------------------------------------------------------------------------
 
 def test_a_chutes_key_goes_to_chutes_own_hosts_and_nowhere_else():
