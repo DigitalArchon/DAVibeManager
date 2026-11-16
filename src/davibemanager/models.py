@@ -10,6 +10,7 @@ attestation means nothing is sent.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import re
 import time
 from typing import Callable
@@ -18,14 +19,19 @@ from . import config as config_mod
 from . import creds
 from .config import Config, Provider, provider_defaults
 from .llm import capabilities
+from .llm import privacy as privacy_mod
 from .llm import dcap
 from .llm import params as params_mod
 from .llm import routes as routes_mod
 from .llm import tee as tee_mod
+from .llm.chutes_client import ChutesClient, ChutesE2EEClient, ChutesState, list_chutes_models
+from .llm.chutes_client import listing_capabilities as chutes_capabilities
 from .llm.client import LLMClient, detect_tier, is_private_mode
 from .llm.errors import error_words, shown_error
-from .llm.private_mode import (Enclave, PrivateModeClient, list_private_models, offers_private_mode, relay_said,
-                               relay_url)
+from .llm.private_mode import (Enclave, PrivateModeClient, PrivateModeError, list_private_models, offers_private_mode,
+                               relay_said, relay_url)
+from .llm.tinfoil_direct import TinfoilDirectClient, TinfoilState
+from .llm.tinfoil_direct import listing_capabilities as tinfoil_capabilities
 from .netpolicy import InsecureURL, UnusableKey, check_url, in_the_clear, key_problem, origin, scrubbed, shown
 
 # A TEE model's attestation is made again, with a fresh nonce, before a send once it is this old: on a
@@ -55,6 +61,41 @@ class OpeningPrivateModeClient(PrivateModeClient):
     def stream(self, model: str, messages: list[dict], tools: list[dict] | None = None,
                params: dict | None = None, *, opened: bool = True):
         return super().stream(model, messages, tools, params, opened=opened)
+
+
+class OpeningTinfoilClient(TinfoilDirectClient):
+    """Tinfoil's direct client as this app uses it: ("open", None) once the enclave's sealed reply has begun, as every
+    stream the gateway reads says it (OpeningPrivateModeClient)."""
+
+    def stream(self, model: str, messages: list[dict], tools: list[dict] | None = None,
+               params: dict | None = None, *, opened: bool = True):
+        return super().stream(model, messages, tools, params, opened=opened)
+
+
+class OpeningChutesClient(ChutesClient):
+    """One Chutes provider's chat as this app uses it: its -TEE models sealed (ChutesE2EEClient), the others through
+    the plain client, and ("open", None) once a reply has begun, either way."""
+
+    def stream(self, model: str, messages: list[dict], tools: list[dict] | None = None,
+               params: dict | None = None, *, opened: bool = True):
+        return super().stream(model, messages, tools, params, opened=opened)
+
+
+def listed_caps(caps: dict[str, dict]) -> dict[str, dict]:
+    """Tinfoil's or Chutes' listing (their listing_capabilities) in this app's shape (capabilities.parse): each price
+    per million tokens as input, output and cache reads and writes, as NanoGPT's are kept."""
+    out = {}
+    for model_id, entry in caps.items():
+        p = entry.get("pricing") or {}
+        price = None
+        if isinstance(p.get("prompt"), (int, float)) and isinstance(p.get("completion"), (int, float)):
+            read = p.get("input_cache_read")
+            price = {"input": float(p["prompt"]), "output": float(p["completion"]),
+                     "cache_read": float(read) if isinstance(read, (int, float)) else float(p["prompt"]),
+                     "cache_write": float(p["prompt"])}
+        out[model_id] = {**entry, "efforts": [e for e in entry.get("efforts") or [] if e in capabilities.EFFORTS],
+                         "pricing": price, "included": False}
+    return out
 
 
 class UserError(Exception):
@@ -106,16 +147,16 @@ def key_problem_for(prov: Provider) -> str | None:
 
 
 def sealing_problem(prov: Provider, model: str) -> str | None:
-    """Why `model` on `prov` can't be sent at all, or None: its requests must be sealed end to end (config.model_sealing:
-    any model on a Tinfoil endpoint, a Chutes -TEE model), and this app has no client that seals them yet. Sent as any
-    other model's, the text would be read in the clear on its way, so nothing is sent (when in doubt, sealed)."""
-    sealing = config_mod.model_sealing(prov, model)
-    if sealing == "tinfoil":
-        return (f"{prov.name} is Tinfoil's end-to-end encrypted API: {model or 'its models'} can only be sent sealed on "
-                "this computer, which this version of DA Vibe Manager can't do yet, so nothing is sent to it.")
-    if sealing == "chutes":
-        return (f"{model} is one of Chutes' TEE models, always sent end-to-end encrypted: this version of DA Vibe Manager "
-                "can't seal it yet, so nothing is sent to it. Chutes' other models work as any provider's.")
+    """Why `model` on `prov` can't be sent at all, or None: its requests must be sealed end to end (config.model_sealing)
+    by a client this provider's addresses can't take. Chutes' -TEE models are sealed only through Chutes' own hosts
+    (llm/chutes_client.py not_chutes). Sent any other way, the text would be read in the clear on its way, so nothing is
+    sent (when in doubt, sealed)."""
+    if config_mod.model_sealing(prov, model) == "chutes":
+        base = prov.base_url if config_mod.on_chutes(prov.base_url) else prov.builder_url
+        if origin(base) not in config_mod.CHUTES_KEY_ORIGINS:
+            return (f"{model} is one of Chutes' TEE models, sent only end-to-end encrypted through Chutes' own "
+                    f"addresses ({privacy_mod.CHUTES_BASE_URL} or {privacy_mod.CHUTES_ANTHROPIC_URL}), and "
+                    f"{prov.name}'s isn't one: nothing was sent. Set its address in Settings → AI providers.")
     return None
 
 
@@ -143,6 +184,11 @@ class Models:
         self._attest_lock = asyncio.Lock()
         self._hosts: dict[tuple[str, str], tuple[float, dict]] = {}   # (base, model) -> (when, NanoGPT's listing)
         self.hosts_http = None                        # httpx client override (tests)
+        # per provider: Tinfoil's attested router and listing (TinfoilState), Chutes' attested instances and nonces
+        # (ChutesState) and its sealing client: (what they were made for, the object), in memory only
+        self._sealed: dict[str, tuple[tuple, object]] = {}
+        self.listing_http = None                      # httpx client override for the keyless listings (tests)
+        self._told_chutes: set[str] = set()          # Chutes models whose partial attestation the user was told of
 
     def _changed(self) -> None:
         self._emit("config_changed")
@@ -282,6 +328,12 @@ class Models:
         """Drop, and close, the attested TEE clients kept for provider `name`: they were made with its key and
         at its address as they were (DA Toolkit's review, Nov 2026: a new key went unused by the checks until
         the attestation aged out). Its models are attested again before anything more is sent to them."""
+        held = self._sealed.pop(name, None)
+        if held is not None and callable(getattr(held[1], "close", None)):
+            try:
+                held[1].close()
+            except Exception:  # noqa: BLE001 - it is forgotten all the same
+                pass
         for key in [k for k in self._tee if k[0] == name]:
             client = self._tee.pop(key)[0]
             self._doubted.discard(key)
@@ -308,25 +360,81 @@ class Models:
             raise UserError(problem)
         return key
 
-    def client(self, prov: Provider, model: str = "") -> LLMClient | PrivateModeClient:
+    def client(self, prov: Provider, model: str = ""):
+        """The client for `model` on `prov`, by how private it is there (config.privacy_of, llm/privacy.py): every model
+        on a Tinfoil endpoint through Tinfoil's direct client, sealed to its attested router; on a Chutes provider, its
+        -TEE models sealed to an attested instance and its others plain (ChutesClient); a private/ model through
+        NanoGPT's Private Mode; anything else through the plain client, which is never given a sealed host or model
+        (privacy.plain_refusal)."""
         if self.client_factory:
             return self.client_factory(prov, model)
-        if not prov.base_url:
-            raise UserError(f"{prov.name} has no chat endpoint, so it can't be the reviewer.")
+        found = config_mod.privacy_of(prov, model)
+        chutes = config_mod.on_chutes(prov.base_url or prov.builder_url)
+        if not prov.base_url and not (chutes and found.sealed):
+            raise UserError(f"{prov.name} has no chat address, so {model or 'its models'} can't be sent through it "
+                            "(Settings → AI providers).")
         if problem := sealing_problem(prov, model):
-            raise UserError(problem)            # never a plain client for a model that must be sealed
+            raise UserError(problem)
         key = self.key(prov)
-        enclave = None
-        if is_private_mode(model):
-            enclave = self._enclaves.get(prov.name)
-            if enclave is None or enclave.relay != relay_url(prov.base_url):
-                enclave = self._enclaves[prov.name] = Enclave(relay_url(prov.base_url),
-                                                              on_attested=lambda att: self._private_attested(prov, att))
         try:
-            return (OpeningPrivateModeClient(prov.base_url, key, enclave) if is_private_mode(model)
-                    else LLMClient(prov.base_url, key))
-        except (InsecureURL, UnusableKey) as e:
+            if found.service == privacy_mod.TINFOIL:
+                return OpeningTinfoilClient(prov.base_url, key, self._tinfoil_state(prov))
+            if chutes:
+                base = prov.base_url if config_mod.on_chutes(prov.base_url) else prov.builder_url
+                plain = LLMClient(prov.base_url, key) if prov.base_url and not found.sealed else None
+                return OpeningChutesClient(base, self._chutes_e2ee(prov, base, key), plain, http=self.listing_http)
+            if is_private_mode(model):
+                enclave = self._enclaves.get(prov.name)
+                if enclave is None or enclave.relay != relay_url(prov.base_url):
+                    enclave = self._enclaves[prov.name] = Enclave(
+                        relay_url(prov.base_url), on_attested=lambda att: self._private_attested(prov, att))
+                return OpeningPrivateModeClient(prov.base_url, key, enclave)
+            refusal = privacy_mod.plain_refusal(prov.base_url, f"the request for {model or 'its models'}",
+                                                api=config_mod._api(prov.chat_api), model=model)
+            if refusal:
+                raise UserError(refusal)
+            return LLMClient(prov.base_url, key)
+        except (InsecureURL, UnusableKey, PrivateModeError) as e:
             raise UserError(str(e)) from None
+
+    def _held_state(self, prov: Provider, made_for: tuple, make: Callable[[], object]):
+        """The object kept for `prov`'s sealed requests, made again (the old one closed) when what it was made for
+        changed: its address, or its key."""
+        held = self._sealed.get(prov.name)
+        if held is None or held[0] != made_for:
+            if held is not None and callable(getattr(held[1], "close", None)):
+                try:
+                    held[1].close()
+                except Exception:  # noqa: BLE001
+                    pass
+            held = self._sealed[prov.name] = (made_for, make())
+        return held[1]
+
+    def _tinfoil_state(self, prov: Provider) -> TinfoilState:
+        """One provider's attested router and listing, shared by its clients: the router attested again when old, our
+        prompt cache's secret kept in memory only, per provider."""
+        return self._held_state(prov, ("tinfoil", prov.base_url), lambda: TinfoilState(
+            prov.base_url, plain_http=self.listing_http, on_attested=lambda att: self._sealed_attested(prov, att)))
+
+    def _chutes_e2ee(self, prov: Provider, base: str, key: str | None) -> ChutesE2EEClient:
+        """One Chutes provider's sealing client (its instances' attestations and nonces), made again for a new key or
+        address. The key goes to Chutes' own hosts alone (privacy.key_may_go): its origin is the one of Chutes' hosts
+        it was entered for."""
+        saved_for = next((o for o in prov.key_for or [] if o in config_mod.CHUTES_KEY_ORIGINS), "")
+        made_for = ("chutes", base, saved_for, hashlib.sha256((key or "").encode()).hexdigest())
+        return self._held_state(prov, made_for, lambda: ChutesE2EEClient(
+            base, key, key_origin=saved_for, state=ChutesState(), on_attested=lambda att: self._sealed_attested(prov, att)))
+
+    def _sealed_attested(self, prov: Provider, att) -> None:
+        """A new attestation of Tinfoil's router or of a Chutes instance: in the log; and for Chutes, once a model,
+        what its partial attestation means (privacy.CHUTES_NOTE)."""
+        record = att.to_dict() if callable(getattr(att, "to_dict", None)) else {"attestation": str(att)}
+        self._log("sealed_attested", provider=prov.name, **{k: v for k, v in record.items() if k != "provider"})
+        if getattr(att, "service", "") == "chutes" and prov.name not in self._told_chutes:
+            self._told_chutes.add(prov.name)
+            self._emit("toast", level="info", text=(
+                f"{prov.name}: a Chutes instance was attested, partially (preliminary). " + privacy_mod.CHUTES_NOTE),
+                detail="\n\n".join(getattr(att, "costs", []) or []))
 
     def _private_attested(self, prov: Provider, att) -> None:
         """A new attestation of the Private Mode enclave: in the log, and said once if it runs an older
@@ -346,15 +454,43 @@ class Models:
             return await self.private_lister(base_url)
         return await list_private_models(base_url)
 
+    async def _listed(self, prov: Provider) -> dict[str, dict] | None:
+        """Tinfoil's or Chutes' own public list of models, with what each can do and its prices (this app's shape:
+        listed_caps), read without the key; None for any other provider."""
+        service = prov.service()
+        if service == "tinfoil":
+            entries = await self._tinfoil_state(prov).listing.fetch()
+            return listed_caps(tinfoil_capabilities(entries))
+        if service == "chutes":
+            return listed_caps(chutes_capabilities(await list_chutes_models(self.listing_http)))
+        return None
+
+    def tier(self, prov: Provider, model: str) -> str:
+        """The model's tier as this app's checks read it: "e2ee" for any sealed one (NanoGPT's private/, Tinfoil's, a
+        Chutes -TEE one), else llm/client.detect_tier's."""
+        found = config_mod.privacy_of(prov, model)
+        if found.sealed:
+            return "e2ee"
+        if found.service in ("tinfoil", "chutes"):
+            return "standard"
+        return detect_tier(model, prov.base_url or prov.builder_url, prov.tier_overrides)
+
     async def list_models(self, provider_name: str, refresh: bool = False) -> list[dict]:
         prov = self.provider(provider_name)
         if refresh or provider_name not in self._models:
             try:
-                ids = await self.client(prov).list_models()
+                listed = await self._listed(prov)
+                if listed is not None:
+                    ids = sorted(listed)
+                    self._caps[prov.name] = listed
+                    self._caps_failed.pop(prov.name, None)
+                else:
+                    ids = await self.client(prov).list_models()
             except UserError:
                 raise
             except Exception as e:  # noqa: BLE001
-                raise UserError(f"Could not list models from {shown(prov.base_url)}: {scrubbed(e)}") from e
+                raise UserError(f"Could not list models from {shown(prov.base_url or prov.builder_url)}: "
+                                f"{scrubbed(e)}") from e
             if offers_private_mode(prov.base_url):
                 try:
                     ids = sorted(set(ids) | set(await self._private_ids(prov.base_url)))
@@ -365,21 +501,25 @@ class Models:
         out = []
         for m in self._models[provider_name]:
             caps = capabilities.lookup(self._caps.get(prov.name, {}), m) or {}
-            out.append({"id": m, "tier": detect_tier(m, prov.base_url, prov.tier_overrides),
+            # how private each is leads its note wherever a model is chosen (the cross-app standard)
+            out.append({"id": m, "tier": self.tier(prov, m), "privacy": config_mod.privacy_of(prov, m).to_dict(),
                         "reasoning": caps.get("reasoning", False), "context": caps.get("context")})
         return out
 
     async def _load_caps(self, prov: Provider) -> bool:
-        """Read the provider's model list; whether there's one now. A provider other than NanoGPT lists
-        nothing of what its models do: known as that. One that can't be read now isn't taken for an
-        empty list: it's asked for again, CAPS_RETRY_SECONDS later at the soonest."""
-        if not offers_private_mode(prov.base_url):
+        """Read the provider's model list; whether there's one now. Tinfoil and Chutes list theirs publicly, NanoGPT
+        with the key; any other provider lists nothing of what its models do: known as that. One that can't be read
+        now isn't taken for an empty list: it's asked for again, CAPS_RETRY_SECONDS later at the soonest."""
+        service = prov.service()
+        if not offers_private_mode(prov.base_url) and service not in ("tinfoil", "chutes"):
             self._caps.setdefault(prov.name, {})
             return True
         if time.monotonic() - self._caps_failed.get(prov.name, float("-inf")) < CAPS_RETRY_SECONDS:
             return prov.name in self._caps
         try:
-            caps = await capabilities.fetch_nanogpt(prov.base_url, self.key(prov), http=self.caps_http)
+            listed = await self._listed(prov)
+            caps = listed if listed is not None else \
+                await capabilities.fetch_nanogpt(prov.base_url, self.key(prov), http=self.caps_http)
         except Exception:  # noqa: BLE001 - models still work; their limits are just unknown for now
             caps = {}
         if not caps:
@@ -520,8 +660,11 @@ class Models:
         return key
 
     def is_tee(self, prov: Provider, model: str) -> bool:
-        """A model attested before anything is sent to it (tee_guard), whose replies are checked against the
-        record its enclave signs (reply_check)."""
+        """A model attested through NanoGPT's TEE checks before anything is sent to it (tee_guard), whose replies are
+        checked against the record its enclave signs (reply_check). Never one Tinfoil's or Chutes' own client attests
+        and seals (a Chutes -TEE id reads as TEE by its name)."""
+        if config_mod.privacy_of(prov, model).service in ("tinfoil", "chutes"):
+            return False
         return detect_tier(model, prov.base_url, prov.tier_overrides) == "tee"
 
     async def complete(self, client, prov: Provider, model: str, messages: list[dict]) -> str:
@@ -539,6 +682,15 @@ class Models:
             return await client.complete(model, messages, self.params(prov, model), **exact)
 
     # ---------------------------------------------------------------- the two roles
+
+    def privacy(self, prov: Provider | None, model: str) -> privacy_mod.Privacy:
+        """How private `model` is on `prov` (config.privacy_of): its kind, service and level."""
+        return config_mod.privacy_of(prov, model)
+
+    def assistant_privacy(self) -> privacy_mod.Privacy:
+        """How private the assistant's model is on its provider, now."""
+        s = self.cfg.settings
+        return self.privacy(self.cfg.provider(s.builder_provider), s.builder_model)
 
     def vision_target(self) -> tuple[Provider | None, str]:
         """The vision helper's provider and model: the one its setting names ("provider|model"), else the assistant's
@@ -572,12 +724,17 @@ class Models:
         # models, so on the wire those are like any standard model. The vision helper's on its own provider
         vprov, vision = self.vision_target()
         seen = [(prov, m) for m in (s.builder_model, small) if m] + ([(vprov, vision)] if vprov and vision else [])
-        tiers = [detect_tier(m, p.builder_url or p.base_url, p.tier_overrides) for p, m in seen]
+        tiers = [self.tier(p, m) for p, m in seen]
         tier = min(("standard" if t == "tee" else t for t in tiers), key=order.index)
-        if is_private_mode(s.builder_model):
-            tier = "e2ee"       # the gateway seals the chat's every request, or refuses it (and no clear image helper)
+        if config_mod.privacy_of(prov, s.builder_model).sealed:
+            # the gateway seals the chat's every request (NanoGPT's Private Mode, Tinfoil's or Chutes' own client),
+            # or refuses it, and no image helper less private than it is given anything (Engine._builder_upstream)
+            tier = "e2ee"
         claude = [m.lower().startswith(("anthropic/", "claude")) for m in (s.builder_model, small)]
-        if not prov.base_url and not all(claude):
+        chat_less = [m for m, c in zip((s.builder_model, small), claude)
+                     if not c and config_mod.model_sealing(prov, m) != "chutes"]
+        if not prov.base_url and chat_less:
+            # a Chutes -TEE model needs none: it is sealed to api.chutes.ai whatever the provider speaks
             raise UserError(f"Models other than Claude need {prov.name}'s chat address (Settings → AI providers).")
         if not prov.builder_url and any(claude):
             raise UserError(f"Claude models need {prov.name}'s address for Anthropic's Messages API (Settings → AI "
@@ -604,7 +761,7 @@ class Models:
         TEE_REATTEST_SECONDS, or one a reply of failed its check against (reply_check), is made again
         first. None for a model that isn't TEE."""
         if problem := sealing_problem(prov, model):
-            # a Chutes -TEE model reads as TEE by its name, but isn't NanoGPT's to attest: nothing is asked or sent
+            # a Chutes -TEE model on an address that isn't Chutes' own: nothing is asked of anyone, nothing sent
             raise UserError(problem)
         if not self.is_tee(prov, model):
             return None

@@ -38,6 +38,9 @@ class Conversation:
     remake: bool = False       # an app chat that makes its app again, cleanly, from the official source
     after_reset: bool = False  # the sandbox was reset since its last turn: the next one tells the assistant
     sealed: bool = False       # it ran on a private (end-to-end encrypted) model: it's never sent anywhere in the clear
+    # how private the model it ran on was (llm/privacy.py record_of: kind, service, origin; None before its first turn
+    # since Nov 2026): it moves only to a model at that level or higher (Engine._privacy_check)
+    privacy: dict | None = None
 
     @classmethod
     def create(cls, root: Path | None = None) -> "Conversation":
@@ -68,7 +71,8 @@ class Conversation:
                    requests=list(data.get("requests", [])), questions=list(data.get("questions", [])),
                    tokens=dict(data.get("tokens") or {}), mode=data.get("mode") or _old_mode(data),
                    app=data.get("app", ""), app_name=data.get("app_name", ""), remake=bool(data.get("remake")),
-                   after_reset=bool(data.get("after_reset")), sealed=bool(data.get("sealed")))
+                   after_reset=bool(data.get("after_reset")), sealed=bool(data.get("sealed")),
+                   privacy=data.get("privacy") if isinstance(data.get("privacy"), dict) else None)
 
     @staticmethod
     def list_all(root: Path | None = None) -> list[dict]:
@@ -107,7 +111,8 @@ class Conversation:
         write_private(self.dir / "state.json", json.dumps({"version": 1, "title": self.title, "started": self.started, "session": self.session,
                                    "chat": self.chat, "requests": self.requests, "questions": self.questions,
                                    "tokens": self.tokens, "mode": self.mode, "app": self.app, "app_name": self.app_name,
-                                   "remake": self.remake, "after_reset": self.after_reset, "sealed": self.sealed},
+                                   "remake": self.remake, "after_reset": self.after_reset, "sealed": self.sealed,
+                                   "privacy": self.privacy},
                                   ensure_ascii=False, default=str))
 
     def log(self, event: str, **data) -> None:
@@ -116,7 +121,8 @@ class Conversation:
 
     def to_dict(self) -> dict:
         return {"id": self.id, "title": self.title or "New chat", "started": self.started, "dir": str(self.dir),
-                "mode": self.mode, "app": self.app, "app_name": self.app_name, "remake": self.remake, "sealed": self.sealed}
+                "mode": self.mode, "app": self.app, "app_name": self.app_name, "remake": self.remake, "sealed": self.sealed,
+                "privacy": self.privacy}
 
 
 def _old_mode(data: dict) -> str:

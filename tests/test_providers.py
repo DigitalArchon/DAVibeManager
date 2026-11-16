@@ -57,40 +57,60 @@ def test_an_older_config_with_tinfoils_address_is_sealed_and_a_protocol_without_
     assert prov.chat_api == "auto" and prov.sealed_service() == "tinfoil" and prov.key_declined == []
 
 
-def test_nothing_that_must_be_sealed_goes_through_a_plain_client():
-    """No client seals Tinfoil's or Chutes' TEE models yet: they are refused in words, before anything is sent, for the
-    reviewer, the vision helper and the assistant alike. Chutes' other models go as any provider's."""
-    cfg = Config(providers=[Provider("Tinfoil", config.TINFOIL_BASE_URL, chat_api="openai", key_for=[config.TINFOIL_KEY_ORIGIN]),
+def test_each_model_goes_through_the_client_its_privacy_needs():
+    """Every model on a Tinfoil endpoint (however its address got there) through Tinfoil's direct client, its state one
+    per provider; on a Chutes provider its -TEE models sealed by Chutes' own client and the others plain; nothing that
+    must be sealed through a plain client (privacy.plain_refusal)."""
+    from davibemanager.llm.client import LLMClient
+    from davibemanager.models import OpeningChutesClient, OpeningTinfoilClient
+
+    cfg = Config(providers=[Provider("Typed", config.TINFOIL_BASE_URL, chat_api="openai", key_for=[config.TINFOIL_KEY_ORIGIN]),
                             Provider("Chutes", config.CHUTES_BASE_URL, builder_url=config.CHUTES_ANTHROPIC_URL,
-                                     key_for=["https://llm.chutes.ai:443"])])
+                                     key_for=["https://llm.chutes.ai:443"]),
+                            Provider("Claude proxy only", "", builder_url=config.CHUTES_ANTHROPIC_URL,
+                                     key_for=["https://claude.chutes.ai:443"]),
+                            Provider("Elsewhere", "https://llm.example/v1", key_for=["https://llm.example:443"])])
     m = _models(cfg)
-    creds.set_secret("provider", "Tinfoil", "tk-test-123")
-    creds.set_secret("provider", "Chutes", "cpk-test-123")
-    with pytest.raises(UserError, match="Tinfoil's end-to-end encrypted API.*nothing is sent"):
-        m.client(cfg.provider("Tinfoil"), "glm-5-3")
-    with pytest.raises(UserError, match="one of Chutes' TEE models.*nothing is sent"):
-        m.client(cfg.provider("Chutes"), "moonshotai/Kimi-K3-TEE")
-    assert m.client(cfg.provider("Chutes"), "deepseek-ai/DeepSeek-V4") is not None
+    for name in ("Typed", "Chutes", "Claude proxy only", "Elsewhere"):
+        creds.set_secret("provider", name, "sk-test-12345678")
+    one, two = m.client(cfg.provider("Typed"), "glm-5-3"), m.client(cfg.provider("Typed"), "gpt-oss-120b")
+    assert isinstance(one, OpeningTinfoilClient) and one.state is two.state            # one attested router a provider
+    sealed = m.client(cfg.provider("Chutes"), "moonshotai/Kimi-K3-TEE")
+    assert isinstance(sealed, OpeningChutesClient) and sealed.sealed("moonshotai/Kimi-K3-TEE") and sealed.plain is None
+    assert sealed.e2ee.key_origin == "https://llm.chutes.ai:443"
+    plain = m.client(cfg.provider("Chutes"), "zai-org/GLM-5.3")
+    assert not plain.sealed("zai-org/GLM-5.3") and isinstance(plain.plain, LLMClient)
+    assert plain.e2ee is sealed.e2ee                                                  # its attestations kept
+    only = m.client(cfg.provider("Claude proxy only"), "zai-org/GLM-5.2-TEE")       # sealed to api.chutes.ai
+    assert only.sealed("zai-org/GLM-5.2-TEE") and only.base_url == config.CHUTES_ANTHROPIC_URL
+    with pytest.raises(UserError, match="has no chat address"):
+        m.client(cfg.provider("Claude proxy only"), "zai-org/GLM-5.3")
+    assert isinstance(m.client(cfg.provider("Elsewhere"), "x/Model-TEE"), LLMClient)  # not Chutes: its own name
+    odd = Provider("Odd", "https://mirror.chutes.dev/v1", key_for=["https://mirror.chutes.dev:443"])
+    cfg.providers.append(odd)
+    creds.set_secret("provider", "Odd", "sk-test-12345678")
+    with pytest.raises(UserError, match="sent only end-to-end encrypted through Chutes' own addresses"):
+        m.client(odd, "moonshotai/Kimi-K3-TEE")
+    assert sealing_problem(cfg.provider("Chutes"), "moonshotai/Kimi-K3-TEE") is None
     cfg.settings.builder_provider, cfg.settings.builder_model = "Chutes", "moonshotai/Kimi-K3-TEE"
-    with pytest.raises(UserError, match="Chutes' TEE models"):
-        m.builder_target()
-    cfg.settings.builder_model, cfg.settings.builder_small_model = "deepseek-ai/DeepSeek-V4", "zai-org/GLM-5.3-TEE"
-    with pytest.raises(UserError, match="GLM-5.3-TEE is one of Chutes' TEE models"):
-        m.builder_target()                                   # the quick tasks' model too
-    assert sealing_problem(cfg.provider("Chutes"), "deepseek-ai/DeepSeek-V4") is None
+    assert m.builder_target()[3] == "e2ee"                     # sealed: the gateway translates it, never passes it on
+    cfg.settings.builder_provider, cfg.settings.builder_model = "Typed", "glm-5-3"
+    assert m.builder_target()[3] == "e2ee"
 
 
 async def test_a_chutes_tee_model_isnt_attested_as_nanogpts_tee_models_are():
-    """Its name reads as TEE (detect_tier), but NanoGPT's TEE attestation isn't Chutes': the guard every request to a
-    model takes (the reviewer's, the vision helper's, the gateway's) refuses it before anything is asked of anyone."""
-    cfg = Config(providers=[Provider("Chutes", config.CHUTES_BASE_URL, key_for=["https://llm.chutes.ai:443"])])
+    """Its name reads as TEE (detect_tier), but NanoGPT's TEE attestation isn't Chutes': its own client attests the
+    instance it seals to. The guard every request takes asks nothing of anyone for it."""
+    cfg = Config(providers=[Provider("Chutes", config.CHUTES_BASE_URL, key_for=["https://llm.chutes.ai:443"]),
+                            Provider("Odd", "https://mirror.chutes.dev/v1", key_for=["https://mirror.chutes.dev:443"])])
     m = _models(cfg)
     asked = []
     m.tee_factory = lambda *a: asked.append(a)
-    creds.set_secret("provider", "Chutes", "cpk-test-123")
-    with pytest.raises(UserError, match="one of Chutes' TEE models"):
-        await m.tee_guard(cfg.provider("Chutes"), "moonshotai/Kimi-K3-TEE")
-    assert asked == [] and await m.tee_guard(cfg.provider("Chutes"), "deepseek-ai/DeepSeek-V4") is None
+    assert await m.tee_guard(cfg.provider("Chutes"), "moonshotai/Kimi-K3-TEE") is None
+    assert await m.tee_guard(cfg.provider("Chutes"), "deepseek-ai/DeepSeek-V4") is None
+    with pytest.raises(UserError, match="Chutes' own addresses"):
+        await m.tee_guard(cfg.provider("Odd"), "moonshotai/Kimi-K3-TEE")
+    assert asked == [] and not m.is_tee(cfg.provider("Chutes"), "moonshotai/Kimi-K3-TEE")
 
 
 # --- key origins --------------------------------------------------------------------------------------------------

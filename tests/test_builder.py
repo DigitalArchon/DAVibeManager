@@ -1115,6 +1115,42 @@ async def test_a_private_chat_stays_private(builder_env):
     assert engine.builder is not first and clients[-1].options.env["ANTHROPIC_MODEL"] == "private/kimi-k3"
 
 
+async def test_a_chat_moves_only_to_a_model_at_its_level_or_higher(builder_env):
+    """The three levels (llm/privacy.py): a chat that ran on Tinfoil (highest) goes on with NanoGPT's private/ models
+    (highest too), never with a Chutes -TEE model (partial): its whole session would go along with less privacy. Its
+    record says what it was made; one that ran with partial privacy never goes to an ordinary model."""
+    from davibemanager import config, creds
+    from davibemanager.config import Provider
+    from davibemanager.engine import UserError
+    engine, _, _, _ = builder_env
+    for prov in (Provider("Tinfoil", config.TINFOIL_BASE_URL, key_for=[config.TINFOIL_KEY_ORIGIN]),
+                 Provider("Chutes", config.CHUTES_BASE_URL, builder_url=config.CHUTES_ANTHROPIC_URL,
+                          key_for=["https://llm.chutes.ai:443"])):
+        engine.cfg.providers.append(prov)
+        creds.set_secret("provider", prov.name, "sk-test-12345678")
+    s = engine.cfg.settings
+    s.builder_provider, s.builder_model, s.builder_small_model, s.builder_vision_model = "Tinfoil", "glm-5-3", "", ""
+    s.review_model = "Tinfoil|glm-5-3"
+    engine._script = said("Sealed by Tinfoil.")
+    engine.send("A private question")
+    await wait_for(lambda: len(engine.conv.chat) == 2, "the answer")
+    assert engine.conv.privacy == {"kind": "sealed", "service": "tinfoil", "origin": "https://inference.tinfoil.sh:443"}
+    assert engine.conv.sealed
+    s.builder_provider, s.builder_model = "Chutes", "moonshotai/Kimi-K3-TEE"
+    with pytest.raises(UserError, match="only ever sent sealed, at its level or higher: moonshotai/Kimi-K3-TEE is "
+                                        "end-to-end encrypted through Chutes, but has partial privacy"):
+        engine.send("And now to Chutes?")
+    assert len(engine.conv.chat) == 2
+    s.builder_provider, s.builder_model, s.review_model = "Fake", "private/kimi-k3", "Fake|private/glm-5-3"
+    engine.send("To NanoGPT's private model")
+    await wait_for(lambda: len(engine.conv.chat) == 4, "the second answer")
+    assert engine.conv.privacy["service"] == "nanogpt-private"
+    engine.conv.privacy, engine.conv.sealed = {"kind": "tee", "service": "nanogpt-tee", "origin": ""}, False
+    s.builder_model = "z-ai/glm-5.3"
+    with pytest.raises(UserError, match="This chat ran with partial privacy, so it's only ever sent at that level"):
+        engine.send("In the clear?")
+
+
 def said(text):
     async def script(c, sent):
         await c.queue.put(AssistantMessage([TextBlock(text)], "m"))

@@ -49,7 +49,7 @@ from .hostenv import host_env
 from .hostrun import HostRequest
 from .llm import anthropic_bridge, capabilities, prompts, websearch
 from .llm import routes as routes_mod
-from .llm.client import is_private_mode
+from .llm import privacy as privacy_mod
 from .llm.errors import shown_error
 from .models import KeyHeldBack, KeyringWait, Models, UserError, key_problem_for
 from .netpolicy import InsecureURL, check_url
@@ -452,7 +452,9 @@ class Engine:
         """What Settings → AI providers adds providers with, and the assistant's usual models on each service
         (config.PROVIDER_PRESETS, MODEL_PRESETS); and Chutes' own hosts, where a Chutes key may go (config.key_reaches)."""
         return {"providers": list(config_mod.PROVIDER_PRESETS), "models": list(config_mod.MODEL_PRESETS),
-                "chutes_key_origins": sorted(config_mod.CHUTES_KEY_ORIGINS)}
+                "chutes_key_origins": sorted(config_mod.CHUTES_KEY_ORIGINS),
+                # the three levels in one sentence, wherever a model is chosen (the cross-app standard)
+                "privacy_levels": privacy_mod.PRIVACY_LEVELS}
 
     @staticmethod
     def _has_secret(kind: str, name: str) -> bool:
@@ -477,7 +479,8 @@ class Engine:
     def assistant_status(self) -> dict:
         try:
             prov, model, small, tier = self.models.builder_target()
-            out = {"provider": prov.name, "model": model, "small_model": small, "tier": tier}
+            out = {"provider": prov.name, "model": model, "small_model": small, "tier": tier,
+                   "privacy": self.models.privacy(prov, model).to_dict()}
         except KeyHeldBack as e:
             # stored but not sent: the window says why and the way out, never the first run's "paste your key"
             out = {"error": str(e), "key_held": True}
@@ -539,6 +542,30 @@ class Engine:
                     "container_memory",
                     "container_cpus", "install_dir", "ui_mode")
 
+    def _privacy_settings_check(self, chosen: dict) -> None:
+        """The assistant's models, vision helper and reviewer as about to be saved: how private the assistant would
+        be, and what is given what it is given, each at its level or higher (the three levels, llm/privacy.py: a chat
+        moves only to a model at its own level or higher, on any service)."""
+        asst = self.cfg.provider(chosen["builder_provider"])
+        kept = self.models.privacy(asst, chosen["builder_model"])
+        helpers = [(asst, chosen["builder_small_model"])]
+        vname, vmodel = config_mod.model_ref(chosen["builder_vision_model"])
+        if vmodel:
+            helpers.append((self.cfg.provider(vname) if vname else asst, vmodel))
+        for prov, model in helpers:
+            if model and privacy_mod.rank(self.models.privacy(prov, model)) < privacy_mod.rank(kept):
+                raise UserError(
+                    f"With a private model ({privacy_mod.level_phrase(kept)}), the models for quick tasks and for images "
+                    "must be private too, at that level or higher (or empty, to use the same one): what the assistant "
+                    f"is given would otherwise go to them with less. {privacy_mod.move_note(kept, 'The assistant')}.")
+        rname, rmodel = config_mod.model_ref(chosen["review_model"])
+        if rmodel and kept.private and privacy_mod.rank(
+                self.models.privacy(self.cfg.provider(rname), rmodel)) < privacy_mod.rank(kept):
+            raise UserError(
+                f"With a private model ({privacy_mod.level_phrase(kept)}), the reviewer must be private too, at that "
+                "level or higher: second opinions read the commands your private chats propose. Choose such a "
+                "reviewer first (Second opinions), or pick a private preset, which sets one.")
+
     def save_settings(self, data: dict) -> None:
         s = self.cfg.settings
         # checked first: a value that's refused must never stay in the settings the app runs with
@@ -563,18 +590,8 @@ class Engine:
                 found = self.cfg.provider(named)
                 if found is None or not found.base_url:
                     raise UserError(f"{named} isn't one of your providers with a chat address, so it can't {what}.")
-        vision = config_mod.model_ref(chosen["builder_vision_model"])[1]
-        chosen["builder_vision_model"] = vision
-        if is_private_mode(chosen["builder_model"]) and any(
-                v and not is_private_mode(v) for v in (chosen["builder_small_model"], chosen["builder_vision_model"])):
-            raise UserError("With a private model, the models for quick tasks and for images must be private too (or "
-                            "empty, to use the same one): what the assistant is given would otherwise go to them in "
-                            "the clear.")
-        reviewer = chosen["review_model"].partition("|")[2]
-        if is_private_mode(chosen["builder_model"]) and reviewer and not is_private_mode(reviewer):
-            raise UserError("With a private model, the reviewer must be private too: second opinions read the commands "
-                            "your private chats propose. Choose a private reviewer first (Second opinions), or pick "
-                            "Private GLM 5.3, which sets one.")
+        if any(k in data for k in chosen):
+            self._privacy_settings_check(chosen)
         if "install_dir" in data:
             folder = str(data["install_dir"]).strip()
             where = Path(os.path.expanduser(folder)) if folder else None
@@ -1153,14 +1170,27 @@ class Engine:
                 self._note(f"Your message couldn't reach the assistant: {e}")
         self._spawn(go())
 
+    def _chat_privacy(self) -> privacy_mod.Privacy:
+        """How private this chat was made: its record (llm/privacy.py record_of), or for one from before Nov 2026 that
+        ran sealed, NanoGPT's Private Mode."""
+        held = privacy_mod.held(self.conv.privacy)
+        if self.conv.sealed and not held.sealed:
+            return privacy_mod.more_private(held, privacy_mod.Privacy("sealed", privacy_mod.NANOGPT_PRIVATE))
+        return held
+
     def _sealed_check(self) -> bool:
-        """Whether the assistant's models are private (sealed end to end); raises if this chat ran on one and
-        they aren't now: all of it would go along (its session, resumed), to a model that isn't sealed."""
-        sealed = self.models.builder_target()[3] == "e2ee"
-        if self.conv.sealed and not sealed:
-            raise UserError("This chat was with a private model, so it's only ever sent sealed: choose the private "
-                            "model again in Settings to go on with it, or start a new chat.")
-        return sealed
+        """Whether the assistant's models are private (sealed end to end); raises if this chat ran on a more private
+        model than they are now (llm/privacy.py move_refusal: a chat moves only to a model at its own level or
+        higher, on any service): all of it would go along (its session, resumed) with less privacy."""
+        prov, model, _, tier = self.models.builder_target()
+        now, kept = self.models.privacy(prov, model), self._chat_privacy()
+        refusal = privacy_mod.move_refusal(kept, now, model, what="this chat",
+                                           way_out="in Settings (The assistant), or start a new chat")
+        if refusal:
+            said = ("This chat was with a private model, so it's only ever sent sealed" if kept.sealed
+                    else f"This chat ran with {privacy_mod.level_phrase(kept)}, so it's only ever sent at that level")
+            raise UserError(f"{said}, at its level or higher: {refusal}")
+        return tier == "e2ee"
 
     def _start_turn(self, content: str, note: bool = True, prepare: Callable[[], Awaitable[str]] | None = None) -> None:
         """A turn with this message. `note`: the first of an app chat's session starts with the app's
@@ -1175,8 +1205,12 @@ class Engine:
             old, self.builder = self.builder, None      # its Claude Code has the models before in its settings
             self._spawn(old.close())
         self._builder_stale = False
-        if sealed and not self.conv.sealed:
-            self.conv.sealed = True
+        prov, model = self.models.builder_target()[:2]
+        record = privacy_mod.record_of(self.models.privacy(prov, model), prov.builder_url or prov.base_url)
+        if (sealed and not self.conv.sealed) or record != self.conv.privacy:
+            # at its level or higher (checked above): from now on it moves to nothing less
+            self.conv.sealed = self.conv.sealed or sealed
+            self.conv.privacy = record
             self.conv.save()
         builder = self._ensure_builder()
         if prepare is None:
@@ -1525,7 +1559,9 @@ class Engine:
         messages = [{"role": "system", "content": system}, {"role": "user", "content": context}]
         # in Sandbox activity beside the assistant's requests: how private it was, and for a TEE model what
         # its reply's check found
-        row = {"kind": "review", "purpose": purpose, "model": model, **({"private": True} if is_private_mode(model) else {})}
+        found = self.models.privacy(prov, model)
+        row = {"kind": "review", "purpose": purpose, "model": model, "level": found.level,
+               **({"private": True} if found.sealed else {})}
         started = time.monotonic()
         try:
             await self.models.tee_guard(prov, model)          # a TEE model's enclave attested first, or nothing goes
@@ -1566,13 +1602,16 @@ class Engine:
     def _private_review_check(self) -> None:
         """A command a private chat proposes goes to a reviewer only sealed too: it, and what it's for, come
         from that chat (Settings refuses the two together; a chat that ran private stays so: conv.sealed)."""
-        if not (is_private_mode(self.cfg.settings.builder_model) or self.conv.sealed):
+        kept = privacy_mod.more_private(self.models.assistant_privacy(), self._chat_privacy())
+        if not kept.private:
             return
-        _, model, _ = self.models.review_target()
-        if not is_private_mode(model):
-            raise UserError(f"This chat is private, and the reviewer ({model}) isn't: it would be given the command and "
-                            "what it's for in the clear, so it wasn't asked. Choose a private reviewer in Settings "
-                            "(Second opinions).")
+        prov, model, _ = self.models.review_target()
+        found = self.models.privacy(prov, model)
+        if privacy_mod.rank(found) < privacy_mod.rank(kept):
+            raise UserError(f"This chat is private ({privacy_mod.level_phrase(kept)}), and the reviewer ({model}) isn't, "
+                            f"at that level ({privacy_mod.level_phrase(found)}): it would be given the command and "
+                            "what it's for with less, so it wasn't asked. Choose a reviewer at its level or higher in "
+                            "Settings (Second opinions).")
 
     async def review_request(self, rid: int, auto: bool = False) -> dict:
         r = self._request(rid)
@@ -2094,31 +2133,36 @@ class Engine:
 
     def _builder_upstream(self) -> Upstream:
         prov, model, small, tier = self.models.builder_target()
-        chat = (lambda m: self.models.client(prov, m)) if prov.base_url else None
+        # translated (gateway.py) wherever there is a chat address, and always for a model sealed by its own client
+        sealed = any(self.models.privacy(prov, m).sealed for m in (model, small))
+        chat = (lambda m: self.models.client(prov, m)) if prov.base_url or sealed else None
         vprov, vision = self.models.vision_target()      # on the provider its setting names, else the assistant's
-        if is_private_mode(model) and vision and not is_private_mode(vision):
-            vision = ""                         # what it's shown would go to it in the clear: none at all
+        if vision and privacy_mod.rank(self.models.privacy(vprov, vision)) < privacy_mod.rank(self.models.privacy(prov, model)):
+            vision = ""                         # what it's shown would go to it with less privacy: none at all
         return Upstream(base_url=prov.builder_url, auth=prov.builder_auth, key=lambda: self.models.key(prov),
                         models=(model, small), provider=prov.name, tier=tier, chat=chat,
                         guard=lambda m: self.models.tee_guard(prov, m), reply_check=lambda m: self.models.reply_check(prov, m),
                         describe=self._describe_image if vision and vprov and vprov.base_url else None, vision_model=vision,
                         sees=lambda m: self.models.sees(prov, m), efforts=lambda m: self.models.efforts(prov, m),
-                        reasoning=self.cfg.settings.builder_reasoning, route=lambda m: self.models.route(prov, m))
+                        reasoning=self.cfg.settings.builder_reasoning, route=lambda m: self.models.route(prov, m),
+                        privacy=lambda m: self.models.privacy(prov, m))
 
     async def _describe_image(self, data_url: str, context: str) -> str:
         """The vision helper: a model that can see describes an image for the assistant."""
-        main = self.models.builder_target()[1]
+        aprov, main = self.models.builder_target()[:2]
         prov, model = self.models.vision_target()
         if prov is None or not model:
             raise UserError("No model is set to describe pictures (Settings → The assistant).")
-        if is_private_mode(main) and not is_private_mode(model):
-            raise UserError(f"{model} isn't private, and the assistant's model is: the picture isn't sent to it.")
+        kept, found = self.models.privacy(aprov, main), self.models.privacy(prov, model)
+        if privacy_mod.rank(found) < privacy_mod.rank(kept):
+            raise UserError(f"{model} isn't private enough ({privacy_mod.level_phrase(found)}), and the assistant's "
+                            f"model has {privacy_mod.level_phrase(kept)}: the picture isn't sent to it.")
         messages = [{"role": "system", "content": anthropic_bridge.VISION_PROMPT},
                     {"role": "user", "content": [
                         {"type": "text", "text": "What the assistant is doing: " + (context.strip() or "(not said)")},
                         {"type": "image_url", "image_url": {"url": data_url}}]}]
         started = time.monotonic()
-        private = {"private": True} if is_private_mode(model) else {}
+        private = {"private": True} if found.sealed else {}
         try:
             await self.models.tee_guard(prov, model)      # a TEE model's enclave attested first, as before any request to one
             check = self.models.reply_check(prov, model)  # and its reply checked against that attestation (_check_reply)

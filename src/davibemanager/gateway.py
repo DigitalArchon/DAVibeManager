@@ -35,7 +35,8 @@ import httpx
 from .llm import anthropic_bridge as bridge
 from .llm.errors import error_words, said as one_line, shown_error
 from .llm import routes
-from .llm.client import capped_lines, is_private_mode
+from .llm import privacy
+from .llm.client import capped_lines
 from .llm.secure_http import ACCEPT_ENCODING, ProviderError, is_local, loads, local_http_options
 from .llm.params import effort_unsupported, efforts_named, fit_claude, nearest_effort, with_effort
 from . import netpolicy
@@ -296,6 +297,12 @@ class Upstream:
     # which of NanoGPT's hosts runs a translated model: model id -> its route, or None for
     # NanoGPT's own choice (llm/routes.py)
     route: Callable[[str], dict | None] = lambda model: None
+    # how private a model is on this provider (llm/privacy.py Privacy: kind, service, level); by its id alone when not
+    # given (tests)
+    privacy: Callable[[str], object] | None = None
+
+    def privacy_of(self, model: str):
+        return self.privacy(model) if self.privacy is not None else privacy.privacy_at(model)
 
 
 
@@ -471,7 +478,7 @@ class Gateway:
                 return fail(path, 403, problem)
             body = await request.body()
             model, sent_model, data = "", "", {}
-            sealed = any(is_private_mode(m) for m in up.models[:1])     # the assistant's model is private
+            kept = up.privacy_of(up.models[0]) if up.models else privacy.NONE    # how private the assistant's model is
             if body and request.method == "POST":
                 try:
                     data = loads(body)            # nested no deeper than 200 levels (secure_http.loads)
@@ -481,28 +488,40 @@ class Gateway:
                     return fail(path, 400, "The request body isn't a JSON object.", "invalid_request_error")
                 model = sent_model = str(data.get("model") or "")
                 if model not in up.models:
-                    # Claude Code asks for its own defaults now and then; only the chosen models are used, and
-                    # never one in the clear for what was asked of a private model (a chat begun on private GLM,
-                    # then the models changed: its Claude Code still asks for it, with all that was said)
-                    sent_model = next((m for m in reversed(up.models) if is_private_mode(m)), "") \
-                        if is_private_mode(model) else up.models[-1]
+                    # Claude Code asks for its own defaults now and then; only the chosen models are used, and never
+                    # one less private than what was asked of (a chat begun on private GLM, then the models changed:
+                    # its Claude Code still asks for it, with all that was said)
+                    asked = up.privacy_of(model)
+                    sent_model = next((m for m in reversed(up.models)
+                                       if privacy.rank(up.privacy_of(m)) >= privacy.rank(asked)), "")
                     if not sent_model:
-                        return fail(path, 403, f"{model} is a private model, and the assistant's models aren't private "
-                                    "now: what was asked of it isn't sent to another in the clear. Start a new chat.",
-                                    "permission_error", model=model)
+                        return fail(path, 403, f"{model} is a private model ({privacy.level_phrase(asked)}), and the "
+                                    "assistant's models aren't that private now: what was asked of it isn't sent to "
+                                    "another in the clear, nor with less privacy. Start a new chat.", "permission_error", model=model)
                     data["model"] = sent_model
                     body = json.dumps(data).encode()
-            if sealed and not is_private_mode(sent_model):
-                # the assistant's model is private: everything of its chat goes sealed, or not at all
-                return fail(path, 403, f"The assistant's model is private, so {sent_model or 'a request without a model'} "
-                            "can't be used for its chat in the clear. Choose private models for quick tasks too "
-                            "(Settings), or leave them empty to use the same one.", "permission_error", model=sent_model)
+            found = up.privacy_of(sent_model)
+            if privacy.rank(found) < privacy.rank(kept):
+                # the assistant's model is private: everything of its chat goes at its level or higher, or not at all
+                return fail(path, 403, f"The assistant's model is private ({privacy.level_phrase(kept)}), so "
+                            f"{sent_model or 'a request without a model'} can't be used for its chat in the clear. "
+                            "Choose private models for quick tasks too (Settings), or leave them empty to use the "
+                            "same one.", "permission_error", model=sent_model)
+            if found.sealed:
+                # sealed by its own client (NanoGPT's Private Mode, Tinfoil's, Chutes'), translated, whatever its id
+                # says: never passed on as it is
+                if up.chat is None:
+                    return fail(path, 403, f"{sent_model} is end-to-end encrypted and is sent only through its own "
+                                "client, which this provider has no chat address for: nothing was sent.",
+                                "permission_error", model=sent_model)
+                return await self._translated(path, data, up, sent_model, model, len(body))
             if up.chat is not None and not is_anthropic(sent_model):
                 return await self._translated(path, data, up, sent_model, model, len(body))
             if not base:
-                return fail(path, 403, f"{up.provider} has no address for Anthropic's Messages API, so {sent_model or 'this '
-                            'request'} can't be passed on there. Add one in Settings → AI providers, or choose another "
-                            "model.", model=sent_model)
+                what = sent_model or "this request"
+                return fail(path, 403, f"{up.provider} has no address for Anthropic's Messages API, so {what} can't be "
+                            "passed on there. Add one in Settings → AI providers, or choose another model.",
+                            model=sent_model)
             if up.guard is not None:
                 # forwarded as it is, but through the guard every translated request takes: a model the provider's
                 # settings mark TEE (tier_overrides) is attested before anything goes to it, or nothing does
@@ -522,7 +541,9 @@ class Gateway:
             if (json.dumps(data.get("thinking")), json.dumps(data.get("output_config"))) != before:
                 body = json.dumps(data).encode()
             headers = {k: v for k, v in request.headers.items() if k.lower() in PASS_HEADERS}
-            if up.auth == "x-api-key":
+            # Chutes' proxy of the Messages API takes the key only as a bearer token (privacy.anthropic_bearer: an
+            # x-api-key reached its backend as nothing, SealedLore live, Nov 15 2026)
+            if up.auth == "x-api-key" and not privacy.anthropic_bearer(base):
                 headers["x-api-key"] = key
             else:
                 headers["authorization"] = f"Bearer {key}"
@@ -590,9 +611,11 @@ class Gateway:
         """A request for a non-Anthropic model: Anthropic in, chat completions out (sealed, for a
         private model), Anthropic back."""
         from starlette.responses import JSONResponse, StreamingResponse
-        private = is_private_mode(model)
+        found = up.privacy_of(model)
+        private = found.sealed           # sealed on this computer by its own client
         rec = {"kind": "model", "path": path, "model": model, "asked_for": asked if asked != model else "",
-               "provider": up.provider, "tier": "e2ee" if private else up.tier, "private": private, "bytes_out": size}
+               "provider": up.provider, "tier": "e2ee" if private else up.tier, "private": private,
+               "level": found.level, **({"service": found.service} if found.service else {}), "bytes_out": size}
         started = time.monotonic()
         ended: dict = {}                            # the provider's whole reply, once its stream has ended
 
@@ -619,7 +642,7 @@ class Gateway:
             messages, tools, params = await bridge.to_openai(data, self._images, native=native)
             effort = await self._effort(up, model, wanted)
             params = with_effort(params, effort)
-            route = None if private else up.route(model)
+            route = None if found.private else up.route(model)
             params.update(routes.body(route))      # which of NanoGPT's hosts runs it, if the user chose
             attested = None
             if up.guard is not None:
