@@ -74,11 +74,18 @@ class OpeningTinfoilClient(TinfoilDirectClient):
 
 class OpeningChutesClient(ChutesClient):
     """One Chutes provider's chat as this app uses it: its -TEE models sealed (ChutesE2EEClient), the others through
-    the plain client, and ("open", None) once a reply has begun, either way."""
+    the plain client, and ("open", None) once a reply has begun, either way: the sealed one says it when asked, this
+    app's LLMClient always does, and takes no `opened` (live, Nov 16 2026: ChutesClient's opened=True reached it as an
+    argument it doesn't know, and Chutes' ordinary models failed)."""
 
     def stream(self, model: str, messages: list[dict], tools: list[dict] | None = None,
                params: dict | None = None, *, opened: bool = True):
-        return super().stream(model, messages, tools, params, opened=opened)
+        if self.sealed(model):
+            return self.e2ee.stream(model, messages, tools, params, opened=opened)
+        if self.plain is None:
+            raise UserError(f"{model} isn't one of Chutes' TEE models, and this provider has no chat address to send "
+                            "it to (Settings → AI providers).")
+        return self.plain.stream(model, messages, tools, params)
 
 
 def listed_caps(caps: dict[str, dict]) -> dict[str, dict]:

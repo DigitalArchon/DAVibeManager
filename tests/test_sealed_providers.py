@@ -124,7 +124,7 @@ async def test_the_sealed_clients_say_when_their_reply_has_begun(monkeypatch):
 
     from davibemanager.llm import chutes_client, tinfoil_direct
     monkeypatch.setattr(tinfoil_direct.TinfoilDirectClient, "stream", stream)
-    monkeypatch.setattr(chutes_client.ChutesClient, "stream", stream)
+    monkeypatch.setattr(chutes_client.ChutesE2EEClient, "stream", stream)
     cfg = Config(providers=[Provider(**TINFOIL.__dict__), Provider(**CHUTES.__dict__)])
     m, _ = _models(cfg)
     for name in ("Tinfoil", "Chutes"):
@@ -132,6 +132,23 @@ async def test_the_sealed_clients_say_when_their_reply_has_begun(monkeypatch):
     for prov, model in (("Tinfoil", "glm-5-3"), ("Chutes", "moonshotai/Kimi-K3-TEE")):
         assert [e async for e in m.client(cfg.provider(prov), model).stream(model, [])] == [("open", None)]
     assert seen == [True, True]
+
+
+async def test_chutes_ordinary_models_stream_through_the_apps_own_client_as_it_is_called(monkeypatch):
+    """This app's LLMClient takes no `opened` (it always says "open"); Chutes' ordinary models go to it as it is
+    called (seen live, Nov 16 2026: they failed on the argument)."""
+    from davibemanager.llm.client import LLMClient
+    calls = []
+
+    async def plain(self, model, messages, tools=None, params=None):
+        calls.append(model)
+        yield "open", None
+    monkeypatch.setattr(LLMClient, "stream", plain)
+    cfg = Config(providers=[Provider(**CHUTES.__dict__)])
+    m, _ = _models(cfg)
+    creds.set_secret("provider", "Chutes", "sk-test-12345678")
+    client = m.client(cfg.provider("Chutes"), "zai-org/GLM-5.3")
+    assert [e async for e in client.stream("zai-org/GLM-5.3", [])] == [("open", None)] and calls == ["zai-org/GLM-5.3"]
 
 
 def _gateway(tmp_path, up, sent):
