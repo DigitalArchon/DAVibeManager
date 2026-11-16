@@ -97,14 +97,12 @@ def key_problem_for(prov: Provider) -> str | None:
         return None
     was = ", ".join(shown(o) for o in prov.key_for) or "no address"
     now = ", ".join(shown(o) for o in elsewhere)
-    # the ways out as they work: Settings → AI providers asks whether to use the saved key at the new address (Ask
-    # again), or takes it typed again; the setup's key field (Engine.quick_setup) saves NanoGPT's key for NanoGPT's own
-    # address and puts the assistant back on it
+    # the ways out as they work: Settings → AI providers → Edit takes the key typed again for the address in its form,
+    # or asks whether to use the saved one there (Ask again: models.save_provider's use_saved_key)
     return (f"The API key saved for {prov.name} was entered for {was}, and {prov.name}'s address is now {now}: the key "
-            "isn't sent there, so a changed address can't take it anywhere else. In Settings → AI providers, type the "
-            f"key again for {now}, choose Ask again to use the saved one there, or put {prov.name}'s address back. "
-            f"For NanoGPT, pasting your NanoGPT key there saves it for NanoGPT's own address and puts the assistant back "
-            f"on it ({shown(config_mod.NANOGPT_BASE_URL)}), leaving {now} behind.")
+            "isn't sent there, so a changed address can't take it anywhere else. In Settings → AI providers, edit "
+            f"{prov.name}: type the key again for {now}, choose Ask again to use the saved one there, or put its address "
+            "back.")
 
 
 def sealing_problem(prov: Provider, model: str) -> str | None:

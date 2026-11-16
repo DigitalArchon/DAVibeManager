@@ -484,11 +484,16 @@ function waitingOnUser() {
 
 // why the assistant can't start: the keyring isn't open yet, the key stored is held back (Engine.assistant_status:
 // entered for another address, or plain http to another machine), or nothing is set up
+// (or the assistant's provider has a key, but something else of it isn't right: "problem", its words shown, never the
+// first run's NanoGPT screen)
 function notReadyAs(st) {
-  return st.keyring_wait ? "keyring" : st.assistant?.key_held ? "held" : "setup";
+  if (st.keyring_wait) return "keyring";
+  if (st.assistant?.key_held) return "held";
+  const asst = (st.config?.providers || []).find((p) => p.name === st.config.settings?.builder_provider);
+  return asst?.has_key && st.assistant?.error ? "problem" : "setup";
 }
 
-const NOT_READY_WORDS = { keyring: "Waiting for your keyring", held: "Your API key isn't sent", setup: "Needs setting up" };
+const NOT_READY_WORDS = { keyring: "Waiting for your keyring", held: "Your API key isn't sent", problem: "Needs a look in Settings", setup: "Needs setting up" };
 
 function renderStatus() {
   const st = S.state;
@@ -597,7 +602,7 @@ function renderChat(scroll) {
   const typed = {};
   for (const el of keyed(box, "input, textarea")) typed[KEYS.get(el)] = el.value;
   if (!st.ready) {
-    box.replaceChildren({ keyring: keyringScreen, held: heldKeyScreen, setup: setupScreen }[notReadyAs(st)]());
+    box.replaceChildren({ keyring: keyringScreen, held: heldKeyScreen, problem: problemScreen, setup: setupScreen }[notReadyAs(st)]());
     $("#composer").classList.add("hidden");
     return;
   }
@@ -1681,7 +1686,7 @@ async function showDelivery(did) {
 // ------------------------------------------------------------------ setup
 
 // building an app is many model calls: on a model paid per use it is real money on the user's key
-const COST_NOTE = "Answering questions costs little, but building an app takes the AI many steps: on a model paid per use, like Claude Opus, a simple fix can cost a few dollars and a big change $50 or more, and nobody can tell which it is until the AI has read the app's code: before a build, you can ask it to find out how big a change it is first. Set a spending limit on your API key at nano-gpt.com, so it can never go beyond what you're happy to spend.";
+const COST_NOTE = "Answering questions costs little, but building an app takes the AI many steps: on a model paid per use, like Claude Opus, a simple fix can cost a few dollars and a big change $50 or more, and nobody can tell which it is until the AI has read the app's code: before a build, you can ask it to find out how big a change it is first. Set a spending limit on your API key with your provider (at nano-gpt.com for NanoGPT), so it can never go beyond what you're happy to spend.";
 
 // the key is in the keyring, which isn't open yet (just after login): wait for it, don't ask again
 function keyringScreen() {
@@ -1700,6 +1705,15 @@ function heldKeyScreen() {
     h("h2", {}, "Your API key isn't sent"),
     h("div", { class: "warnbox" }, S.state.assistant.error),
     h("p", { class: "small" }, "Nothing has been deleted: your key is still in your keyring."),
+    h("div", { class: "actions" }, h("button", { class: "primary", onclick: () => { openPanel("settings"); $("#panel-body #settings-providers")?.scrollIntoView(); } }, "Open Settings → AI providers")));
+}
+
+// the assistant's provider has its key, but the assistant can't start on it (a model it can't send, an address
+// missing): the app's own words, and Settings
+function problemScreen() {
+  return h("div", { class: "setup" },
+    h("h2", {}, "The assistant can't start yet"),
+    h("div", { class: "warnbox" }, S.state.assistant.error),
     h("div", { class: "actions" }, h("button", { class: "primary", onclick: () => openPanel("settings") }, "Open Settings")));
 }
 
@@ -1800,6 +1814,8 @@ function setupScreen() {
       h("a", { href: "https://nano-gpt.com/api", target: "_blank", rel: "noopener noreferrer" }, "Get a key")),
     h("div", { class: "warnbox" }, h("b", {}, "Mind the cost. "), COST_NOTE),
     key, go,
+    h("p", { class: "small" }, "Using Anthropic, or another provider? ", h("a", { href: "#", onclick: (e) => { e.preventDefault(); openPanel("settings"); $("#panel-body #settings-providers")?.scrollIntoView(); } }, "Add it in Settings → AI providers"),
+      " instead."),
     h("p", { class: "small" }, "Moving from another computer? ", h("a", { href: "#", onclick: (e) => { e.preventDefault(); restoreBackup(); } }, "Restore a backup"),
       " to bring your apps, chats, settings and key."));
 }
@@ -2417,6 +2433,13 @@ function aboutSettings(s, save) {
 // whom it tells (SealedLore's TEE_UPSTREAMS_NOTE)
 const TEE_UPSTREAMS_NOTE = "Most TEE models are attested as RedPill's gateway, which passes each request on to the provider that runs the model. With this on, after a TEE reply checks out the app asks RedPill which provider that was (Phala, Fortanix, NEAR AI, 0G, Tinfoil…) and shows it beside the reply's mark in Sandbox activity. This connects to api.redpill.ai directly, not through NanoGPT, so RedPill sees this computer's internet address and that one of its models was used around then. Only the session's id is sent, never your messages or your key. It is one small download a model an hour, and never for models Chutes serves, whose records are megabytes each. What it names is RedPill's word, matched to the receipt the attested gateway signed.";
 
+// the assistant's usual models on its provider's service (config.MODEL_PRESETS), by what its addresses say it is
+function assistantPresets(st, asst) {
+  if (!asst) return [];
+  const service = asst.service ?? serviceOf(asst);
+  return (st.presets?.models || []).filter((x) => x.service === service);
+}
+
 // where the assistant's Claude Code compacts the conversation (config.CONTEXTS), and a model of its
 // that holds less than that, once the provider's list says
 const CONTEXTS = [[200000, "200K"], [400000, "400K"], [1000000, "1M"]];
@@ -2438,28 +2461,262 @@ function contextRow(s, nano, save) {
     warn);
 }
 
+// ---- Settings → AI providers: a list with Add buttons (DA Toolkit's providersPane), built from the server's table
+// (config.PROVIDER_PRESETS). A provider is recognised from its addresses, not from the button that added it
+// (config.service_of): these mirror config.py, and tests/test_web.py holds each to it.
+
+// an address's host as a request reaches it: lowercased, a trailing dot gone (config._host_of)
+function hostOf(u) {
+  try { return new URL(String(u ?? "").trim()).hostname.toLowerCase().replace(/^\[|\]$/g, "").replace(/\.$/, ""); } catch { return ""; }
+}
+const underDomain = (host, domain) => host === domain || host.endsWith("." + domain);
+// the end-to-end encrypted protocol a chat address must be spoken in, by its field or else its host: when in doubt,
+// sealed (config.sealed_service)
+function sealedService(u, api = "auto") {
+  if (api === "tinfoil") return "tinfoil";
+  return underDomain(hostOf(u), "tinfoil.sh") ? "tinfoil" : "";
+}
+// which service a provider is, as its addresses say (config.service_of)
+function serviceOf(p) {
+  const sealed = sealedService(p.base_url, p.chat_api);
+  if (sealed) return sealed;
+  const hosts = [p.base_url, p.builder_url].filter(Boolean).map(hostOf);
+  if (hosts.some((x) => underDomain(x, "nano-gpt.com"))) return "nanogpt";
+  if (hosts.some((x) => underDomain(x, "chutes.ai") || underDomain(x, "chutes.dev"))) return "chutes";
+  if (hosts.some((x) => underDomain(x, "anthropic.com"))) return "anthropic";
+  return "";
+}
+const SERVICE_LABEL = { nanogpt: "NanoGPT", anthropic: "Anthropic", tinfoil: "Tinfoil", chutes: "Chutes" };
+// where an address sends what is sent to it, as netpolicy.origin writes it ("https://host:443"); "" for none
+function originOf(u) {
+  try {
+    const x = new URL(String(u ?? "").trim());
+    if (!/^https?:$/.test(x.protocol) || !x.hostname) return "";
+    return `${x.protocol}//${x.hostname.toLowerCase()}:${x.port || (x.protocol === "https:" ? "443" : "80")}`;
+  } catch { return ""; }
+}
+// the origins a provider's key would go to (Provider.origins)
+const originsOf = (p) => [...new Set([p.base_url, p.builder_url].filter(Boolean).map(originOf).filter(Boolean))].sort();
+// whether a key entered for `keyFor` may go to `where`: one of those, or for a key entered for one of Chutes' own
+// hosts, any of them (config.key_reaches)
+function keyReaches(keyFor, where, chutes = []) {
+  if (keyFor == null) return true;
+  return keyFor.includes(where) || (chutes.includes(where) && keyFor.some((o) => chutes.includes(o)));
+}
+const shownOrigin = (o) => String(o || "").replace(/^(https:\/\/.*):443$|^(http:\/\/.*):80$/, "$1$2");
+// this computer itself (netpolicy.is_loopback_host): what goes there over plain http never leaves it
+function isLoopbackHost(host) {
+  host = String(host || "").toLowerCase().replace(/^\[|\]$/g, "");
+  if (/\.$/.test(host) && /^[\d.]+$/.test(host.slice(0, -1))) return false;      // "127.0.0.1." is a name
+  host = host.replace(/\.$/, "");
+  if (host === "localhost" || host.endsWith(".localhost")) return true;
+  if (/^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(host)) return true;
+  return host === "::1" || /^::ffff:127\./.test(host) || /^::ffff:7f[0-9a-f]{2}:/.test(host);
+}
+// plain http to another machine on the local network (netpolicy.in_the_clear): a key sent there can be read by anyone
+// on that network, so it is asked about first, No the default
+function inTheClear(u) {
+  try {
+    const x = new URL(String(u ?? "").trim());
+    return x.protocol === "http:" && isLocalHost(x.hostname) && !isLoopbackHost(x.hostname);
+  } catch { return false; }
+}
+
+// A saved key goes only where it was entered for (models.key_problem_for): an address changed without a new one
+// asks first whether to use it there, No the default. A No is kept for those addresses (key_declined) and not asked
+// again at each save, only by Save & test or Ask again (the cross-app standard, Nov 2026).
+function askUseSaved(where) {
+  return new Promise((resolve) => {
+    let yes = false;
+    const { box } = modal({
+      title: `Use the saved API key with ${where}?`,
+      body: h("div", {}, h("p", {}, `The API key saved here was entered for another address. Sent to ${where}, it goes, with everything sent with it, to whoever answers there.`),
+        h("p", {}, `No keeps it for the address it was entered for, and it isn't sent to ${where}: type the key again for it, or put the address back.`)),
+      buttons: [{ label: "No" }, { label: `Use it with ${where}`, kind: "danger", onClick: () => { yes = true; } }],
+      onClose: () => resolve(yes),
+    });
+    setTimeout(() => box.querySelector(".buttons button")?.focus(), 40);
+  });
+}
+// a key about to go over plain http to another machine is asked about first: No, the default, saves nothing
+function askInTheClear(where) {
+  return new Promise((resolve) => {
+    let yes = false;
+    const { box } = modal({
+      title: `Send the API key unencrypted to ${where}?`,
+      body: h("div", {}, h("p", {}, `${where} is reached over plain http, so the API key, and everything sent with it, would cross your network unencrypted: anyone on that network can read it (a café's or a hotel's Wi-Fi too).`),
+        h("p", {}, "No saves nothing: use the server's https:// address, or leave the key empty if it needs none.")),
+      buttons: [{ label: "No" }, { label: "Send it unencrypted", kind: "danger", onClick: () => { yes = true; } }],
+      onClose: () => resolve(yes),
+    });
+    setTimeout(() => box.querySelector(".buttons button")?.focus(), 40);
+  });
+}
+
+// what a provider is, as its row and its form say it
+function providerKind(p) {
+  const service = p.service ?? serviceOf(p);
+  if (SERVICE_LABEL[service]) return SERVICE_LABEL[service];
+  return p.base_url && p.builder_url ? "OpenAI- and Anthropic-compatible" : p.builder_url ? "Anthropic-compatible" : "OpenAI-compatible";
+}
+
+function providersSettings(st) {
+  const provs = st.config.providers;
+  const presets = st.presets?.providers || [];
+  const assistant = st.config.settings.builder_provider;
+  const taken = (name) => provs.some((p) => p.name === name);
+  const fresh = (name) => { let n = name, i = 2; while (taken(n)) n = `${name} ${i++}`; return n; };
+  const list = h("div", { class: "list" }, provs.length ? provs.map((p) => h("div", { class: "list-item" },
+    h("div", { class: "grow" }, h("b", {}, p.name), " ", p.name === providerKind(p) ? null : h("span", { class: "chip" }, providerKind(p)),
+      p.name === assistant ? h("span", { class: "small muted" }, " · the assistant's") : null,
+      h("div", { class: "small muted mono" }, [p.base_url, p.builder_url].filter((u, i, all) => u && all.indexOf(u) === i).join("  ·  ")),
+      p.key_held ? h("div", { class: "warnbox small" }, p.key_held) : null),
+    h("span", { class: "small " + (p.has_key && !p.key_held ? "" : "muted") }, p.key_held ? "key held back" : p.has_key ? "key in keyring" : "no key"),
+    h("button", { class: "small", onclick: () => providerDialog(p) }, "Edit"),
+    h("button", { class: "small danger", onclick: () => guarded(async () => {
+      if (!(await confirmModal("Remove this provider?", `${p.name} and its API key are removed from this app (and from your keyring).`, "Remove", "danger"))) return;
+      await api("DELETE", `/api/providers/${encodeURIComponent(p.name)}`);
+      toast(`${p.name} removed.`, "ok", 2500);
+    }) }, "Remove"))) : h("div", { class: "muted small" }, "None yet."));
+  return h("div", { class: "section", id: "settings-providers" }, h("h3", {}, "AI providers"),
+    h("div", { class: "small muted" }, "Where the assistant and the reviewer run. Add as many as you like: each key stays in your keyring, and goes only to the address it was entered for."),
+    list,
+    h("div", { class: "row" }, presets.map((x) => h("button", { class: x.primary ? "small primary" : "small", title: x.note,
+      onclick: () => providerDialog({ ...x, name: x.name ? fresh(x.name) : "", _new: true, _preset: x }) }, x.label))));
+}
+
+function providerDialog(p) {
+  const chutes = S.state.presets?.chutes_key_origins || [];
+  const preset = p._preset || {};
+  const name = h("input", { type: "text", value: p.name || "", placeholder: "A name you'll recognise" });
+  const base = h("input", { type: "text", class: "mono", value: p.base_url || "", placeholder: "https://… (empty if it has none)" });
+  const builder = h("input", { type: "text", class: "mono", value: p.builder_url || "", placeholder: "https://… (empty if it has none)" });
+  const auth = h("select", {}, [["bearer", "Authorization: Bearer (most services)"], ["x-api-key", "x-api-key (Anthropic's own)"]]
+    .map(([v, l]) => h("option", { value: v, selected: (p.builder_auth || "bearer") === v }, l)));
+  const key = h("input", { type: "password", autocomplete: "off",
+    placeholder: p.has_key ? "Stored in your keyring: leave empty to keep it" : "Paste its API key (kept in your keyring)" });
+  const known = h("div", { class: "small muted" });
+  const held = h("div", { class: "small" });
+  const status = h("div", { class: "small muted" });
+  const current = () => ({ name: name.value.trim(), base_url: base.value.trim(), builder_url: builder.value.trim(),
+    builder_auth: auth.value, chat_api: p.chat_api || "auto" });
+  // what the addresses typed are, as the app will read them: a Tinfoil or Chutes address is theirs, whatever added it
+  const showKnown = () => {
+    const now = current(), service = serviceOf(now);
+    known.textContent = service === "tinfoil" ? "Recognised as Tinfoil: every request to it must be sealed end to end."
+      : service === "chutes" ? "Recognised as Chutes: its -TEE models are always sealed end to end; its others are sent as any provider's."
+        : SERVICE_LABEL[service] ? `Recognised as ${SERVICE_LABEL[service]}.` : "";
+  };
+  const showHeld = () => {
+    const now = current(), here = originsOf(now);
+    const away = here.filter((o) => !keyReaches(p.key_for, o, chutes));
+    const clear = [now.base_url, now.builder_url].find(inTheClear);
+    const parts = [];
+    if (!p._new && p.has_key && away.length) {
+      parts.push(`The saved API key is for ${(p.key_for || []).map(shownOrigin).join(", ") || "no address"}, and isn't sent to ${away.map(shownOrigin).join(", ")}. Type the key again above for this address, or `,
+        h("button", { type: "button", class: "small", onclick: () => guarded(async () => { await save(true); toast("Saved.", "ok", 2000); }) }, "Ask again"), ".");
+    } else if (!p._new && p.has_key && clear && !p.key_over_http) {
+      parts.push(p.key_held || `The saved API key isn't sent to ${hostOf(clear)}: that's plain http to another machine.`, " ",
+        h("button", { type: "button", class: "small", onclick: () => guarded(async () => { await save(true); toast("Saved.", "ok", 2000); }) }, "Send it unencrypted…"));
+    } else if (p.key_held) parts.push(p.key_held);
+    held.replaceChildren(...parts);
+  };
+  for (const el of [base, builder]) el.addEventListener("input", () => { showKnown(); showHeld(); });
+  // `ask`: Save & test and Ask again send the key at once, so they ask even where a No was kept
+  const save = async (ask = false) => {
+    const provider = current();
+    const body = { provider, api_key: key.value.trim() || null, original_name: p._new ? null : p.name, new: !!p._new };
+    const here = originsOf(provider);
+    const away = here.filter((o) => !keyReaches(p.key_for, o, chutes));
+    if (!p._new && p.has_key && !body.api_key && away.length && (ask || away.some((o) => !(p.key_declined || []).includes(o)))) {
+      provider.use_saved_key = await askUseSaved(away.map(shownOrigin).join(", "));
+    }
+    const keyFor = body.api_key || provider.use_saved_key ? here : p.key_for;
+    const sends = !!body.api_key || (!!p.has_key && here.every((o) => keyReaches(keyFor, o, chutes)));
+    const clear = [provider.base_url, provider.builder_url].find(inTheClear);
+    const agreed = p.key_over_http && originsOf(p).join(" ") === here.join(" ");
+    if (sends && clear && (body.api_key || !agreed)) {
+      if (!(await askInTheClear(hostOf(clear)))) {
+        status.textContent = `Not saved: the key would go unencrypted to ${hostOf(clear)}.`;
+        throw new Error(`Not saved: the API key would cross the network unencrypted to ${hostOf(clear)}. Use its https:// address, leave the key empty if it needs none, or save again and choose to send it.`);
+      }
+      provider.key_over_http = true;
+    }
+    await api("POST", "/api/providers", body);
+    p = { ...p, ...provider, _new: false, has_key: p.has_key || !!body.api_key, key_for: keyFor,
+      key_declined: provider.use_saved_key === false ? [...new Set([...(p.key_declined || []), ...away])] : provider.use_saved_key || body.api_key ? [] : p.key_declined,
+      key_over_http: !!provider.key_over_http || agreed, key_held: "" };
+    key.value = "";
+    showHeld();
+    return provider.name;
+  };
+  showKnown();
+  showHeld();
+  const note = preset.note || "";
+  const link = preset.key_link ? h("a", { href: preset.key_link, target: "_blank", rel: "noopener noreferrer" }, "Get a key") : null;
+  modal({ title: p._new ? (preset.label || "Add a provider") : `Edit ${p.name}`,
+    body: h("div", {},
+      note ? h("p", { class: "small muted" }, note) : null,
+      h("div", { class: "field" }, h("span", {}, "Name"), name),
+      h("div", { class: "field" }, h("span", {}, "Chat address (OpenAI-compatible): for second opinions, the vision helper, and the assistant's models other than Claude"), base),
+      h("div", { class: "field" }, h("span", {}, "The assistant's address (Anthropic's Messages API): for its Claude models, passed on as they are"), builder),
+      h("div", { class: "field" }, h("span", {}, "Its key goes in"), auth),
+      h("div", { class: "field" }, h("span", {}, "API key"), key, link ? h("div", { class: "small" }, link) : null),
+      known, held, status),
+    buttons: [{ label: "Cancel" },
+      { label: "Save & test", onClick: async () => {
+        const n = await save(true);
+        status.textContent = "Testing…";
+        try {
+          const got = (await api("GET", `/api/models?provider=${encodeURIComponent(n)}&refresh=true`)).models || [];
+          status.textContent = `✓ Connected: ${got.length} models available.`;
+        } catch (e) { status.textContent = `✗ ${e.message}`; }
+        return true;                    // left open, to read what the test found
+      } },
+      { label: "Save", kind: "primary", onClick: async () => { await save(); toast(`${p.name} saved.`, "ok", 2500); } }] });
+}
+
+// A model on any of the user's providers with a chat address: the provider chosen first where there are several
+// (the reviewer and the vision helper name theirs: "provider|model")
+function pickProviderModel(title, current, onPick) {
+  const provs = S.state.config.providers.filter((p) => p.base_url);
+  if (!provs.length) { toast("Add a provider with a chat address first (Settings → AI providers).", "error"); return; }
+  if (provs.length === 1) { pickModel(title, provs[0].name, (id) => onPick(provs[0].name, id)); return; }
+  const want = provs.find((p) => p.name === current) || provs[0];
+  modal({ title, body: h("div", { class: "list" }, provs.map((p) => h("div", { class: "list-item", style: "cursor:pointer",
+      onclick: () => { $("#modal-root").lastElementChild?._close?.(); pickModel(title, p.name, (id) => onPick(p.name, id)); } },
+    h("div", { class: "grow" }, h("b", {}, p.name), " ", h("span", { class: "chip" }, providerKind(p))),
+    p === want ? h("span", { class: "small muted" }, "now") : null))), buttons: [{ label: "Cancel" }] });
+}
+
 function settingsPanel() {
   const st = S.state, s = st.config.settings;
   const save = (body, msg = "Saved.") => guarded(async () => { await api("POST", "/api/settings", body); toast(msg, "ok", 2000); });
   const radio = (name, value, current, label, desc, onpick) => h("label", { class: "radio" },
     h("input", { type: "radio", name, value, checked: current === value, onchange: onpick }), h("div", {}, h("div", {}, label), desc ? h("div", { class: "small muted" }, desc) : null));
-  const nano = st.config.providers.find((p) => p.base_url && p.builder_url) || st.config.providers[0];
-  const key = h("input", { type: "password", placeholder: nano?.has_key ? "Key stored. Paste a new one to replace it" : "Your NanoGPT API key", autocomplete: "off" });
+  // the assistant's provider (Settings → AI providers), and one of NanoGPT's for the private reviewer it offers
+  const asst = st.config.providers.find((p) => p.name === s.builder_provider) || null;
+  const nano = st.config.providers.find((p) => (p.service ?? serviceOf(p)) === "nanogpt" && p.base_url) || null;
   const model = h("input", { type: "text", class: "mono", value: s.builder_model });
   const small = h("input", { type: "text", class: "mono", value: s.builder_small_model, placeholder: "empty = the same model" });
   const vision = h("input", { type: "text", class: "mono", value: s.builder_vision_model, placeholder: "for models that can't see images" });
-  // private only when what the assistant is given goes nowhere else in the clear (quick tasks, pictures)
-  const isPrivate = (m) => /^\s*private\//i.test(m || "");
+  // private only when what the assistant is given goes nowhere else in the clear (quick tasks, pictures); a setting
+  // that names its provider ("provider|model") is judged by its model
+  const bare = (m) => String(m || "").includes("|") ? String(m).split("|").slice(1).join("|") : String(m || "");
+  const isPrivate = (m) => /^\s*private\//i.test(bare(m));
   const allPrivate = isPrivate(s.builder_model) && [s.builder_small_model, s.builder_vision_model].every((m) => !m || isPrivate(m));
-  const preset = s.builder_model === "private/glm-5-3" ? (allPrivate ? "private" : "custom")
-    : { "z-ai/glm-5.3": "glm", "anthropic/claude-opus-5.5": "claude" }[s.builder_model] || "custom";
-  const pickInto = (input, title) => nano?.base_url ? h("button", { class: "small", onclick: () => pickModel(title, nano.name, async (id) => { input.value = id; }) }, "Choose…") : null;
+  const presets = assistantPresets(st, asst);
+  const preset = presets.find((x) => x.settings.builder_model === s.builder_model && (!x.sealed || allPrivate))?.id || "custom";
+  const pickInto = (input, title) => asst?.base_url ? h("button", { class: "small", onclick: () => pickModel(title, asst.name, async (id) => { input.value = id; }) }, "Choose…") : null;
+  const pickVision = h("button", { class: "small", onclick: () => pickProviderModel("Vision helper", bare(s.builder_vision_model) ? (s.builder_vision_model.split("|")[0] || asst?.name) : asst?.name,
+    async (prov, id) => { vision.value = prov === asst?.name ? id : `${prov}|${id}`; }) }, "Choose…");
   const customBox = h("div", { class: preset === "custom" ? "" : "hidden" },
     h("div", { class: "field" }, h("span", {}, "Model"), h("div", { class: "row" }, model, pickInto(model, "The assistant's model"))),
     h("div", { class: "field" }, h("span", {}, "For quick background tasks"), h("div", { class: "row" }, small, pickInto(small, "Quick tasks"))),
-    h("div", { class: "field" }, h("span", {}, "Describes images to models that can't see"), h("div", { class: "row" }, vision, pickInto(vision, "Vision helper"))),
+    h("div", { class: "field" }, h("span", {}, "Describes images to models that can't see (on any of your providers)"), h("div", { class: "row" }, vision, pickVision)),
     h("button", { class: "small", onclick: () => save({ builder_model: model.value.trim(), builder_small_model: small.value.trim(), builder_vision_model: vision.value.trim() }) }, "Save"));
-  const reviewer = s.review_model ? s.review_model.split("|")[1] : "";
+  const [reviewProv, reviewer] = s.review_model && s.review_model.includes("|") ? [s.review_model.split("|")[0], bare(s.review_model)] : ["", ""];
+  const usable = st.config.providers.filter((p) => p.base_url || p.builder_url);
   const timeout = h("input", { type: "number", min: 5, max: 1800, value: s.command_timeout, style: "width:90px" });
   const mem = h("input", { type: "text", value: s.container_memory, style: "width:80px" });
   const cpus = h("input", { type: "text", value: s.container_cpus, style: "width:60px" });
@@ -2481,23 +2738,25 @@ function settingsPanel() {
         reviewer ? `The assistant is private, but the reviewer, ${reviewer}, isn't: the commands it would read come from your private chats, so second opinions aren't asked for until it's private too. `
           : "The assistant is private, and there's no reviewer: a private one gives second opinions without anything leaving the seal. ",
         nano ? h("button", { class: "small", onclick: () => save({ review_model: `${nano.name}|private/glm-5-3` }, "Second opinions are private too now.") }, "Make them private too") : null) : null,
-      h("div", { class: "row small" }, "Reviewer: ", h("span", { class: "mono" }, reviewer || "not set"), isPrivate(reviewer) ? h("span", { class: "chip private" }, "private") : null,
-        nano?.base_url ? h("button", { class: "small", onclick: () => pickModel("Reviewer", nano.name, (id) => api("POST", "/api/settings", { review_model: `${nano.name}|${id}` })) }, "Change") : null)),
+      h("div", { class: "row small" }, "Reviewer: ", h("span", { class: "mono" }, reviewer || "not set"), reviewProv ? h("span", { class: "muted" }, `on ${reviewProv}`) : null,
+        isPrivate(reviewer) ? h("span", { class: "chip private" }, "private") : null,
+        st.config.providers.some((p) => p.base_url) ? h("button", { class: "small", onclick: () => pickProviderModel("Reviewer", reviewProv,
+          (prov, id) => api("POST", "/api/settings", { review_model: `${prov}|${id}` })) }, "Change") : null)),
+    providersSettings(st),
     h("div", { class: "section" }, h("h3", {}, "The assistant"),
-      h("div", { class: "small muted" }, "The AI you talk to. It works in its sandbox, through NanoGPT. Any NanoGPT model works (Something else); these are the usual choices."),
-      radio("am", "glm", preset, "GLM 5.3", "Included with a NanoGPT subscription. Screenshots are described to it by GLM 5.3 Flash.",
-        () => save({ builder_model: "z-ai/glm-5.3", builder_small_model: "z-ai/glm-5.3-flash", builder_vision_model: "z-ai/glm-5.3-flash" }, "The assistant now uses GLM 5.3.")),
-      radio("am", "private", preset, "Private GLM 5.3",
-        "End-to-end encrypted: only an attested enclave can read what it sees, its quick tasks and second opinions too. Screenshots are described to it by private DeepSeek V4.1 Flash, sealed the same way. Paid per use.",
-        () => save({ builder_model: "private/glm-5-3", builder_small_model: "", builder_vision_model: "private/deepseek-v4-1-flash",
-          ...(nano ? { review_model: `${nano.name}|private/glm-5-3` } : {}) }, "The assistant now uses private GLM 5.3, sealed end to end.")),
+      h("div", { class: "small muted" }, asst ? `The AI you talk to. It works in its sandbox, through ${asst.name}. ${presets.length ? "These are the usual choices; any of its models works (Something else)." : "Choose its model (Something else)."}`
+        : "The AI you talk to. Add a provider above first."),
+      usable.length > 1 ? h("div", { class: "row small" }, "Runs on:",
+        h("select", { onchange: (e) => save({ builder_provider: e.target.value }, `The assistant now runs on ${e.target.value}. Check its model below.`) },
+          usable.map((p) => h("option", { value: p.name, selected: p.name === s.builder_provider }, p.name === providerKind(p) ? p.name : `${p.name} (${providerKind(p)})`)))) : null,
+      ...presets.map((x) => radio("am", x.id, preset, x.label, x.note,
+        () => save({ ...x.settings, ...(x.review_model && asst?.base_url ? { review_model: `${asst.name}|${x.review_model}` } : {}) },
+          `The assistant now uses ${x.label}${x.sealed ? ", sealed end to end" : ""}.`))),
       // chosen before the preset had a private model that sees (0.1.0b8): picking it again does nothing, it's already picked
       preset === "private" && !s.builder_vision_model ? h("div", { class: "warnbox small" },
         "Nothing describes its screenshots to it, so it can't see them: you chose it before there was a private model that sees. ",
         h("button", { class: "small", onclick: () => save({ builder_vision_model: "private/deepseek-v4-1-flash" }, "Private DeepSeek V4.1 Flash describes its screenshots now, sealed the same way.") },
           "Have private DeepSeek V4.1 Flash describe them")) : null,
-      radio("am", "claude", preset, "Claude Opus 5.5", "The strongest, especially for building apps. Paid per use; NanoGPT passes what it sees to Anthropic.",
-        () => save({ builder_model: "anthropic/claude-opus-5.5", builder_small_model: "" }, "The assistant now uses Claude Opus 5.5.")),
       radio("am", "custom", preset, "Something else", null, () => { customBox.classList.remove("hidden"); }),
       customBox,
       // one setting for every model: each is sent the nearest it takes, Claude Code in the sandbox too
@@ -2506,13 +2765,12 @@ function settingsPanel() {
           ["low", "medium", "high", "max"].map((v) => h("option", { value: v, selected: s.builder_reasoning === v },
             { low: "Low (fastest, cheapest)", medium: "Medium (recommended)", high: "High (slower, costs more)", max: "Max (slowest, costs most)" }[v]))),
         h("span", { class: "muted" }, "Models that offer fewer levels get the nearest one.")),
-      contextRow(s, nano, save),
-      nano?.base_url && /nano-gpt\.com/i.test(nano.base_url) && routable(s.builder_model) ? routeRow(s.builder_model) : null,
-      nano?.base_url && /nano-gpt\.com/i.test(nano.base_url) && s.builder_small_model && s.builder_small_model !== s.builder_model && routable(s.builder_small_model)
+      contextRow(s, asst, save),
+      asst?.base_url && (asst.service ?? serviceOf(asst)) === "nanogpt" && routable(s.builder_model) ? routeRow(s.builder_model) : null,
+      asst?.base_url && (asst.service ?? serviceOf(asst)) === "nanogpt" && s.builder_small_model && s.builder_small_model !== s.builder_model && routable(s.builder_small_model)
         ? routeRow(s.builder_small_model) : null,
       h("div", { class: "warnbox" }, h("b", {}, "Mind the cost. "), COST_NOTE),
-      h("div", { class: "field" }, h("span", {}, "NanoGPT API key"), h("div", { class: "row" }, key,
-        h("button", { class: "small", onclick: () => guarded(async () => { if (!key.value.trim()) return; await api("POST", "/api/setup", { api_key: key.value }); key.value = ""; toast("Key saved.", "ok"); }) }, "Save")))),
+      h("div", { class: "small muted" }, "Its API key: AI providers, above.")),
     h("div", { class: "section" }, h("h3", {}, "TEE models"),
       h("div", { class: "small muted" }, "NanoGPT's TEE/ models are attested before anything is sent to them, and ☰ → Sandbox activity marks each reply with what its check found."),
       // off by default, and said plainly (SealedLore's, the author's, Nov 11 2026): the one call that goes to RedPill

@@ -323,5 +323,52 @@ const test = (error) => { globalThis.S = { state: { assistant: { error, key_held
     assert words in shown and "Open Settings" in json.dumps(built)
     assert not re.search(r"innerHTML|insertAdjacentHTML|html:", script("heldKeyScreen"))
     text = APP_JS.read_text(encoding="utf-8")
-    assert "{ keyring: keyringScreen, held: heldKeyScreen, setup: setupScreen }[notReadyAs(st)]()" in text
+    assert "{ keyring: keyringScreen, held: heldKeyScreen, problem: problemScreen, setup: setupScreen }[notReadyAs(st)]()" in text
     assert 'notReadyAs(st) === "held" ? st.assistant.error' in text          # the status's tooltip says them too
+
+
+# --- Settings → AI providers: the window reads addresses as config.py does ------------------------------------------
+
+PROVIDER_JS = script("hostOf", "underDomain", "sealedService", "serviceOf", "originOf", "keyReaches", "isLocalHost",
+                     "isLoopbackHost", "inTheClear")
+
+ADDRESSES = [("https://nano-gpt.com/api/v1", "https://nano-gpt.com/api/v1", "auto"),
+             ("", "https://api.anthropic.com", "auto"), ("https://inference.tinfoil.sh/v1", "", "auto"),
+             ("https://inference.tinfoil.sh/v1", "", "openai"), ("https://INFERENCE.Tinfoil.sh./v1", "", "openai"),
+             ("https://router.example/v1", "", "tinfoil"), ("https://llm.chutes.ai/v1", "https://claude.chutes.ai", "auto"),
+             ("", "https://claude.chutes.ai", "auto"), ("https://x.chutes.dev/v1", "", "auto"),
+             ("https://llm.example/v1", "", "auto"), ("http://localhost:11434/v1", "", "openai"),
+             ("https://notnano-gpt.com/v1", "", "auto"), ("https://tinfoil.sh.example/v1", "", "auto"),
+             ("https://api.anthropic.com.evil.example", "", "auto")]
+
+
+def test_the_window_recognises_a_provider_as_the_server_does():
+    """What the form says an address typed is (Recognised as …) is what config.service_of will make of it."""
+    from davibemanager import config
+    want = [config.service_of(config.Provider("X", b, builder_url=a, chat_api=api)) for b, a, api in ADDRESSES]
+    got = run(PROVIDER_JS + "\nconst test = ([b, a, api]) => serviceOf({ base_url: b, builder_url: a, chat_api: api });", ADDRESSES)
+    assert got == want and "tinfoil" in want and "chutes" in want and "" in want
+
+
+def test_the_window_holds_a_key_to_its_origins_as_the_server_does():
+    """The form asks before a saved key goes to an address it wasn't entered for (models.key_problem_for): the same
+    origins, and the same exception for Chutes' own hosts."""
+    from davibemanager import config, netpolicy
+    urls = ["https://nano-gpt.com/api/v1", "https://NANO-GPT.com:443/x", "http://localhost:11434/v1", "http://[::1]:8080/v1",
+            "https://llm.chutes.ai/v1", "https://claude.chutes.ai", "https://api.chutes.ai", "http://llm.chutes.ai/v1",
+            "https://evil.example/v1", "not an address"]
+    assert run(PROVIDER_JS + "\nconst test = (u) => originOf(u);", urls) == [netpolicy.origin(u) for u in urls]
+    chutes = sorted(config.CHUTES_KEY_ORIGINS)
+    cases = [[["https://llm.chutes.ai:443"], "https://claude.chutes.ai:443"], [["https://llm.chutes.ai:443"], "https://evil.example:443"],
+             [["https://llm.example:443"], "https://llm.chutes.ai:443"], [["https://llm.chutes.ai:443"], "http://llm.chutes.ai:80"],
+             [["https://a.example:443"], "https://a.example:443"], [[], "https://a.example:443"], [None, "https://a.example:443"]]
+    js = PROVIDER_JS + f"\nconst CHUTES = {json.dumps(chutes)};\nconst test = ([k, o]) => keyReaches(k, o, CHUTES);"
+    assert run(js, cases) == [config.key_reaches(k, o) for k, o in cases]
+
+
+def test_the_window_asks_before_a_key_crosses_the_network_where_the_server_holds_it_back():
+    from davibemanager import netpolicy
+    urls = ["http://192.168.1.5:11434/v1", "http://nas.local/v1", "http://10.0.0.2/v1", "http://localhost:11434/v1",
+            "http://127.0.0.2/v1", "http://[::1]:8080/v1", "https://192.168.1.5/v1", "http://api.localhost/v1",
+            "http://[fd00::5]/v1", "https://nano-gpt.com/api/v1"]
+    assert run(PROVIDER_JS + "\nconst test = (u) => inTheClear(u);", urls) == [netpolicy.in_the_clear(u) for u in urls]

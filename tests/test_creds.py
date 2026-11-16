@@ -227,9 +227,8 @@ async def test_the_window_is_told_a_stored_key_is_held_back_and_why(env):
     assert state["ready"] is False and state["keyring_wait"] == ""
     assert state["assistant"]["key_held"] is True
     assert "entered for https://elsewhere.example:443" in state["assistant"]["error"]
-    assert "In Settings → AI providers, type the key again for https://fake.example:443, choose Ask again" in state["assistant"]["error"]
-    assert "pasting your NanoGPT key there saves it for NanoGPT's own address and puts the assistant back on it " \
-           "(https://nano-gpt.com/api/v1), leaving https://fake.example:443 behind" in state["assistant"]["error"]
+    assert "In Settings → AI providers, edit Fake: type the key again for https://fake.example:443, choose Ask again to " \
+           "use the saved one there, or put its address back." in state["assistant"]["error"]
     prov.key_for, prov.base_url, prov.builder_url = None, "http://192.168.1.5:11434/v1", "http://192.168.1.5:11434"
     state = engine.snapshot()
     assert state["assistant"]["key_held"] is True and "Settings → AI providers → Fake" in state["assistant"]["error"]
@@ -241,19 +240,27 @@ async def test_the_window_is_told_a_stored_key_is_held_back_and_why(env):
 
 
 async def test_a_held_keys_way_out_through_the_window_does_what_its_words_say(env):
-    """The words say pasting the key in Settings puts the assistant back on NanoGPT's own address (Engine.quick_setup,
-    what the setup key field calls): it does, and the key is sent there; the changed address is left behind. They used
-    to say it entered the key again "for" the new address, which the window can't do."""
+    """The words name Settings → AI providers' ways out, and each does what they say (Models.save_provider, as the
+    provider's form sends it): Ask again's Yes sends the saved key to the new address; a key typed again is for it;
+    the address put back sends the saved one there again. The first run's key field (Engine.quick_setup) still puts
+    NanoGPT's key on NanoGPT's own address. (Until Nov 2026 the window had no field for an address.)"""
     from davibemanager.config import NANOGPT_BASE_URL, Provider
     from davibemanager.models import key_problem_for
 
     engine, _, _ = env
-    engine.cfg.providers.append(Provider("NanoGPT", "https://moved.example/api/v1", builder_url="https://moved.example/api/v1",
-                                         key_for=["https://nano-gpt.com:443"]))
+    moved = "https://moved.example/api/v1"
+    engine.cfg.providers.append(Provider("NanoGPT", moved, builder_url=moved, key_for=["https://nano-gpt.com:443"]))
     engine.cfg.settings.builder_provider = "NanoGPT"
     creds.set_secret("provider", "NanoGPT", "sk-live-1")
     words = engine.snapshot()["assistant"]["error"]
-    assert "puts the assistant back on it (https://nano-gpt.com/api/v1), leaving https://moved.example:443 behind" in words
+    assert "edit NanoGPT: type the key again for https://moved.example:443, choose Ask again" in words
+    engine.save_provider({"name": "NanoGPT", "base_url": moved, "builder_url": moved, "use_saved_key": True},
+                         original_name="NanoGPT")                                        # Ask again: Yes
+    assert key_problem_for(engine.cfg.provider("NanoGPT")) is None and "key_held" not in engine.snapshot()["assistant"]
+    engine.save_provider({"name": "NanoGPT", "base_url": "https://other.example/v1", "builder_url": "https://other.example/v1"},
+                         "sk-live-2", original_name="NanoGPT")                           # typed again
+    assert engine.models.key(engine.cfg.provider("NanoGPT")) == "sk-live-2"
+    engine.cfg.provider("NanoGPT").key_for = ["https://nano-gpt.com:443"]
     await engine.quick_setup("sk-live-1")
     prov = engine.cfg.provider("NanoGPT")
     assert (prov.base_url, prov.builder_url) == (NANOGPT_BASE_URL, NANOGPT_BASE_URL) and key_problem_for(prov) is None

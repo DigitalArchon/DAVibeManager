@@ -1,52 +1,10 @@
 "use strict";
-// The page's real sanitiser settings, in a real DOM: index.html, marked, DOMPurify and app.js loaded
-// into jsdom (fetch and the events socket are stand-ins), fed a snapshot of a real Engine
-// (tests/test_frontend.py writes it). Ported from DA Toolkit's tests/js/sanitize.test.cjs (bdbd4ce).
-// jsdom is not one of this repository's packages: these tests are skipped where it isn't installed.
-// To run them, put a jsdom on Node's path:
-// NODE_PATH=<a node_modules with jsdom> .venv/bin/python -m pytest tests/test_frontend.py
+// The page's real sanitiser settings, in a real DOM (tests/js/page.cjs). Ported from DA Toolkit's
+// tests/js/sanitize.test.cjs (bdbd4ce).
 
 const { test } = require("node:test");
 const assert = require("node:assert/strict");
-const fs = require("node:fs");
-const path = require("node:path");
-const vm = require("node:vm");
-
-const WEB = path.join(__dirname, "..", "..", "src", "davibemanager", "web");
-
-let JSDOM = null;
-try { ({ JSDOM } = require("jsdom")); } catch { /* not installed: skipped */ }
-const skip = JSDOM ? false : "jsdom isn't installed";
-const STATE = JSDOM ? JSON.parse(fs.readFileSync(process.env.DVM_STATE, "utf8")) : {};
-
-function load() {
-  const html = fs.readFileSync(path.join(WEB, "index.html"), "utf8").replace(/<script[^>]*><\/script>/g, "")
-    .replace(/<link[^>]*>/g, "").replace(/<meta http-equiv[^>]*>/, "");
-  const dom = new JSDOM(html, { url: "http://127.0.0.1:48599/?t=tok", runScripts: "outside-only", pretendToBeVisual: true });
-  const ctx = dom.getInternalVMContext();
-  const run = (code, filename = "test.js") => new vm.Script(code, { filename }).runInContext(ctx);
-  run(`
-    var __calls = [], __sockets = [];
-    window.fetch = async (url, opts = {}) => {
-      const call = { path: String(url).split("?")[0], method: opts.method || "GET", body: typeof opts.body === "string" ? JSON.parse(opts.body) : undefined };
-      __calls.push(call);
-      return { ok: true, status: 200, statusText: "OK", json: async () => ({}), blob: async () => new Blob([]), headers: { get: () => null } };
-    };
-    window.WebSocket = class { constructor(url) { this.url = url; this.readyState = 1; this.sent = []; __sockets.push(this); }
-      send(d) { this.sent.push(d); } close() { this.readyState = 3; } };
-    WebSocket.OPEN = 1;
-    window.ResizeObserver = class { observe() {} unobserve() {} disconnect() {} };
-    if (!window.CSS) window.CSS = {};
-    if (!CSS.escape) CSS.escape = (s) => s;
-    window.requestAnimationFrame = (fn) => setTimeout(fn, 0);
-  `);
-  for (const file of ["vendor/marked.min.js", "vendor/purify.min.js", "app.js"]) run(fs.readFileSync(path.join(WEB, file), "utf8"), file);
-  const w = dom.window;
-  const tick = (ms = 20) => new Promise((resolve) => setTimeout(resolve, ms));
-  return { w, run, tick, d: w.document, calls: () => run("__calls"),
-    event: async (ev) => { run("__sockets").find((s) => s.url.includes("/ws/events")).onmessage({ data: JSON.stringify(ev) }); await tick(); },
-    close: () => w.close() };
-}
+const { skip, STATE, withPage, plain } = require("./page.cjs");
 
 // HTML as a reply might carry it, given to the sanitiser itself: as if the Markdown renderer had let
 // all of it through. The ids are the page's own (index.html), the data-key a card's.
@@ -69,12 +27,6 @@ const TAGS = new Set(["P", "BR", "HR", "STRONG", "EM", "DEL", "CODE", "PRE", "BL
 const ATTRS = new Set(["href", "title", "start", "align", "target", "rel"]);
 const IDS = ["input", "send-btn", "stop-btn", "chat", "modal-root", "new-btn", "panel-body", "composer"];
 
-// the page's timers end with its window, so a failed assertion doesn't leave the run waiting on them
-async function withPage(fn) {
-  const page = load();
-  try { await fn(page); } finally { page.close(); }
-}
-const plain = (x) => JSON.parse(JSON.stringify(x));     // a value of the page's realm, comparable here
 
 test("the real DOMPurify, as the page sets it, keeps only Markdown's elements and attributes", { skip }, () => withPage((page) => {
   for (const html of HTML) {
