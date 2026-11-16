@@ -207,7 +207,10 @@ def test_attesting_guards_the_sdk_first(sdk):
 
 
 def test_without_the_sdk_there_is_nothing_to_guard(sdk, monkeypatch):
-    monkeypatch.delitem(sys.modules, "tinfoil")
+    # the fake taken out for this test alone: not through monkeypatch, whose undo would put the fake back after the
+    # fixture took its modules out, where no real tinfoil had been imported before (then nothing of tinfoil imported
+    # for the rest of the run: tests/test_tinfoil_direct.py's lazy imports failed)
+    sys.modules.pop("tinfoil")
     assert sdk_guard.guard(is_local_host) == []
 
 
