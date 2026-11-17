@@ -411,3 +411,34 @@ async def test_the_providers_own_word_on_retrying_reaches_claude_code(gw):
     async with _model_client(g) as c:
         r = await c.post("/v1/messages", headers={"authorization": f"Bearer {g.token}"}, json={"model": "big-model"})
     assert r.status_code == 402 and r.headers["x-should-retry"] == "false"
+
+
+async def test_a_model_not_claudes_on_nanogpts_messages_address_goes_without_claude_codes_thinking(tmp_path):
+    """Given Claude Code's thinking setting, NanoGPT runs a model as its ":thinking" variant, which reasons at length
+    whatever the effort, and it refuses Claude Code's display "updates" (DA Private Coder, measured Nov 2026). Passed
+    on to NanoGPT's Messages API, a model that isn't Claude's goes without it, its effort as chosen; another server's
+    gets it as Claude Code sent it, and a Claude model on NanoGPT its own thinking as before."""
+    sent = []
+
+    def gateway(base, models):
+        return Gateway(tmp_path / f"gw{len(sent)}", lambda: Upstream(base, "bearer", lambda: "sk-real", models,
+                                                                       provider="Up", reasoning="low"),
+                       http=httpx.AsyncClient(transport=httpx.MockTransport(lambda r: sent.append(json.loads(r.content))
+                           or httpx.Response(200, text='event: message_stop\ndata: {"type": "message_stop"}\n\n',
+                                             headers={"content-type": "text/event-stream"}))))
+    thinking = {"type": "adaptive", "display": "updates"}
+    for base, model, kept in (("https://nano-gpt.com/api/v1", "z-ai/glm-5.3", None),
+                              ("https://llm.example/v1", "their-model", thinking),
+                              ("https://nano-gpt.com/api/v1", "anthropic/claude-opus-5.5", thinking)):
+        g = gateway(base, (model,))
+        await g.start()
+        try:
+            async with _model_client(g) as c:
+                r = await c.post("/v1/messages", headers={"authorization": f"Bearer {g.token}"}, json={
+                    "model": model, "max_tokens": 32000, "stream": True, "messages": [], "thinking": thinking,
+                    "output_config": {"effort": "low"}})
+                assert r.status_code == 200, model
+            await asyncio.sleep(0.05)
+        finally:
+            await g.stop()
+        assert sent[-1].get("thinking") == kept and sent[-1]["output_config"] == {"effort": "low"}, model

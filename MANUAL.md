@@ -202,8 +202,10 @@ more but costs more each time on a model paid per use, and is slower. Settings w
 holds less than the size chosen. A change applies from the chat's next message.
 
 **Settings → The assistant → How hard it thinks** sets how long the assistant thinks before each
-step: Low, Medium (recommended, and the default), High or Max. Thinking longer can help with hard
-problems, but is slower and, on a model paid per use, costs more. It applies to whichever model you
+step: Low (the default), Medium, High or Max. Thinking longer can help with hard problems, but is
+slower and, on a model paid per use, costs more: in a test of GLM 5.3 in Claude Code on four coding
+tasks (November 2026, each twice at low and at high, scored by tests the model never saw), both
+passed every test, and High took about four times as long. It applies to whichever model you
 choose: GLM and other models get it as their reasoning level, Claude as its effort, and the
 assistant's Claude Code in its sandbox runs at it too. A model that offers fewer levels gets the
 nearest one (GLM 5.3 has no Medium, so Medium is sent as High). A change applies from the next

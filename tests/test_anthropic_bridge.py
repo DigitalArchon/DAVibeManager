@@ -184,7 +184,7 @@ async def test_private_models_are_asked_for_the_chosen_reasoning_never_none(priv
         await c.post("/v1/messages", headers={"authorization": f"Bearer {g.token}"},
                      json={"model": "private/glm-5-3", "stream": True, "thinking": {"type": "disabled"},
                            "messages": [{"role": "user", "content": "hi"}]})
-    assert fake.calls[-1][3]["reasoning_effort"] == "medium"  # the default; for GLM, "none" means reasoning without limit
+    assert fake.calls[-1][3]["reasoning_effort"] == "low"  # the default; for GLM, "none" means reasoning without limit
 
 
 async def test_progress_is_reported_while_the_model_reasons():
@@ -215,7 +215,7 @@ async def test_every_non_anthropic_model_is_translated_and_a_tee_model_checked_f
             msg = {"stream": True, "messages": [{"role": "user", "content": "hi"}]}
             r = await c.post("/v1/messages", headers=h, json={"model": "z-ai/glm-5.3", **msg})
             said = "".join(d["delta"].get("text", "") for n, d in parse(r.content) if n == "content_block_delta")
-            assert said == "Hi from GLM" and fake.calls[-1][3]["reasoning_effort"] == "medium"
+            assert said == "Hi from GLM" and fake.calls[-1][3]["reasoning_effort"] == "low"
             r = await c.post("/v1/messages", headers=h, json={"model": "TEE/glm-5.3", **msg})
             assert r.status_code == 502 and "attestation refused" in r.text
             await c.post("/v1/messages", headers=h, json={"model": "anthropic/claude-opus-5.5", **msg})

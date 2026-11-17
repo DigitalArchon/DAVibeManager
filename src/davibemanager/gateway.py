@@ -28,6 +28,7 @@ import socket
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
+from urllib.parse import urlparse
 from typing import Awaitable, Callable
 
 import httpx
@@ -164,6 +165,12 @@ def is_anthropic(model: str) -> bool:
     return m.startswith(("anthropic/", "claude-", "claude/"))
 
 
+def on_nanogpt(url: str) -> bool:
+    """Whether an address is NanoGPT's (nano-gpt.com, or a host under it)."""
+    host = (urlparse(url or "").hostname or "").lower().rstrip(".")
+    return host == "nano-gpt.com" or host.endswith(".nano-gpt.com")
+
+
 def upstream_url(base: str, path: str, query: str = "") -> str:
     """The provider's URL for a request path. Claude Code appends /v1/messages to its base URL;
     a base that already ends in /v1 (NanoGPT documents https://nano-gpt.com/api/v1) would give
@@ -291,7 +298,7 @@ class Upstream:
     sees: Callable[[str], Awaitable[bool | None]] | None = None
     # how hard the assistant thinks (config.BUILDER_EFFORTS): a translated model's reasoning effort, a
     # Claude model's own effort and thinking, each the nearest it takes (never "none": see config)
-    reasoning: str = "medium"
+    reasoning: str = "low"
     # the efforts a translated model takes (None: not known, sent as asked); the nearest goes (llm/params.py)
     efforts: Callable[[str], Awaitable[tuple[str, ...] | None]] | None = None
     # which of NanoGPT's hosts runs a translated model: model id -> its route, or None for
@@ -538,7 +545,13 @@ class Gateway:
             # how hard it thinks, as chosen in Settings and as near as the model goes: Claude Code was started
             # at it, but reads NanoGPT's names wrongly, and a change since reaches it only at its next start
             before = (json.dumps(data.get("thinking")), json.dumps(data.get("output_config")))
-            fitted = fit_claude(data, sent_model, up.reasoning or "medium") if data else {}
+            fitted = fit_claude(data, sent_model, up.reasoning or "low") if data else {}
+            if data and not is_anthropic(sent_model) and on_nanogpt(base):
+                # Claude Code's thinking setting is Claude's: NanoGPT runs a model given one as its ":thinking" variant,
+                # which reasons at length whatever the effort (DA Private Coder, measured Nov 2026: GLM-5.3 asked for
+                # low gave replies of 16K to 32K tokens, where its chat completions, never sent it, gave none), and it
+                # refuses Claude Code's display "updates". The effort decides, as on chat completions
+                data.pop("thinking", None)
             if (json.dumps(data.get("thinking")), json.dumps(data.get("output_config"))) != before:
                 body = json.dumps(data).encode()
             headers = {k: v for k, v in request.headers.items() if k.lower() in PASS_HEADERS}
@@ -631,7 +644,7 @@ class Gateway:
             return err(Refused(404, f"{path} isn't available for {model}.", "not_found_error"))
         if self._images is None or self._images.model != up.vision_model:
             self._images = bridge.ImageDescriber(up.describe, up.vision_model)
-        wanted = up.reasoning or "medium"
+        wanted = up.reasoning or "low"
         try:
             native = False
             if up.sees is not None and bridge.has_images(data):

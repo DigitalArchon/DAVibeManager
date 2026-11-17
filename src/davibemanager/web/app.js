@@ -2808,7 +2808,7 @@ function settingsPanel() {
       h("div", { class: "row small" }, "How hard it thinks:",
         h("select", { onchange: (e) => save({ builder_reasoning: e.target.value }) },
           ["low", "medium", "high", "max"].map((v) => h("option", { value: v, selected: s.builder_reasoning === v },
-            { low: "Low (fastest, cheapest)", medium: "Medium (recommended)", high: "High (slower, costs more)", max: "Max (slowest, costs most)" }[v]))),
+            { low: "Low (the default: fastest, cheapest)", medium: "Medium", high: "High (slower, costs more)", max: "Max (slowest, costs most)" }[v]))),
         h("span", { class: "muted" }, "Models that offer fewer levels get the nearest one.")),
       contextRow(s, asst, save),
       asst?.base_url && (asst.service ?? serviceOf(asst)) === "nanogpt" && routable(s.builder_model) ? routeRow(s.builder_model) : null,
