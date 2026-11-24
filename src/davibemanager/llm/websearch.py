@@ -42,10 +42,18 @@ _DOMAIN = re.compile(r"^(?=.{1,253}$)([a-z0-9-]+\.)+[a-z]{2,}$")
 
 
 def clean_sites(sites) -> list[str]:
-    """Domains to search within, from what a model wrote ("https://github.com/mpv-player/" -> github.com)."""
+    """Domains to search within, from what a model wrote ("https://github.com/mpv-player/" -> github.com). An entry
+    that is no domain is left out, and so is one no address can be read from ("[docs.sophos.com]", which a URL
+    parser takes for a bad IPv6 address and raises on, or something that isn't text at all): until Nov 2026 one
+    such entry failed the whole search with the parser's own error (DA Toolkit's clean_sites)."""
     out = []
     for s in sites if isinstance(sites, list) else []:
-        host = urlsplit(s if "//" in str(s) else f"//{s}").hostname or ""
+        if not isinstance(s, str):
+            continue
+        try:
+            host = urlsplit(s if "//" in s else f"//{s}").hostname or ""
+        except ValueError:
+            continue
         if _DOMAIN.match(host) and host not in out:
             out.append(host)
     return out[:10]

@@ -380,3 +380,13 @@ async def test_a_key_no_header_can_carry_sends_no_search_and_is_never_quoted():
             await websearch.web_search("https://nano-gpt.com/api/v1", key, "nginx 502", http=http)
         assert "sk-sec" not in str(caught.value) and "Settings" in str(caught.value)
     assert not seen
+
+
+def test_a_site_no_address_can_be_read_from_is_left_out():
+    """`[docs.sophos.com]` is a bad IPv6 address to a URL parser, which raises on it: the search failed with the
+    parser's own words (until Nov 2026; DA Toolkit's clean_sites)."""
+    from davibemanager.llm import websearch
+    assert websearch.clean_sites(["[docs.sophos.com]"]) == []
+    assert websearch.clean_sites(["[docs.sophos.com]", "http://[::1", "https://[fd00::5/x", {"a": "//x"}, None, 3,
+                                  ["docs.sophos.com"], "help.mikrotik.com", "https://docs.sophos.com/nsg/"]) == [
+        "help.mikrotik.com", "docs.sophos.com"]
