@@ -60,6 +60,8 @@ BUILD_FOLDER = "/work/.dvm/build"        # where the app's own builds happen
 # how long after the last look an app's official source is asked again, for each choice (a little
 # under a day, a week, a month: the look happens when the app runs, not to the minute)
 CHECK_EVERY = {"day": 20 * 3600, "week": 6.5 * 86400, "month": 29 * 86400}
+# a look that failed (offline, the source's host down) is made again after this long, whatever the app's choice
+CHECK_RETRY = 3600
 BUILD_WINDOW = 2 * 3600                  # a scheduled build starts within this long after the quiet time
 TICK = 300
 BUILD_TIMEOUT = 3 * 3600
@@ -941,8 +943,11 @@ class AppManager:
             every = self.check_every(a)
             if a["id"] in self.building:
                 continue                        # being built: its release is changing under the look
-            if every in CHECK_EVERY and a.get("upstream") and a.get("base_ref") and \
-                    now - (a.get("update") or {}).get("checked", 0) > CHECK_EVERY[every]:
+            u = a.get("update") or {}
+            # until Nov 2026 a look that failed counted as made: offline just after the app started, a new release
+            # was found a day later (a month, for an app looked at monthly)
+            due = min(CHECK_EVERY[every], CHECK_RETRY) if every in CHECK_EVERY and u.get("error") else CHECK_EVERY.get(every)
+            if every in CHECK_EVERY and a.get("upstream") and a.get("base_ref") and now - u.get("checked", 0) > due:
                 try:
                     await self.check(a["id"], quiet=True)
                 except Exception as e:  # noqa: BLE001 - tried again next time

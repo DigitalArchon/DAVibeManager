@@ -47,6 +47,31 @@ async def test_each_app_is_looked_at_as_often_as_it_chose(gthumb):
     assert apps.load("gthumb")["check_every"] == "week" and m.apps()[0]["schedule"]["check_every"] == "week"
 
 
+async def test_a_look_that_failed_is_made_again_within_the_hour(gthumb, monkeypatch):
+    """Offline just after the app started: until Nov 2026 the look counted as made, and 3.12.7 was found a day later
+    (a month later, for an app looked at monthly)."""
+    from davibemanager.workspace import podman
+    engine, sb, _, _ = gthumb
+    engine.cfg.settings.changelog_summary = "manual"
+    m = engine.app_manager
+    m.set_schedule("gthumb", check_every="month", build_when="ask")
+    real, offline = podman.exec_agent, [True]
+
+    async def exec_agent(name, argv, **kw):
+        if "ls-remote" in argv and offline[0]:
+            return 128, "fatal: unable to access 'https://gitlab.gnome.org/': Could not resolve host"
+        return await real(name, argv, **kw)
+    monkeypatch.setattr(podman, "exec_agent", exec_agent)
+    await m.tick(now=at(12))
+    checked = apps.load("gthumb")["update"]["checked"]
+    assert apps.load("gthumb")["update"]["status"] == "error"
+    offline[0] = False
+    await m.tick(now=checked + 20 * 60)
+    assert apps.load("gthumb")["update"]["status"] == "error"          # not straight away
+    await m.tick(now=checked + 61 * 60)
+    assert apps.load("gthumb")["update"]["latest"] == "3.12.7" and not apps.load("gthumb")["update"].get("error")
+
+
 async def test_a_new_version_is_built_at_the_quiet_time_not_before_or_long_after(gthumb):
     engine, sb, _, told = gthumb
     engine.cfg.settings.changelog_summary = "manual"
