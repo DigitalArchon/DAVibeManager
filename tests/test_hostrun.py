@@ -297,3 +297,135 @@ async def test_a_decision_after_the_assistant_stopped_waiting_goes_as_a_message(
     engine.builder.busy = False
     engine.decline_request(rid, "no")
     assert sent and "earlier request #1" in sent[0] and "no" in sent[0]
+
+
+async def _a_card_whose_turn_has_ended(engine, command):
+    """A request in the open chat whose turn was stopped: the card stays, to be run and sent as a message."""
+    engine.builder = None
+    engine._user_entry("Please look")
+    task, rid = await ask(engine, {"command": command, "purpose": "look", "risk": "read_only"})
+    task.cancel()
+    await asyncio.sleep(0)
+    engine.requests[rid].detached = True                     # as the turn's end marks it (_turn_end)
+    engine.builder.busy = False
+    engine._persist()
+    return engine.requests[rid]
+
+
+@pytest.fixture
+def slow_run(monkeypatch):
+    """Commands that end when the test says so: their names, as they started, and the gate."""
+    gate, started = asyncio.Event(), []
+
+    async def run(command, **kw):
+        started.append(command)
+        if "slow" in command:
+            await gate.wait()
+        return hostrun.RunResult(0, f"output of: {command}\n", False, 1.0)
+    monkeypatch.setattr(hostrun, "run", run)
+    return gate, started
+
+
+async def test_a_command_that_ends_while_another_chat_is_open_is_its_own_chats(env, slow_run):
+    """Requests are numbered in each chat. Until Nov 2026 a command's result was shown and saved as the open
+    chat's: run from a card whose turn had ended, the user looking at another chat while it ran, it took the place
+    of that chat's card #1 in the window, and in its own chat read "cancelled", its output gone."""
+    from davibemanager.conversation import Conversation
+    engine, _, events = env
+    engine.cfg.settings.second_opinion = "off"
+    gate, _ = slow_run
+    a = await _a_card_whose_turn_has_ended(engine, "slow cat ~/notes")
+    chat_a = engine.conv.id
+    await engine.new_chat("computer")
+    b = await _a_card_whose_turn_has_ended(engine, "uname -a")
+    chat_b = engine.conv.id
+    assert a.id == b.id == 1
+    await engine.open_chat(chat_a)
+    a = engine.requests[1]
+    engine.run_request(1)
+    await asyncio.sleep(0.02)
+    await engine.open_chat(chat_b)
+    del events[:]
+    gate.set()
+    await wait_for(lambda: a.status == "done", "the command's end")
+    await asyncio.sleep(0.05)
+    assert [e for e in events if e["type"] == "request"] == []           # nothing of it in the chat that's open
+    assert engine.requests[1].command == "uname -a" and engine.requests[1].status == "pending"
+    assert Conversation.load(chat_b).requests[0]["command"] == "uname -a"
+    await engine.open_chat(chat_a)
+    mine = engine.requests[1]
+    assert mine.status == "done" and "output of: slow cat ~/notes" in mine.output and mine.detached
+
+
+async def test_output_sent_by_itself_never_goes_to_another_chats_assistant(env, slow_run):
+    """... and with output sent automatically, it was sent as the open chat's card of that number, to that chat's
+    assistant. It waits on its own card instead."""
+    engine, _, _ = env
+    engine.cfg.settings.second_opinion = "off"
+    gate, _ = slow_run
+    a = await _a_card_whose_turn_has_ended(engine, "slow cat ~/notes")
+    chat_a = engine.conv.id
+    await engine.new_chat("computer")
+    b = await _a_card_whose_turn_has_ended(engine, "uname -a")
+    chat_b = engine.conv.id
+    engine.run_request(1)
+    await wait_for(lambda: b.status == "done", "the other chat's command")       # run, not sent yet
+    engine.cfg.settings.output_mode = "auto"
+    told = []
+    engine.workspace = {"state": "running"}
+    engine._start_turn = lambda content: told.append(content)
+    await engine.open_chat(chat_a)
+    a = engine.requests[1]
+    engine.run_request(1)
+    await asyncio.sleep(0.02)
+    await engine.open_chat(chat_b)
+    gate.set()
+    await wait_for(lambda: a.status == "done", "the command's end")
+    await asyncio.sleep(0.05)
+    assert told == [] and engine.requests[1].status == "done" and engine.requests[1].sent_text == ""
+    await engine.open_chat(chat_a)
+    assert engine.requests[1].status == "done" and not told               # there for the user to send
+
+
+async def test_a_command_still_running_is_there_with_its_stop_button_when_its_chat_is_opened_again(env, slow_run):
+    engine, _, _ = env
+    engine.cfg.settings.second_opinion = "off"
+    gate, _ = slow_run
+    a = await _a_card_whose_turn_has_ended(engine, "slow cat ~/notes")
+    chat_a = engine.conv.id
+    engine.run_request(1)
+    await asyncio.sleep(0.02)
+    await engine.new_chat("computer")
+    engine.stop_request(1)                                   # this chat's #1 isn't running: nothing is stopped
+    assert not engine._running[(chat_a, 1)][1].is_set()
+    await engine.open_chat(chat_a)
+    assert engine.requests[1] is a and a.status == "running"         # not a copy that reads "cancelled"
+    engine.stop_request(1)
+    assert engine._running[(chat_a, 1)][1].is_set()
+    gate.set()
+    await wait_for(lambda: a.status == "done", "the command's end")
+    assert engine.conv.requests[0]["status"] == "done" and not engine._running
+
+
+async def test_a_second_opinion_that_comes_while_another_chat_is_open_is_its_own_chats(env, monkeypatch):
+    from davibemanager.conversation import Conversation
+    engine, _, events = env
+    engine.cfg.settings.second_opinion = "off"
+    gate = asyncio.Event()
+
+    async def review(system, context, purpose, **log):
+        await gate.wait()
+        return {"model": "reviewer-model", "tier": "standard", "text": "fine", "summary": "fine", "data": "",
+                "verdict": "ok", "level": "ok"}
+    monkeypatch.setattr(engine, "_review", review)
+    a = await _a_card_whose_turn_has_ended(engine, "rm -rf ~/.cache/thumbnails")
+    chat_a = engine.conv.id
+    asked = asyncio.ensure_future(engine.review_request(1))
+    await asyncio.sleep(0.02)
+    await engine.new_chat("computer")
+    b = await _a_card_whose_turn_has_ended(engine, "uname -a")
+    del events[:]
+    gate.set()
+    await asked
+    assert [e for e in events if e["type"] == "request"] == [] and b.review == {}
+    assert Conversation.load(chat_a).requests[0]["review"]["status"] == "done"

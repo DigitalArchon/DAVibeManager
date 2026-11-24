@@ -235,7 +235,9 @@ class Engine:
         self.requests: dict[int, HostRequest] = {}
         self.questions: dict[int, dict] = {}
         self._waiters: dict[tuple[str, int], asyncio.Future] = {}   # ("request"|"question", id) -> the tool's wait
-        self._running: dict[int, asyncio.Event] = {}                 # request id -> its stop button
+        # a command running: (its chat's id, the request's id) -> (the request, its stop button). By its chat too:
+        # requests are numbered in each chat (_run)
+        self._running: dict[tuple[str, int], tuple[HostRequest, asyncio.Event]] = {}
         self._queued: list[str] = []          # messages for the assistant once its turn ends
         # a turn begun but not with the assistant yet (its app's source being prepared, Claude Code
         # connecting): {"entry", "stop": the user pressed Stop, "early": messages they wrote meanwhile}
@@ -300,7 +302,7 @@ class Engine:
         for task in (self._workspace_task, *self._background):
             if task:
                 task.cancel()
-        for ev in self._running.values():
+        for _, ev in self._running.values():
             ev.set()
         if self._check_lock.locked():
             await podman.remove_check(SANDBOX)
@@ -748,6 +750,12 @@ class Engine:
                 conv.app, conv.app_name = a["id"], a["name"]
         self.requests = {}
         for d in conv.requests:
+            live = self._running.get((conv.id, d.get("id")))
+            if live:
+                # a command of this chat's that still runs (the user looked at another chat meanwhile): its own
+                # card, with its stop button, not a copy of it that reads "cancelled"
+                self.requests[live[0].id] = live[0]
+                continue
             r = HostRequest.from_dict(d)
             if r.status in hostrun.OPEN:
                 # the assistant that asked has gone (the app was closed): an answer goes as a message
@@ -1384,9 +1392,46 @@ class Engine:
         except (KeyError, ValueError, TypeError):
             raise UserError("That request is no longer here.") from None
 
-    def _request_changed(self, r: HostRequest) -> None:
+    def _request_changed(self, r: HostRequest, conv: Conversation | None = None) -> bool:
+        """A card changed: shown, and saved with its chat. `conv`: the chat it is of, for a change that comes after
+        a while (a command that ran, a second opinion); whether that chat is still the open one. If another is open
+        by now, the card is saved in its own chat and nothing is shown or sent here. Until Nov 2026 it was shown and
+        saved as the open chat's: requests are numbered in each chat, so a command run from a card whose turn had
+        ended (stopped, or the app restarted), the user looking at another chat while it ran, lost its output (its
+        own chat read "cancelled") and took the place of that chat's card of the same number; and with output sent
+        automatically, its output went to that chat's assistant as that card's."""
+        if conv is not None and not (self.conv is not None and self.conv.id == conv.id and self.requests.get(r.id) is r):
+            self._keep_in_its_chat(r, conv.id)
+            return False
         self.emit("request", request=r.to_dict())
         self._persist()
+        return True
+
+    def _keep_in_its_chat(self, r: HostRequest, cid: str) -> None:
+        """Save a card in its own chat, which isn't the open one (_request_changed)."""
+        if self.conv is not None and self.conv.id == cid:
+            # opened again meanwhile, its cards read afresh: this one's copy gets the second opinion that took a while
+            # (a command that runs keeps its own card: _open)
+            mine = self.requests.get(r.id)
+            if mine is not None and mine.command == r.command:
+                mine.review = r.review
+                self.emit("request", request=mine.to_dict())
+                self._persist()
+            return
+        try:
+            conv = Conversation.load(cid)
+            conv.requests = [r.to_dict() if d.get("id") == r.id else d for d in conv.requests]
+            conv.save()
+        except OSError:
+            pass                                # its chat was deleted meanwhile: nothing to keep it in
+
+    @staticmethod
+    def _log_in(conv: Conversation, event: str, **data) -> None:
+        """In the log of a chat that may not be the open one any more, nor be there at all."""
+        try:
+            conv.log(event, **data)
+        except OSError:
+            pass
 
     def _resolve(self, kind: str, rid: int, text: str) -> None:
         """Give the assistant the user's decision: as the result of its tool call if it is still
@@ -1419,20 +1464,23 @@ class Engine:
         if r.status != "pending":
             raise UserError("It has already been decided.")
         r.status, r.ran_at = "running", time.time()
-        cancel = self._running[r.id] = asyncio.Event()
+        cancel = asyncio.Event()
+        self._running[(self.conv.id, r.id)] = (r, cancel)
         self.log("request_run", id=r.id, command=r.command, as_root=r.as_root, risk=r.risk)
         self._request_changed(r)
-        self._spawn(self._run(r, cancel))
+        self._spawn(self._run(r, cancel, self.conv))
 
-    async def _run(self, r: HostRequest, cancel: asyncio.Event) -> None:
+    async def _run(self, r: HostRequest, cancel: asyncio.Event, conv: Conversation) -> None:
+        """Run a command the user said to run, of the chat `conv`: its result is that chat's, whichever is open
+        when it ends (_request_changed)."""
         try:
             res = await hostrun.run(r.command, as_root=r.as_root, timeout=r.timeout, cancel=cancel)
         except Exception as e:  # noqa: BLE001 - shown on the card
             r.status, r.output = "failed", f"Could not run it: {e}"
-            self._request_changed(r)
+            self._request_changed(r, conv)
             return
         finally:
-            self._running.pop(r.id, None)
+            self._running.pop((conv.id, r.id), None)
         stopped = cancel.is_set()
         r.exit_code, r.timed_out, r.seconds, r.output = res.exit_code, res.timed_out, res.seconds, res.output
         r.preview, r.redactions, r.truncated = self._clean(res.output)
@@ -1441,16 +1489,17 @@ class Engine:
         r.still_running = res.still_running
         if stopped and not r.still_running:
             r.note = "The user stopped it while it was running."
-        self.log("request_done", id=r.id, exit_code=r.exit_code, timed_out=r.timed_out, seconds=r.seconds,
-                 redactions=r.redactions)
-        self._request_changed(r)
-        if self.cfg.settings.output_mode == "auto" and not (r.sensitive or r.warnings or r.still_running):
+        self._log_in(conv, "request_done", id=r.id, exit_code=r.exit_code, timed_out=r.timed_out, seconds=r.seconds,
+                     redactions=r.redactions)
+        # sent by itself only into its own chat, while that is the open one; else it waits there on its card
+        here = self._request_changed(r, conv)
+        if here and self.cfg.settings.output_mode == "auto" and not (r.sensitive or r.warnings or r.still_running):
             self.send_request(r.id, r.preview, auto=True)
 
     def stop_request(self, rid: int) -> None:
-        ev = self._running.get(int(rid))
-        if ev:
-            ev.set()
+        live = self._running.get((self.conv.id if self.conv else "", int(rid)))
+        if live:
+            live[1].set()
 
     def _clean(self, text: str) -> tuple[str, int, bool]:
         s = self.cfg.settings
@@ -1539,17 +1588,16 @@ class Engine:
     def _auto_review(self, r: HostRequest) -> None:
         if self._wants_review(r) and r.status == "pending":
             r.review = {"status": "checking", "auto": True}
-            self._spawn(self._review_slot(r.id))
+            self._spawn(self._review_slot(r, self.conv))
 
-    async def _review_slot(self, rid: int) -> None:
+    async def _review_slot(self, r: HostRequest, conv: Conversation) -> None:
         async with self._review_slots:
             try:
-                await self.review_request(rid, auto=True)
+                await self._second_opinion(r, conv, auto=True)
             except Exception as e:  # noqa: BLE001 - shown on the card; the user can ask again
-                r = self.requests.get(rid)
-                if r and r.review.get("status") == "checking":
+                if r.review.get("status") == "checking":
                     r.review = {"status": "error", "error": str(e)}
-                    self._request_changed(r)
+                    self._request_changed(r, conv)
 
     @staticmethod
     def _parse_review(text: str) -> dict:
@@ -1625,7 +1673,16 @@ class Engine:
                             "Settings (Second opinions).")
 
     async def review_request(self, rid: int, auto: bool = False) -> dict:
-        r = self._request(rid)
+        return await self._second_opinion(self._request(rid), self.conv, auto)
+
+    async def _second_opinion(self, r: HostRequest, conv: Conversation, auto: bool = False) -> dict:
+        """A second opinion on the request `r` of the chat `conv`, the card it is put on that chat's whichever is
+        open when it comes (_request_changed)."""
+        if self.conv is None or self.conv.id != conv.id:
+            # its turn came (_review_slot) after the user opened another chat: not asked, the card's button asks
+            r.review = {}
+            self._request_changed(r, conv)
+            return r.review
         self._private_review_check()
         command = r.command
         context = [f"Computer: {_local_os()}, desktop: {_desktop()}",
@@ -1639,10 +1696,10 @@ class Engine:
             r.review = {"status": "checking"}
             self._request_changed(r)
         out = {**await self._review(prompts.REVIEW_PROMPT, "\n".join(context), "second_opinion", id=r.id), "auto": auto}
-        self.log("second_opinion", id=r.id, **out)
+        self._log_in(conv, "second_opinion", id=r.id, **out)
         if r.command == command:
             r.review = {"status": "done", **out, "at": time.time()}
-            self._request_changed(r)
+            self._request_changed(r, conv)
         return r.review
 
     # ---------------------------------------------------------------- the sandbox
