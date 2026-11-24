@@ -182,3 +182,17 @@ test("a turn that has ended says nothing is still running unless something is", 
   await page.tick(30);
   assert.doesNotMatch(chatText(page), /Still running in its sandbox/);
 }));
+
+test("a turn that failed says why once, as its error, not again as a reply to copy", { skip }, () => withPage(async (page) => {
+  const why = "Stub didn't accept the API key, so stub/echo-1 wasn't asked anything. Check the API key in Settings.";
+  await page.event({ type: "state", state: chatWith([{ kind: "user", text: "hi", at: 1 },
+    { kind: "assistant", parts: [{ t: "text", text: why }], error: why, at: 2 },
+    { kind: "user", text: "again", at: 3 },
+    { kind: "assistant", parts: [{ t: "text", text: "Half an answer" }], error: "the reply stopped before it was finished", at: 4 }]) });
+  const text = chatText(page);
+  assert.equal(text.split(why).length - 1, 1);
+  assert.equal(page.d.querySelectorAll("#chat .err").length, 2);
+  assert.match(page.d.querySelectorAll("#chat .err")[0].textContent, /^Something went wrong: Stub didn't accept/);
+  assert.match(text, /Half an answer/);         // what it did write, beside an error that isn't it, stays
+  assert.equal([...page.d.querySelectorAll("#chat button")].filter((b) => b.textContent === "Copy").length, 1);
+}));

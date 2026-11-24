@@ -246,6 +246,12 @@ def test_claude_codes_line_for_a_refused_request_is_the_gateways_words_alone():
     assert bridge.api_error_words("API Error: Connection error.") == "Connection error."
     assert bridge.api_error_words("You have 3.12.6. API Error: 403 is what it said.") == \
         "You have 3.12.6. API Error: 403 is what it said."     # a sentence of the assistant's own, left alone
+    # the CLI's hint for a server's error names the sandbox's own relay, which means nothing to the user
+    cut = ("stub/echo-1: the reply stopped before it was finished. This is a server-side issue, usually temporary — "
+           "try again in a moment. If it persists, check your inference gateway (127.0.0.1:8080).")
+    assert bridge.api_error_words(cut) == ("stub/echo-1: the reply stopped before it was finished. This is a server-side "
+                                           "issue, usually temporary — try again in a moment.")
+    assert bridge.api_error_words(f"API Error: 502 {cut}").endswith("try again in a moment.")
 
 
 async def test_a_refused_key_reads_in_the_turn_in_words(builder_env):

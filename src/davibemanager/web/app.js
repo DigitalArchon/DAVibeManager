@@ -911,7 +911,10 @@ function entryEl(e, live, idx = "") {
   // what the user wrote while it worked splits the entry where they wrote it
   const out = [];
   let box = h("div", { class: "msg assistant" });
-  const parts = e.parts || [];
+  // a turn that failed: Claude Code says why in the reply and as the turn's error, the same words (bridge.py
+  // api_error_words), shown once, as the error (until Nov 2026 they were shown twice, the reply with a Copy button)
+  const failed = e.error && e.error !== "stopped" ? String(e.error).trim() : "";
+  const parts = (e.parts || []).filter((p) => !(failed && p.t === "text" && String(p.text).trim() === failed));
   const said = parts.filter((p) => p.t === "text").map((p) => p.text).join("\n\n");
   if (e.woken) box.append(h("div", { class: "muted small" }, "Something it left running has finished:"));
   parts.forEach((p, i) => {

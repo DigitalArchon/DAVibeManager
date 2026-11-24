@@ -80,13 +80,18 @@ QUESTION_NUDGE = (
 # Claude Code's own line for a request the gateway refused: "API Error: 403 <the gateway's words>", after a sentence
 # of its own for some ("Failed to authenticate." for a 401 or 403), its status the gateway's, not the provider's
 _CLI_API_ERROR = re.compile(r"\A(?:[A-Z][^.\n]{0,80}\.\s+)?API Error:\s*(?:\d{3}\b\s*)?(?P<rest>.*)\Z", re.S)
+# ... and the sentence it adds to a server's error when it is started with an address of its own: the gateway's relay
+# inside the sandbox (ANTHROPIC_BASE_URL, 127.0.0.1:8080), an address that means nothing to the user
+_CLI_GATEWAY_HINT = re.compile(r"\s*If it persists, check your inference gateway \([^)\n]*\)\.?")
 
 
 def api_error_words(text: str) -> str:
     """What the user is shown of a request Claude Code reports refused: the gateway's own words, which say what
     happened and what to do (gateway.upstream_refusal), without the CLI's sentence and status around them. A
     refused API key read "Failed to authenticate. API Error: 403 glm: NanoGPT refused the request (HTTP 401): ...",
-    two statuses and neither the user's to read. A body the CLI passed on as JSON gives its error's message."""
+    two statuses and neither the user's to read. A body the CLI passed on as JSON gives its error's message. The
+    CLI's "If it persists, check your inference gateway (127.0.0.1:8080)." goes: that is the sandbox's own relay."""
+    text = _CLI_GATEWAY_HINT.sub("", text)
     m = _CLI_API_ERROR.match(text.strip())
     if not m:
         return text
