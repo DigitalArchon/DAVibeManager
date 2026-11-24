@@ -601,7 +601,8 @@ works on) directly with each other, through Tor, with no server and no account:
 
 - **Only your computers can find this one.** Each runs an onion service whose address leads nowhere
   for anyone without its key (Tor's client authorization), and each proves which computer it is
-  before anything is sent. A computer you remove is shut out by all the others.
+  before anything is sent. A computer you remove is shut out by all the others: a connection it has
+  open is closed, and only another computer of the group can add it again, with a new code.
 - **Joining takes a code you showed**: 16 digits, good once, then six numbers shown on both screens
   (and, if you choose, confirmed on both before the computer is added).
 - **Nothing else is synced**: not your chats, settings, API key, builds or what's installed. An app

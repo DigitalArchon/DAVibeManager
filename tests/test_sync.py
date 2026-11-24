@@ -366,6 +366,34 @@ def test_two_computers_lists_of_members_come_together_and_a_removal_stands():
     assert changed == [me["id"]] and roster[me["id"]]["removed"] and roster[me["id"]]["name"] == "Desktop"
 
 
+def test_a_computer_says_of_itself_that_it_left_never_that_its_back_or_since_when():
+    """Being added again undoes a removal, and a removed computer said that of itself: to a member it still had
+    a connection to, or, giving a time to come, to one that hadn't heard of its removal yet (which then took
+    the removal for the older word, and told the rest it was in)."""
+    me, laptop, server = member("Desktop"), member("Laptop"), member("Server")
+    roster = {x["id"]: x for x in (me, laptop, server)}
+    gone = {**laptop, "removed": laptop["added"] + 50, "updated": laptop["added"] + 50, "by": server["id"]}
+    back = {**laptop, "added": gone["removed"] + 1, "updated": gone["removed"] + 1}
+    # removed here already: its own word that it's back is nothing, another member's (who added it again) is taken
+    removed, _ = store.merge_members(roster, [gone], me["id"])
+    assert store.merge_members(removed, [back], me["id"], laptop["id"])[1] == []
+    assert store.merge_members(removed, [back], me["id"], server["id"])[1] == [laptop["id"]]
+    # not heard of here yet: it may rename itself, but since when it's in stays as this computer has it,
+    # so the removal still stands when it's heard
+    renamed = {**back, "name": "Old laptop"}
+    early, changed = store.merge_members(roster, [renamed], me["id"], laptop["id"])
+    assert changed == [laptop["id"]] and early[laptop["id"]]["name"] == "Old laptop"
+    assert early[laptop["id"]]["added"] == laptop["added"]
+    late, changed = store.merge_members(early, [gone], me["id"], server["id"])
+    assert changed == [laptop["id"]] and late[laptop["id"]]["removed"]
+    # that it left is its own to say
+    left = {**server, "removed": server["added"] + 5, "updated": server["added"] + 5, "by": server["id"]}
+    assert store.merge_members(roster, [left], me["id"], server["id"])[0][server["id"]]["removed"]
+    # and a computer this one hadn't heard of says itself who it is (the one that added this computer)
+    new = member("Mini")
+    assert store.merge_members(roster, [new], me["id"], new["id"])[0][new["id"]] == new
+
+
 def test_a_group_has_a_limit_and_a_pair_of_members_their_own_secret():
     me = member("Desktop")
     many = [member(f"PC {i}") for i in range(store.MAX_MEMBERS + 5)]

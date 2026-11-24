@@ -222,11 +222,16 @@ def newer(e: dict, have: dict) -> bool:
     return (e["updated"], e["added"]) > (have["updated"], have["added"])
 
 
-def merge_members(mine: dict[str, dict], theirs, me: str) -> tuple[dict[str, dict], list[str]]:
+def merge_members(mine: dict[str, dict], theirs, me: str, sender: str = "") -> tuple[dict[str, dict], list[str]]:
     """Another computer's list of members, merged into this one's (store.newer). Of this computer's
     own entry only its removal is taken from others, and only one after it was last added: it says
-    itself what it's called, where it is and with which key. Returns (members, the ids whose entry
-    changed)."""
+    itself what it's called, where it is and with which key. Of the entry of the computer that sent the
+    list (`sender`), what it says of itself is its name, its address and key, and that it left: never that
+    it is in the group again, or since when. Being added again undoes a removal (store.newer), and until
+    Nov 2026 a removed computer could say that of itself, to any member it still had a connection to or
+    that hadn't heard yet, a second after it was removed, and was back in on every computer. A removal is
+    undone by another member (adding it again with a code), not by the one removed. Returns (members, the
+    ids whose entry changed)."""
     out, changed = dict(mine), []
     for raw in (theirs if isinstance(theirs, list) else [])[:MAX_ENTRIES]:
         e = checked_member(raw)
@@ -238,6 +243,10 @@ def merge_members(mine: dict[str, dict], theirs, me: str) -> tuple[dict[str, dic
                 out[me] = {**have, "removed": e["removed"], "updated": e["updated"], "by": e["by"]}
                 changed.append(me)
             continue
+        if e["id"] == sender and have is not None and not e["removed"]:
+            if have["removed"]:
+                continue
+            e = {**e, "added": have["added"]}
         if have is None:
             if not e["removed"] and len(live(out)) >= MAX_MEMBERS:
                 continue

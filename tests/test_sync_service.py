@@ -388,6 +388,70 @@ async def test_a_computer_removed_is_shut_out_by_all_and_told_when_its_next_on(t
     await stop_all(desktop, laptop, old)
 
 
+async def holding_a_connection(tmp_path):
+    """Three computers, and the laptop's own way to the desktop's onion as a member: connect() gives a connection
+    on which each has proved itself and their lists of members are exchanged, as the app's own begin."""
+    net = FakeNet()
+    desktop, laptop, mini = (Computer(tmp_path / d, net, n) for d, n in (("A", "Desktop"), ("B", "Laptop"), ("C", "Mini")))
+    desktop.make_app()
+    await add(desktop, laptop)
+    await add(desktop, mini)
+    await all_know([desktop, laptop, mini])
+    d_me, l_me = desktop.me(), laptop.me()
+    gid = laptop.run(lambda: store.group().id)
+    key = laptop.run(lambda: store.pair_key(store.group().key, l_me.id, d_me.id))
+    roster = laptop.run(lambda: list(store.members().values()))
+
+    async def connect():
+        reader, writer = await asyncio.open_unix_connection(str(net.services[d_me.onion_key.address]["target"]))
+        await wire.hello_as_client(reader, writer, l_me.id, d_me.id, gid, key)
+        await wire.send(writer, {"t": "roster", "members": roster})
+        assert (await wire.recv(reader, 5))["t"] == "roster"
+        return reader, writer
+    await laptop.off()                          # (its own app is off: only these connections speak for it)
+    return desktop, mini, l_me, roster, connect
+
+
+async def test_removing_a_computer_closes_the_connections_it_has_open(tmp_path):
+    """Tor closes none that are open when an onion's list of clients changes: a removed computer that kept one
+    open (a stolen laptop, its client made to) went on being given this one's apps."""
+    desktop, mini, l_me, roster, connect = await holding_a_connection(tmp_path)
+    one, two = await connect(), await connect()
+    await wire.send(one[1], {"t": "list"})
+    assert len((await wire.recv(one[0], 5))["apps"]) == 1           # a member: it's given the list
+    desktop.run(desktop.sync.remove, l_me.id)
+    for reader, _ in (one, two):
+        with pytest.raises(wire.WireError, match="closed the connection"):
+            await wire.recv(reader, 5)
+    with pytest.raises(wire.Refused, match="removed"):
+        await connect()
+    await stop_all(desktop, mini)
+
+
+async def test_a_removed_computer_is_served_nothing_more_and_cant_say_its_back(tmp_path, monkeypatch):
+    """Who is a member was asked once, when a connection began. On one that outlived its removal, a computer
+    listed and fetched the apps made since, and by saying it was added again a second after it was removed was a
+    member again on every computer (being added again undoes a removal)."""
+    monkeypatch.setattr(service.SyncService, "_cut", lambda self, member_id, keep=None: None, raising=False)
+    desktop, mini, l_me, roster, connect = await holding_a_connection(tmp_path)
+    one, two = await connect(), await connect()
+    desktop.run(desktop.sync.remove, l_me.id)
+    await mini.until(lambda v: names(v) == ["Desktop"], "the mini hearing of it")
+    desktop.make_app("Made after it was removed")
+    await wire.send(one[1], {"t": "list"})
+    with pytest.raises(wire.WireError, match="closed the connection"):
+        await wire.recv(one[0], 5)
+    removed_at = desktop.run(lambda: store.members()[l_me.id]["removed"])
+    back = {**next(e for e in roster if e["id"] == l_me.id), "removed": 0, "added": removed_at + 1, "updated": removed_at + 1}
+    await wire.send(two[1], {"t": "roster", "members": [back]})
+    with pytest.raises(wire.WireError, match="closed the connection"):
+        await wire.recv(two[0], 5)
+    await asyncio.sleep(0.3)
+    assert names(desktop.view()) == ["Mini"] and names(mini.view()) == ["Desktop"]
+    assert desktop.run(lambda: store.members()[l_me.id]["removed"]) == removed_at
+    await stop_all(desktop, mini)
+
+
 async def test_leaving_tells_the_others_and_keeps_the_apps(tmp_path):
     net = FakeNet()
     desktop, laptop, server = (Computer(tmp_path / d, net, n) for d, n in (("A", "Desktop"), ("B", "Laptop"), ("C", "Server")))

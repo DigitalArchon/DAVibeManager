@@ -138,6 +138,7 @@ class SyncService:
         self._tell_slots = asyncio.Semaphore(AT_ONCE)
         self._tasks: set[asyncio.Task] = set()
         self._streams = weakref.WeakSet()           # the connections open, to cut when sync stops
+        self._with: dict[str, weakref.WeakSet] = {}  # member id -> the connections open with it, to cut when it's removed
         self._announce: asyncio.TimerHandle | None = None
         self._emit_soon: asyncio.TimerHandle | None = None
         self._announced: dict[str, str] = {}
@@ -829,6 +830,7 @@ class SyncService:
         store.save_members(roster)
         store.forget_base(member_id)
         self._live.pop(member_id, None)
+        self._cut(member_id)
         self._log("removed", member=member_id)
         if self._others():
             self._soon(member_id)               # told by the runner (_to_tell), its key off this onion
@@ -937,18 +939,40 @@ class SyncService:
 
     # ---------------------------------------------------------------- talking to a member
 
-    def _merge_roster(self, theirs) -> set[str] | None:
-        """Another member's list of members merged into this one's, and saved. Returns who was in before,
-        for _after_roster, when anything changed; None when nothing did."""
+    def _merge_roster(self, theirs, sender: str) -> set[str] | None:
+        """Another member's list of members (`sender`'s) merged into this one's, and saved. Returns who was in
+        before, for _after_roster, when anything changed; None when nothing did."""
         before = {e["id"] for e in self._others()}
-        roster, changed = store.merge_members(store.members(), theirs, self.me().id)
+        roster, changed = store.merge_members(store.members(), theirs, self.me().id, sender)
         if not changed:
             return None
         store.save_members(roster)
         return before
 
-    def _after_roster(self, before: set[str]) -> None:
-        """The members changed: this computer may have been removed, others added or removed."""
+    def _is_member(self, member_id: str) -> bool:
+        """Whether that computer is in this one's group now (not removed, and this one still in a group)."""
+        e = self._roster().get(member_id)
+        return e is not None and not e["removed"]
+
+    def _joined_with(self, member_id: str, writer) -> None:
+        """A connection with a member, each proved to the other: kept, to be cut if the member is removed."""
+        self._with.setdefault(member_id, weakref.WeakSet()).add(writer)
+
+    def _cut(self, member_id: str, keep=None) -> None:
+        """The connections open with a computer that was removed, closed (but `keep`, the one this was heard
+        on, which ends by itself: its next message isn't served). Who is a member is asked once, when a
+        connection begins, and tor closes none that are open when an onion's list of clients changes: until
+        Nov 2026 a removed computer that kept its connection open went on being given this one's apps, those
+        made after it was removed too."""
+        for writer in list(self._with.pop(member_id, ())):
+            if writer is keep:
+                self._joined_with(member_id, writer)
+            else:
+                writer.transport.abort()
+
+    def _after_roster(self, before: set[str], keep=None) -> None:
+        """The members changed: this computer may have been removed, others added or removed (their
+        connections cut, but `keep`: _cut)."""
         me, roster = self.me().id, self._roster()
         mine = roster.get(me)
         if mine and mine["removed"]:
@@ -963,6 +987,7 @@ class SyncService:
             if e["removed"] and e["id"] in before:
                 store.forget_base(e["id"])
                 self._live.pop(e["id"], None)
+                self._cut(e["id"], keep)
         self._members_changed([e["id"] for e in store.live(roster, but=me) if e["id"] not in before])
 
     async def _connect(self, e: dict, tell: list | None = None):
@@ -996,12 +1021,13 @@ class SyncService:
             except BaseException:
                 writer.close()
                 raise
+            self._joined_with(e["id"], writer)
             if tell is None:
                 if isinstance(msg.get("move"), dict):
                     self._adopt(msg["move"])
-                before = self._merge_roster(msg.get("members"))
+                before = self._merge_roster(msg.get("members"), e["id"])
                 if before is not None:
-                    self._after_roster(before)
+                    self._after_roster(before, writer)
                 if not store.group():
                     writer.close()
                     raise Gone()
@@ -1040,23 +1066,26 @@ class SyncService:
         self._serving += 1
         try:
             who, gid = await wire.hello_as_server(reader, writer, self.me().id, self._lookup)
+            self._joined_with(who, writer)
             self._seen(who)
             self._spend(who)                    # the computer a code shown added: in for sure
             here = None
             while True:
                 msg = await wire.recv(reader)
+                if not self._is_member(who):
+                    return                      # removed since it said hello: nothing more is served (_cut)
                 t = msg.get("t")
                 if t == "move":
                     self._adopt(msg.get("group"))
                     gid = store.group().id if store.group() else gid
                     await wire.send(writer, {"t": "moved"})
                 elif t == "roster":
-                    before = self._merge_roster(msg.get("members"))
+                    before = self._merge_roster(msg.get("members"), who)
                     g = store.group()
                     await wire.send(writer, {"t": "roster", "members": list(store.members().values()),
                                              **({"move": _group_msg(g)} if g and gid != g.id else {})})
                     if before is not None:
-                        self._after_roster(before)
+                        self._after_roster(before, writer)
                         if not store.group():
                             return
                 elif t in ("list", "bundle"):
@@ -1092,10 +1121,11 @@ class SyncService:
             await wire.send_bytes(writer, entry[2])
         return here
 
-    async def _answer(self, reader, writer) -> None:
-        """The member this one is connected to pulls from it, on the same connection, until it's done."""
+    async def _answer(self, who: str, reader, writer) -> None:
+        """The member this one is connected to (`who`) pulls from it, on the same connection, until it's done,
+        or isn't a member any more."""
         here = None
-        while (msg := await wire.recv(reader)).get("t") in ("list", "bundle"):
+        while (msg := await wire.recv(reader)).get("t") in ("list", "bundle") and self._is_member(who):
             here = await self._give(writer, msg, here)
 
     async def _take_turn(self, who: str, reader, writer) -> None:
@@ -1170,7 +1200,7 @@ class SyncService:
                 came = await self._pull_from(e, reader, writer)
                 try:                            # and it pulls from this one in turn, the same way round
                     await wire.send(writer, {"t": "turn"})
-                    await self._answer(reader, writer)
+                    await self._answer(member_id, reader, writer)
                 except wire.WireError:
                     pass
             finally:
@@ -1326,7 +1356,7 @@ class SyncService:
                 try:
                     if poke:
                         await wire.send(writer, {"t": "turn"})
-                        await self._answer(reader, writer)
+                        await self._answer(e["id"], reader, writer)
                     else:
                         await wire.send(writer, {"t": "bye"})
                 except wire.WireError:
