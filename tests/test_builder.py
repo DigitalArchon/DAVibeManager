@@ -647,6 +647,29 @@ async def test_a_message_written_after_stop_while_the_turn_is_prepared_reaches_t
     assert "Make it zoom" not in got[0]
 
 
+async def test_a_message_waiting_for_the_sandbox_waits_in_its_chat_when_another_is_opened(builder_env):
+    """Written while the sandbox started, it waits ("Sent when the assistant is ready"). Until Nov 2026 opening another
+    chat meanwhile dropped it, and it read so for good. It is sent when its chat is open again, the sandbox up."""
+    engine, _, _, _ = builder_env
+    got = []
+
+    async def script(c, text):
+        got.append(text)
+        await c.queue.put(AssistantMessage([TextBlock("Let's see.")], "m"))
+        await c.queue.put(result())
+    engine._script = script
+    engine.workspace = {"state": "starting"}
+    engine.start_workspace = lambda: None
+    engine.send("Fix my printer")
+    chat = engine.conv.id
+    await engine.new_chat("computer")
+    assert engine._queued == []                      # nothing of it goes to the chat that's open now
+    engine.workspace = {"state": "running"}
+    await engine.open_chat(chat)
+    await wait_for(lambda: got and not engine.busy, "its answer")
+    assert "Fix my printer" in got[0] and not any(e.get("queued") for e in engine.conv.chat)
+
+
 async def test_going_to_the_open_chat_while_the_assistant_works_in_it_shows_it(builder_env):
     """"Go to its chat" on an update the assistant is making: that chat is the one open (My apps was
     only in front of it), so it's shown as it is, not refused because the assistant is busy, and

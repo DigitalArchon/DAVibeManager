@@ -239,6 +239,9 @@ class Engine:
         # requests are numbered in each chat (_run)
         self._running: dict[tuple[str, int], tuple[HostRequest, asyncio.Event]] = {}
         self._queued: list[str] = []          # messages for the assistant once its turn ends
+        # chats left with messages still waiting for the sandbox to start: id -> (those messages, their files), sent
+        # when the chat is open again (_open)
+        self._held: dict[str, tuple[list[str], list[dict]]] = {}
         # a turn begun but not with the assistant yet (its app's source being prepared, Claude Code
         # connecting): {"entry", "stop": the user pressed Stop, "early": messages they wrote meanwhile}
         self._starting: dict | None = None
@@ -742,6 +745,10 @@ class Engine:
     # ---------------------------------------------------------------- conversations
 
     def _open(self, conv: Conversation) -> None:
+        if self.conv is not None and self.conv.id != conv.id and (self._queued or self._unplaced):
+            # written while the sandbox started, the chat left before it had: kept for it. Until Nov 2026 they were
+            # dropped here, and their messages read "Sent when the assistant is ready" for good
+            self._held[self.conv.id] = (self._queued, self._unplaced)
         self.conv = conv
         if conv.mode == "app" and not conv.app:
             # an app chat from before chats had their app: the app of what was delivered in it
@@ -770,11 +777,13 @@ class Engine:
             if q.get("status") == "pending":
                 q["detached"] = True
             self.questions[q["id"]] = q
-        self._queued = []
+        self._queued, self._unplaced = self._held.pop(conv.id, ([], []))
         self.network = []
         self._packages_installed = set()
         self._drop_attached()
-        self._unplaced = []
+        if self._queued and self.workspace.get("state") == "running":
+            msgs, self._queued = self._queued, []
+            self._spawn(self._send_later("\n\n".join(msgs)))       # the sandbox started meanwhile: now
 
     def _idle(self) -> None:
         if self.busy:
@@ -882,6 +891,7 @@ class Engine:
                 raise UserError("Wait for the assistant to finish (or stop it) before deleting this chat.")
             await self._switch(Conversation.create())
         for cid in ids:
+            self._held.pop(cid, None)
             try:
                 Conversation.delete(cid)
                 deleted.append(cid)
