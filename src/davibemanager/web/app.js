@@ -90,13 +90,25 @@ function h(tag, attrs = {}, ...children) {
 }
 
 async function api(method, path, body) {
-  const res = await fetch(path, {
-    method, headers: { "X-Token": TOKEN, "Content-Type": "application/json" },
-    body: body === undefined ? undefined : JSON.stringify(body),
-  });
+  let res;
+  try {
+    res = await fetch(path, {
+      method, headers: { "X-Token": TOKEN, "Content-Type": "application/json" },
+      body: body === undefined ? undefined : JSON.stringify(body),
+    });
+  } catch {
+    // no answer at all: said in the user's words, not the browser's ("Failed to fetch") (DA Toolkit's 52455af)
+    const err = new Error("DA Vibe Manager didn't answer: the connection to it is lost, so this may not have been done.");
+    err.unreachable = true;
+    throw err;
+  }
   let data = {};
   try { data = await res.json(); } catch { /* empty */ }
-  if (!res.ok) throw new Error(data.error || data.detail || `${res.status} ${res.statusText}`);
+  if (!res.ok) {
+    const err = new Error(data.error || data.detail || `${res.status} ${res.statusText}`);
+    err.status = res.status;
+    throw err;
+  }
   return data;
 }
 
@@ -109,15 +121,24 @@ function toast(text, kind = "info", ms = 6000, title = "") {
   setTimeout(() => el.remove(), ms);
 }
 
-// the app window's clipboard goes through GTK (WebKitGTK's own is unreliable there)
+// the app window's clipboard goes through GTK (WebKitGTK's own is unreliable there); then the browser's own ways. It
+// throws when nothing was copied: until Nov 2026 a failure was swallowed and "Copied." showed all the same, with the
+// clipboard still holding what it held before (DA Toolkit's 52455af)
 async function clipWrite(text) {
-  try {
-    if (DESKTOP) return await api("POST", "/api/desktop/clipboard", { text });
-    await navigator.clipboard.writeText(text);
-  } catch {
-    const ta = h("textarea", { value: text });
-    document.body.append(ta); ta.select(); document.execCommand("copy"); ta.remove();
+  if (DESKTOP) {
+    try { await api("POST", "/api/desktop/clipboard", { text }); return; } catch { /* the browser's own ways, below */ }
   }
+  try { await navigator.clipboard.writeText(text); return; } catch { /* not allowed here, or an older browser: the old way */ }
+  const had = document.activeElement;
+  const ta = h("textarea", { value: text, tabindex: -1, "aria-hidden": "true", style: "position:fixed;left:-9999px;top:0" });
+  ($("#modal-root").lastElementChild?.querySelector(".modal") || document.body).append(ta);   // inside an open dialog
+  ta.focus();
+  ta.select();
+  let ok = false;
+  try { ok = document.execCommand("copy"); } catch { /* not copied */ }
+  ta.remove();
+  had?.focus?.();
+  if (!ok) throw new Error("Nothing was copied: the clipboard couldn't be written to. Select the text and copy it by hand.");
 }
 
 async function guarded(fn) {
@@ -355,10 +376,45 @@ function confirmModal(title, message, okLabel = "OK", kind = "primary") {
 
 // ------------------------------------------------------------------ events
 
+// The events socket. While it is down a banner says so; before each new try the token is tried on a small request,
+// so a server that isn't running (yet) is tried again, and a token it refuses (it was started again) ends with a
+// message in place of the page, as an address with no token does at once. (Until Nov 2026 the page stayed "Starting…"
+// for ever with a token missing or refused, and looked the same connected or not: DA Toolkit's 52455af.)
+const NO_TOKEN = "This address carries no access token, so DA Vibe Manager can't be used from it. Open DA Vibe Manager from its menu entry, or with the whole address it prints when it starts.";
+const TOKEN_REFUSED = "DA Vibe Manager refused this page's access token: it has been started again since the page was opened, and every start has a token of its own. Close this tab and open DA Vibe Manager again.";
+
 function connect() {
   const ws = new WebSocket(`ws://${location.host}/ws/events?t=${encodeURIComponent(TOKEN)}`);
-  ws.onmessage = (m) => handle(JSON.parse(m.data));
-  ws.onclose = () => setTimeout(connect, 1500);
+  ws.onopen = () => connectionLost(false);
+  ws.onmessage = (m) => { connectionLost(false); handle(JSON.parse(m.data)); };
+  ws.onclose = () => {
+    if (S.ended) return;
+    connectionLost(true);
+    setTimeout(reconnect, 1500);
+  };
+}
+
+async function reconnect() {
+  if (S.ended) return;
+  try {
+    await api("GET", "/api/state");
+  } catch (e) {
+    if (e.status === 403) return noAccess(TOKEN_REFUSED);
+    if (e.unreachable) return setTimeout(reconnect, 1500);    // not running, or not yet: keep trying
+  }
+  connect();
+}
+
+function connectionLost(lost) {
+  const banner = $("#conn-banner");
+  banner.textContent = lost ? "⚠ The connection to DA Vibe Manager is lost; reconnecting… What is shown here may be out of date, and nothing can be sent until it is back." : "";
+  banner.classList.toggle("hidden", !lost);
+}
+
+// The page can't be used: said in place of the page, where an empty shell would say nothing.
+function noAccess(why) {
+  S.ended = true;
+  document.body.replaceChildren(h("div", { class: "quit-note", role: "alert" }, h("h2", {}, "DA Vibe Manager isn't open in this page."), h("p", {}, why)));
 }
 
 function handle(ev) {
@@ -1827,6 +1883,7 @@ function setupScreen() {
 // ------------------------------------------------------------------ panels
 
 function openPanel(name) {
+  if (!S.state) return;               // nothing to show yet (until Nov 2026 Settings threw here, on an empty panel)
   S.panel = name;
   $("#panel").classList.remove("hidden");
   const body = $("#panel-body");
@@ -3148,6 +3205,7 @@ function init() {
       guarded(async () => {
         if (!(await confirmModal("Quit DA Vibe Manager?", "The assistant stops until you start the app again.", "Quit", "danger"))) return;
         await api("POST", "/api/quit");
+        S.ended = true;
         document.body.replaceChildren(h("div", { class: "quit-note" }, h("h2", {}, "DA Vibe Manager has quit."), h("p", {}, "You can close this window.")));
       });
     } else if (a) openPanel(a);
@@ -3160,8 +3218,9 @@ function init() {
     else if (S.panel) closePanel();
   });
   if (DESKTOP) document.body.classList.add("desktop");
-  if (!LAUNCH) return connect();
+  if (!LAUNCH) return TOKEN ? connect() : noAccess(NO_TOKEN);
   launchToken(LAUNCH).then((t) => { TOKEN = t; connect(); }, (e) => {
+    S.ended = true;
     document.body.replaceChildren(h("div", { class: "quit-note" }, h("h2", {}, "This link can't open DA Vibe Manager."), h("p", {}, e.message)));
   });
 }

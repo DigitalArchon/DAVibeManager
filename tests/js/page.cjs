@@ -29,8 +29,11 @@ function load(replies = {}, url = "http://127.0.0.1:48599/?t=tok") {
       const call = { path: String(url).split("?")[0], query: String(url).split("?")[1] || "", method: opts.method || "GET",
         body: typeof opts.body === "string" ? JSON.parse(opts.body) : undefined };
       __calls.push(call);
+      if (window.__down) throw new TypeError("Failed to fetch");         // the server isn't answering
       const reply = __replies[call.method + " " + call.path] ?? {};
-      return { ok: true, status: 200, statusText: "OK", json: async () => reply, blob: async () => new Blob([]), headers: { get: () => null } };
+      const status = reply.__status || 200;                               // a reply {__status: 403, error: …}: refused
+      return { ok: status < 400, status, statusText: status < 400 ? "OK" : "Refused", json: async () => reply,
+        blob: async () => new Blob([]), headers: { get: () => null } };
     };
     window.WebSocket = class { constructor(url) { this.url = url; this.readyState = 1; this.sent = []; __sockets.push(this); }
       send(d) { this.sent.push(d); } close() { this.readyState = 3; } };
