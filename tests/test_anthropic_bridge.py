@@ -890,6 +890,15 @@ async def test_a_request_that_isnt_the_messages_apis_is_refused_in_words_or_pass
         assert all(seen[-1][k] == v for k, v in odd.items()), "as Claude Code wrote it"
 
 
+async def test_the_list_of_models_asked_of_a_translating_gateway_is_refused_as_a_sentence(tmp_path):
+    """GET /v1/models names no model: it was refused as "/v1/models isn't available for ."."""
+    async with translating(tmp_path, FakePrivate(), models=("z-ai/glm-5.3",)) as (g, log):
+        async with httpx.AsyncClient(transport=httpx.AsyncHTTPTransport(uds=str(g.model_socket)), base_url="http://gw") as c:
+            r = await c.get("/v1/models", headers={"authorization": f"Bearer {g.token}"})
+    said = "/v1/models isn't available: the assistant's models are the ones chosen in Settings."
+    assert r.status_code == 404 and r.json()["error"]["message"] == said and log[-1]["error"] == said
+
+
 async def test_our_thinking_never_reaches_a_claude_model(tmp_path):
     """Another model's reasoning, signed as DA Vibe Manager's, would be refused by Anthropic's API (a chat
     begun on GLM, then on Claude Opus): taken out; Claude's own thinking goes as it is."""

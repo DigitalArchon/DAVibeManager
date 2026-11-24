@@ -641,7 +641,9 @@ class Gateway:
         if path == "/v1/messages/count_tokens":
             return JSONResponse({"input_tokens": bridge.estimate_tokens(data)})
         if path != "/v1/messages":
-            return err(Refused(404, f"{path} isn't available for {model}.", "not_found_error"))
+            # GET /v1/models, which names no model: it read "/v1/models isn't available for ." until Nov 2026
+            return err(Refused(404, f"{path} isn't available" + (f" for {model}." if model else ": the assistant's "
+                                                                 "models are the ones chosen in Settings."), "not_found_error"))
         if self._images is None or self._images.model != up.vision_model:
             self._images = bridge.ImageDescriber(up.describe, up.vision_model)
         wanted = up.reasoning or "low"
