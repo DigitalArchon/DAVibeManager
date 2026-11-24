@@ -263,6 +263,79 @@ def test_the_browser_is_opened_on_a_one_time_code_never_the_token(monkeypatch):
     assert not launches.take(first)                       # once
 
 
+def _main_runs_here(monkeypatch, tmp_path):
+    """app.main in this test's own folders, with no single-instance name taken and a server that starts and is done
+    at once. Returns the addresses a browser was opened on."""
+    import webbrowser
+
+    import uvicorn
+
+    from davibemanager import tray
+
+    class Server:                      # starts, and is done at once
+        def __init__(self, config):
+            self.started, self.should_exit = False, False
+
+        def run(self):
+            self.started = True
+
+    for var in ("XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME", "XDG_CACHE_HOME", "XDG_RUNTIME_DIR"):
+        monkeypatch.setenv(var, str(tmp_path / var.lower()))
+    (tmp_path / "xdg_runtime_dir").mkdir(mode=0o700, exist_ok=True)
+    monkeypatch.setattr(tray, "claim_single_instance", lambda on_show: True)
+    monkeypatch.setattr(uvicorn, "Server", Server)
+    opened = []
+    monkeypatch.setattr(webbrowser, "open", lambda url, *a: opened.append(url))
+    return opened
+
+
+def test_the_address_printed_to_open_by_hand_has_the_token_where_no_request_carries_it(monkeypatch, tmp_path, capsys):
+    """--no-open (and the browser mode) printed http://127.0.0.1:PORT/?t=TOKEN: the token in the first line of every
+    request the browser sends, so in its history and in any proxy's or log's record of one. It is in the fragment now,
+    as DA Toolkit prints it, and the browser the app opens itself still gets a one-time code."""
+    from davibemanager import app as app_mod
+
+    opened = _main_runs_here(monkeypatch, tmp_path)
+    app_mod.main(["--no-open", "--port", "48577"])
+    printed = capsys.readouterr().out
+    assert "?t=" not in printed and not opened
+    token = printed.split("http://127.0.0.1:48577/#t=", 1)[1].split()[0]
+    assert len(token) > 30
+    app_mod.main(["--browser", "--port", "48578"])
+    printed = capsys.readouterr().out
+    assert "?t=" not in printed and "/#t=" in printed
+    assert len(opened) == 1 and opened[0].startswith("http://127.0.0.1:48578/#c=") and "t=" not in opened[0]
+
+
+def test_no_open_and_window_together_are_refused(monkeypatch, tmp_path, capsys):
+    """--no-open won over --window without a word, and the window never opened (DA Toolkit's)."""
+    import pytest
+
+    from davibemanager import app as app_mod
+
+    _main_runs_here(monkeypatch, tmp_path)
+    with pytest.raises(SystemExit) as stop:
+        app_mod.main(["--window", "--no-open"])
+    assert stop.value.code == 2 and "--no-open goes with the browser" in capsys.readouterr().err
+
+
+def test_the_app_window_lets_no_file_page_read_other_files():
+    """pywebview's default lets a file:// page read other files, and a file dropped on the window loaded in it as
+    one; nothing of DA Vibe Manager's is file:// (DA Toolkit's harden_window)."""
+    import types
+    from pathlib import Path
+
+    from davibemanager import app as app_mod
+
+    fake = types.SimpleNamespace(settings={"ALLOW_FILE_URLS": True, "OPEN_EXTERNAL_LINKS_IN_BROWSER": True})
+    app_mod.harden_window(fake)
+    assert fake.settings == {"ALLOW_FILE_URLS": False, "OPEN_EXTERNAL_LINKS_IN_BROWSER": True}
+    web = Path(app_mod.__file__).parent / "web"
+    for name in ("app.js", "index.html"):           # no address of the page's own is a file's (comments aside)
+        code = "\n".join(line for line in (web / name).read_text().splitlines() if not line.lstrip().startswith("//"))
+        assert "file://" not in code, name
+
+
 def test_a_launch_code_is_good_once_briefly_and_only_to_this_user(monkeypatch):
     from davibemanager.server import app as app_mod
 

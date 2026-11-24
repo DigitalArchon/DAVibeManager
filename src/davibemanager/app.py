@@ -249,6 +249,15 @@ def _bundled_girepository() -> None:
         set_for_self("GI_TYPELIB_PATH", ":".join(missing + ([current] if current else [])))
 
 
+def harden_window(webview) -> None:
+    """The app window's WebKit settings, before it starts: a file:// page may not read other files (pywebview allows
+    it by default). Nothing of DA Vibe Manager's is file://: the page is the local server's, and a file dropped on the
+    window would otherwise load in it as one (the page cancels such drops too: app.js dropping). Links meant for
+    elsewhere still open in the browser. (DA Toolkit's harden_window; until Nov 2026 the window kept pywebview's.)"""
+    webview.settings["ALLOW_FILE_URLS"] = False
+    webview.settings["OPEN_EXTERNAL_LINKS_IN_BROWSER"] = True
+
+
 def own_dialogs() -> None:
     """GTK's own file dialogs in the app window, never the desktop portal's, where the environment asks GTK for
     the portal's (GTK_USE_PORTAL=1, which some KDE desktops set). The app isn't dumpable (no_core_dumps), and
@@ -328,6 +337,9 @@ def main(argv: list[str] | None = None) -> None:
                     help="with the browser: only print the URL (for opening it yourself)")
     ap.add_argument("--port", type=int, default=0, help="port to listen on (default: random)")
     args = ap.parse_args(argv)
+    if args.window and args.no_open:
+        # --no-open prints the address for a browser; until Nov 2026 it won over --window without a word (DA Toolkit's)
+        ap.error("--no-open goes with the browser (it prints the address to open): leave out --window")
 
     from . import tray as tray_mod
     shown = threading.Event()
@@ -417,6 +429,10 @@ def main(argv: list[str] | None = None) -> None:
 
     try:
         if use_browser:
+            # for the user's own terminal, to open by hand: the token in the fragment, which a browser never sends, so
+            # it is in no request's first line, nor in a proxy's or a history's record of one (until Nov 2026 it was
+            # ?t=; DA Toolkit's). The window keeps ?t=: it is given its address in this process, on no command line.
+            url = f"http://127.0.0.1:{port}/#t={token}"
             print(f"DA Vibe Manager running. Open this URL (keep it private - it grants access to the app):\n{url}",
                   flush=True)
             if not args.no_open:
@@ -476,6 +492,7 @@ def main(argv: list[str] | None = None) -> None:
                 for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
                     GLib.unix_signal_add(GLib.PRIORITY_DEFAULT, sig, close)
 
+            harden_window(webview)
             # the page's file choosers (attaching files, importing a .vibe, restoring a backup) keep
             # their files out of the desktop's recent files list (recentguard)
             recentguard.guard_pywebview(window)

@@ -13,13 +13,14 @@ const DESKTOP = (() => {
   } catch { return fromUrl; }
 })();
 
-// The window's token: given in the app window's address (?t=, which no command line shows); in a browser,
-// exchanged once for the one-time code its address carries (#c=: what a browser is opened with is on its
-// command line, for every user of this computer to read; app.py open_in_browser). Kept for this tab, and the
-// address cleared of both.
-const LAUNCH = /(?:^#|&)c=([\w-]+)/.exec(location.hash)?.[1] || null;
+// The window's token: given in the app window's address (?t=, which no command line shows), or in the fragment of
+// the address printed to open by hand (#t=, which a browser never sends; until Nov 2026 that was ?t= too, and the
+// page read no other); in a browser the app opened, exchanged once for the one-time code its address carries (#c=:
+// what a browser is opened with is on its command line, for every user of this computer to read; app.py
+// browser_opener). Kept for this tab, and the address cleared of all of them. (DA Toolkit's.)
+const LAUNCH = /(?:^#|&)c=([\w-]+)/.exec(location.hash || "")?.[1] || null;
 let TOKEN = (() => {
-  const fromUrl = new URLSearchParams(location.search).get("t");
+  const fromUrl = new URLSearchParams(location.search).get("t") || new URLSearchParams((location.hash || "").slice(1)).get("t");
   try {
     if (fromUrl) sessionStorage.setItem("dvm-token", fromUrl);
     const t = fromUrl || sessionStorage.getItem("dvm-token");

@@ -16,11 +16,11 @@ try { ({ JSDOM } = require("jsdom")); } catch { /* not installed: skipped */ }
 const skip = JSDOM ? false : "jsdom isn't installed";
 const STATE = JSDOM ? JSON.parse(fs.readFileSync(process.env.DVM_STATE, "utf8")) : {};
 
-// `replies`: what the stand-in fetch answers for a path ("GET /api/models"), any other call {}
-function load(replies = {}) {
+// `replies`: what the stand-in fetch answers for a path ("GET /api/models"), any other call {}; `url`: the page's address
+function load(replies = {}, url = "http://127.0.0.1:48599/?t=tok") {
   const html = fs.readFileSync(path.join(WEB, "index.html"), "utf8").replace(/<script[^>]*><\/script>/g, "")
     .replace(/<link[^>]*>/g, "").replace(/<meta http-equiv[^>]*>/, "");
-  const dom = new JSDOM(html, { url: "http://127.0.0.1:48599/?t=tok", runScripts: "outside-only", pretendToBeVisual: true });
+  const dom = new JSDOM(html, { url, runScripts: "outside-only", pretendToBeVisual: true });
   const ctx = dom.getInternalVMContext();
   const run = (code, filename = "test.js") => new vm.Script(code, { filename }).runInContext(ctx);
   run(`
@@ -49,8 +49,8 @@ function load(replies = {}) {
 }
 
 // the page's timers end with its window, so a failed assertion doesn't leave the run waiting on them
-async function withPage(fn, replies) {
-  const page = load(replies);
+async function withPage(fn, replies, url) {
+  const page = load(replies, url);
   try { await fn(page); } finally { page.close(); }
 }
 const plain = (x) => JSON.parse(JSON.stringify(x));     // a value of the page's realm, comparable here
