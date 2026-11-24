@@ -216,3 +216,16 @@ async def test_an_app_being_built_isnt_looked_at_and_isnt_built_twice(gthumb):
     await m.check("gthumb", quiet=True)                          # the user's own click: told, not built on top
     assert told[-1][0] == "gThumb 3.12.7 is out" and "open My apps" in told[-1][1] and not sb.calls_of(scripts.CARRY)
     m.building.pop("gthumb")
+
+
+def test_a_newer_pre_release_a_dated_release_and_words_that_only_look_like_pre_releases():
+    """Until Nov 2026 rc2 was the same as rc1, a release named by its date was compared by its year alone, and
+    "latest" (test) or "src" (rc) made a release a pre-release: none of these newer ones was found."""
+    from davibemanager import versions
+    assert versions.newer("1.2.3-rc1", ["1.2.3-rc1", "1.2.3-rc2"]) == "1.2.3-rc2"
+    assert versions.newer("1.2.3-rc2", ["1.2.3-rc1", "1.2.3-rc2", "1.2.3"]) == "1.2.3"
+    assert versions.newer("1.2.3", ["1.2.3", "1.2.4-rc1"]) is None                  # pre-releases still don't count
+    assert versions.newer("2024-01-15", ["2023-12-01", "2024-01-15", "2024-03-01"]) == "2024-03-01"
+    assert versions.newer("v1.2", ["v1.2", "v1.3-latest"]) == "v1.3-latest"
+    assert versions.newer("v3.0", ["v3.0", "v3.1-src"]) == "v3.1-src"
+    assert versions.is_prerelease("4.19.0pre1") and versions.is_prerelease("2.0-preview3")

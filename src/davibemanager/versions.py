@@ -5,18 +5,30 @@ from __future__ import annotations
 import re
 
 _NUMBERS = re.compile(r"\d+(?:[._]\d+)*")
-_PRERELEASE = re.compile(r"alpha|beta|rc|pre|dev|snapshot|nightly|test|(?:^|[._-])[ab]\d", re.I)
+_DATED = re.compile(r"\d+(?:-\d+)+")       # a release named by its date, 2024-01-15
+# a word of its own: until Nov 2026 "latest" (test) and "src" (rc) made a release a pre-release
+_PRERELEASE = re.compile(r"(?<![a-z])(?:alpha|beta|rc|pre|preview|dev|devel|snapshot|nightly|test|testing)(?![a-z])"
+                         r"|(?:^|[._-])[ab]\d", re.I)
 
 
 def parse(tag: str) -> tuple[str, tuple[int, ...], str] | None:
     """("v", (0, 39, 0), "") for "v0.39.0": the text before the version, its numbers, the rest. The
-    version is the first run of numbers with a dot or underscore in it (else the first run): a digit
-    in the project's name isn't it ("xfce4-terminal-1.1.3" is 1.1.3, not 4)."""
+    version is the first run of numbers with a dot or underscore in it, else one with dashes (a date), else
+    the first run: a digit in the project's name isn't it ("xfce4-terminal-1.1.3" is 1.1.3, not 4)."""
     runs = list(_NUMBERS.finditer(tag or ""))
-    m = next((r for r in runs if re.search(r"[._]", r.group())), runs[0] if runs else None)
+    m = next((r for r in runs if re.search(r"[._]", r.group())), None) or _DATED.search(tag or "") or \
+        (runs[0] if runs else None)
     if not m or len(m.group()) > 40:
         return None
-    return tag[:m.start()], tuple(int(x) for x in re.split(r"[._]", m.group())), tag[m.end():]
+    return tag[:m.start()], tuple(int(x) for x in re.split(r"[._-]", m.group())), tag[m.end():]
+
+
+def _pre_number(rest: str) -> int:
+    """Which of a release's pre-releases: rc2 is after rc1 (until Nov 2026 they were the same, so a newer one of the
+    pre-releases an app was built on was never found)."""
+    found = _PRERELEASE.search(rest)
+    n = re.search(r"\d+", rest[found.end():]) if found else None
+    return int(n.group()) if n else 0
 
 
 def is_prerelease(tag: str) -> bool:
@@ -44,8 +56,8 @@ def newer(base: str, tags: list[str]) -> str | None:
         pre = bool(_PRERELEASE.search(p[2]))
         if pre and not base_pre:
             continue
-        key = (_key(p[1]), not pre)
-        if key > (_key(b[1]), not base_pre) and (best_key is None or key > best_key):
+        key = (_key(p[1]), not pre, _pre_number(p[2]) if pre else 0)
+        if key > (_key(b[1]), not base_pre, _pre_number(b[2]) if base_pre else 0) and (best_key is None or key > best_key):
             best, best_key = t, key
     return best
 
