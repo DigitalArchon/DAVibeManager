@@ -1128,3 +1128,23 @@ async def test_the_apps_copy_of_a_commit_is_sealed_before_any_build_script_runs(
     monkeypatch.setattr(podman_mod, "exec_root", refused)
     with pytest.raises(appmanager.PortFailed, match="couldn't keep its copy"):
         await engine.box_snapshot("dvm-sandbox-check", "/sandbox/apps/gthumb")
+
+
+async def test_an_app_keeps_every_change_or_a_new_one_is_refused(gthumb):
+    """apps.MAX_CHANGES, the most an app keeps (sharing and sync hold to it). Until Nov 2026 the 21st delivery cut the
+    record to its newest 20: the user's first change left it, and updates, while its commits stayed in series.patch,
+    and every delivery after it was refused for naming a change the app didn't have."""
+    engine, sb, _, _ = gthumb
+    series = ZOOM_KEPT
+    for n in range(2, apps.MAX_CHANGES + 1):
+        new = commit_patch(f"c{n:06x}", f"Change number {n}", f"-old {n}\n+new {n}")
+        sb.repo("/work/apps/gthumb", head=f"c{n:06x}", patch=series + new)
+        await engine.builder_deliver({**ARGS, "change_title": f"Change number {n}", "app": "gthumb", "version": f"3.12.6-dvm{n}"})
+        series = apps.read_file("gthumb", "series.patch")
+    assert len(apps.load("gthumb")["changes"]) == apps.MAX_CHANGES
+    sb.repo("/work/apps/gthumb", head="d000021", patch=series + commit_patch("d000021", "One more", "-old\n+one more"))
+    with pytest.raises(delivery.DeliveryError, match=f"has {apps.MAX_CHANGES} changes of the user's already"):
+        await engine.builder_deliver({**ARGS, "change_title": "One more", "app": "gthumb", "version": "3.12.6-dvm21"})
+    a = apps.load("gthumb")
+    assert len(a["changes"]) == apps.MAX_CHANGES and a["changes"][0]["id"] == "drag-a-box-to-zoom"
+    assert len(engine.app_manager.change_pairs(a)) == 2 * apps.MAX_CHANGES

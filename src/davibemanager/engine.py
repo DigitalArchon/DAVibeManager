@@ -2963,6 +2963,14 @@ class Engine:
         # changes the user had that this build leaves out: only when the user says so (before the builds), or,
         # in the app's own update, one the project has made itself (it is in the new release)
         left_out = checked["left_out"]
+        kept = [c for c in (app or {}).get("changes", []) if c not in left_out]
+        if app is not None and "new" in checked["order"] and len(kept) >= apps_mod.MAX_CHANGES:
+            # until Nov 2026 the app's record was cut to its newest changes instead: the oldest went from it (and from
+            # updates, which carry what it lists) while its commits stayed, and every later delivery was refused
+            raise delivery_mod.DeliveryError(
+                f"{app['name']} has {len(kept)} changes of the user's already, the most an app keeps "
+                f"({apps_mod.MAX_CHANGES}): a new one can't be added. Tell the user; they could choose to drop one "
+                "(deliver with leaves_out, which they confirm on a card), or have this one made part of one they have.")
         if app is not None and left_out:
             named = {str(x) for x in (args.get("leaves_out") or args.get("_merged") or []) if isinstance(x, str)}
             missing = [c for c in left_out if c["id"] not in named]
