@@ -333,6 +333,14 @@ class Models:
             self.cfg.providers.append(prov)
         if not self.cfg.settings.builder_provider and (prov.builder_url or prov.base_url):
             self.cfg.settings.builder_provider = name       # the first provider is the assistant's
+            s = self.cfg.settings
+            usual = [m for m in config_mod.MODEL_PRESETS if m["service"] == prov.service()]
+            if len(usual) == 1 and (s.builder_model, s.builder_small_model, s.builder_vision_model) == (
+                    config_mod.DEFAULT_MODEL, config_mod.DEFAULT_FAST_MODEL, config_mod.DEFAULT_FAST_MODEL):
+                # with its service's usual models (Tinfoil's, Anthropic's), not NanoGPT's left as they were: until Nov
+                # 2026 the assistant was z-ai/glm-5.3 on Anthropic or Tinfoil, ready, and its first message failed
+                for key, value in usual[0]["settings"].items():
+                    setattr(s, key, value)
         self._models.pop(name, None)
         self._save_config(self.cfg)
         self._changed()

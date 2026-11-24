@@ -343,6 +343,28 @@ def test_the_first_provider_of_any_kind_is_the_assistants_and_so_is_the_next_whe
     assert cfg.settings.builder_provider == "Anthropic"
 
 
+@pytest.mark.parametrize("data, model", [
+    ({"name": "Anthropic", "builder_url": config.ANTHROPIC_BASE_URL, "builder_auth": "x-api-key"}, "claude-opus-5-5"),
+    ({"name": "Tinfoil", "base_url": config.TINFOIL_BASE_URL, "chat_api": "tinfoil"}, "glm-5-3")])
+def test_a_first_provider_that_isnt_nanogpt_gets_its_services_usual_models(data, model):
+    """Until Nov 2026 the assistant kept NanoGPT's models on it (z-ai/glm-5.3, which Anthropic and Tinfoil don't have):
+    ready, and its first message failed. A service with one usual choice (config.MODEL_PRESETS) gets it."""
+    cfg = Config()
+    _models(cfg).save_provider(data, "sk-first-key-12345678", is_new=True)
+    s = cfg.settings
+    assert (s.builder_provider, s.builder_model, s.builder_small_model, s.builder_vision_model) == (data["name"], model, "", "")
+
+
+def test_models_the_user_chose_stay_when_the_first_provider_is_added():
+    cfg = Config()
+    cfg.settings.builder_model = "claude-sonnet-5"
+    _models(cfg).save_provider({"name": "Anthropic", "builder_url": config.ANTHROPIC_BASE_URL}, "sk-1", is_new=True)
+    assert cfg.settings.builder_model == "claude-sonnet-5"
+    cfg = Config()           # Chutes has two usual choices, one private and one not: the user picks
+    _models(cfg).save_provider({"name": "Chutes", "base_url": config.CHUTES_BASE_URL}, "sk-2", is_new=True)
+    assert cfg.settings.builder_model == config.DEFAULT_MODEL
+
+
 # --- a keyring that fails changes nothing; what names a provider follows it -------------------------------------
 
 def _locked(*a, **k):
