@@ -450,3 +450,39 @@ async def test_a_second_opinion_that_cant_be_had_says_so_on_its_card(env):
     await engine.new_chat("computer")
     await engine.open_chat(chat)
     assert engine.requests[1].review == {}
+
+
+async def test_a_decision_that_couldnt_reach_the_assistant_isnt_kept(env, monkeypatch):
+    """The assistant stopped waiting, and the turn its answer would start can't (the keyring isn't open yet). Until
+    Nov 2026 the card was settled first and the error came after: shown as sent, it reached no one, and could be
+    sent no more. Now the card stays as it was, to be sent once it can."""
+    from davibemanager import creds
+    from davibemanager.engine import UserError
+    engine, _, _ = env
+    engine.cfg.settings.second_opinion = "off"
+
+    async def run(command, **kw):
+        return hostrun.RunResult(0, "the output\n", False, 1.0)
+    monkeypatch.setattr(hostrun, "run", run)
+    r = await _a_card_whose_turn_has_ended(engine, "uname -a")
+    engine.run_request(1)
+    await wait_for(lambda: r.status == "done", "run")
+    qid = 1
+    engine.questions[qid] = {"id": qid, "questions": [{"question": "Which?", "options": ["A", "B"]}], "status": "pending",
+                             "answers": None, "at": 0, "detached": True}
+    sent = []
+    engine.workspace = {"state": "running"}
+    engine._start_turn = lambda content: sent.append(content)
+    real = creds.get_secret
+
+    def locked(kind, name):
+        raise creds.KeyringUnavailable("locked")
+    monkeypatch.setattr(creds, "get_secret", locked)
+    for decide in (lambda: engine.send_request(1), lambda: engine.withhold_request(1), lambda: engine.answer_question(1, ["A"])):
+        with pytest.raises(UserError, match="keyring isn't open yet"):
+            decide()
+    assert r.status == "done" and engine.questions[1]["status"] == "pending" and sent == []
+    monkeypatch.setattr(creds, "get_secret", real)
+    engine.send_request(1)
+    engine.answer_question(1, ["A"])
+    assert r.status == "sent" and len(sent) == 2 and "earlier request #1" in sent[0]

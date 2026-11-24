@@ -1451,6 +1451,18 @@ class Engine:
         else:
             self._start_turn(message)
 
+    def _resolvable(self, kind: str, rid: int) -> None:
+        """Raises, before a decision is kept, if it couldn't reach the assistant now: nothing waits for it, and the
+        turn it would go in can't start (the keyring not open yet, the key held back, the chat's level above the
+        assistant's model's: _start_turn's own checks). Until Nov 2026 the card was settled first (sent, declined,
+        answered) and the error came after it: the decision reached no one, and the card took no other."""
+        fut = self._waiters.get((kind, rid))
+        if (fut and not fut.done()) or self.busy or self.workspace.get("state") != "running":
+            return
+        if not self.ready:
+            raise UserError(self.assistant_status()["error"])
+        self._sealed_check()
+
     def edit_request(self, rid: int, command: str) -> None:
         r = self._request(rid)
         try:
@@ -1513,6 +1525,7 @@ class Engine:
         r = self._request(rid)
         if r.status != "done":
             raise UserError("There is no output to send yet.")
+        self._resolvable("request", r.id)
         # the card's text is cleaned already: cleaned again, its "[... N lines omitted ...]" would be cut too
         # (it's over the limit by its own line), and it would read as edited. What the user changed is.
         edited = text is not None and str(text).replace("\r\n", "\n") != r.preview
@@ -1541,6 +1554,7 @@ class Engine:
         r = self._request(rid)
         if r.status != "done":
             raise UserError("There is no output to keep back.")
+        self._resolvable("request", r.id)
         r.status, r.note = "withheld", note.strip()
         self.log("request_withheld", id=r.id)
         self._request_changed(r)
@@ -1551,6 +1565,7 @@ class Engine:
         r = self._request(rid)
         if r.status != "pending":
             raise UserError("It has already been decided.")
+        self._resolvable("request", r.id)
         r.status, r.note = "declined", note.strip()
         self.log("request_declined", id=r.id, note=r.note)
         self._request_changed(r)
@@ -1566,6 +1581,7 @@ class Engine:
         answers = [str(a).strip() for a in (answers or [])]
         if not any(answers):
             raise UserError("Write or pick an answer.")
+        self._resolvable("question", q["id"])
         q["answers"], q["status"] = answers, "answered"
         text = "\n".join(f"Q: {item['question']}\nA: {a or '(no answer)'}" for item, a in zip(q["questions"], answers))
         if typed:
