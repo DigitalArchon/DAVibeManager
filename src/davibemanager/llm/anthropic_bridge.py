@@ -149,7 +149,9 @@ def drop_our_thinking(data: dict) -> bool:
     found = False
     for m in data.get("messages") or []:
         content = m.get("content") if isinstance(m, dict) else None
-        if m.get("role") != "assistant" or not isinstance(content, list):
+        # a message that is no object has none of ours: it goes on as it came, for the provider to refuse (m.get was
+        # asked of it until Nov 2026: a 500 here, and a traceback)
+        if not isinstance(m, dict) or m.get("role") != "assistant" or not isinstance(content, list):
             continue
         kept = [b for b in content if not (isinstance(b, dict) and b.get("type") == "thinking"
                                            and b.get("signature") == SIGNATURE)]
@@ -292,6 +294,14 @@ async def to_openai(body: dict, images: ImageDescriber, native: bool = False) ->
     # reasons all the more, in its answer): the gateway sets the effort, and shows the reasoning as Claude
     # Code would Claude's, unless thinking is off (sse, message)
     return messages, tools or None, params
+
+
+def not_messages(model: str) -> str:
+    """What Claude Code is told of a request that can't be read as one of the Messages API's (a message that is no
+    object, a setting of another kind than it should be): in words, with nothing sent. Until Nov 2026 it was told in
+    Python's ("Couldn't prepare the request for glm: 'str' object has no attribute 'get'"), as a failing server's."""
+    return (f"The request for {model} isn't one Anthropic's Messages API takes (its messages, tools or settings aren't "
+            "what they should be), so nothing was sent.")
 
 
 # what an image counts for in a count made here: about what a screenshot costs a model that sees (Anthropic counts

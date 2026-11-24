@@ -653,7 +653,10 @@ class Gateway:
                     raise Refused(503, f"{up.provider}'s list of models couldn't be read, so it isn't known whether "
                                        f"{model} sees images: nothing was sent. It's asked for again.", "api_error",
                                   retry=True)
-            messages, tools, params = await bridge.to_openai(data, self._images, native=native)
+            try:
+                messages, tools, params = await bridge.to_openai(data, self._images, native=native)
+            except Exception as e:  # noqa: BLE001 - a request that isn't the Messages API's, said in words (a 400)
+                raise Refused(400, bridge.not_messages(model), "invalid_request_error") from e
             effort = await self._effort(up, model, wanted)
             params = with_effort(params, effort)
             route = None if found.private else up.route(model)

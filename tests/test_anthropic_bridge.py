@@ -854,6 +854,42 @@ async def test_a_refusal_of_reasoning_handed_back_is_read_in_the_errors_body_too
     assert [r.get("reasoning_back") for r in log] == [False]
 
 
+@pytest.mark.parametrize("odd", [
+    {"messages": ["hi"]}, {"messages": "hi"}, {"messages": [{"role": "assistant", "content": ["hi"]}]},
+    {"max_tokens": "lots"}, {"tool_choice": "auto", "tools": [{"name": "Bash"}]}, {"tools": ["Bash"]},
+])
+async def test_a_request_that_isnt_the_messages_apis_is_refused_in_words_or_passed_on_never_a_500(odd, tmp_path):
+    """A message that is no object, a setting of another kind than it should be. Translated, it was told as a failing
+    server's, in Python's words ("Couldn't prepare the request for glm: 'str' object has no attribute 'get'", a 502):
+    a 400 in words now, nothing sent. Passed on (a Claude model, a provider with only an Anthropic address), a message
+    that is no object was a 500 and a traceback (drop_our_thinking asked it for its role): it goes on as it came, for
+    the provider to refuse."""
+    fake = FakePrivate()
+    async with translating(tmp_path, fake) as (g, log):
+        r = await _post(g, {**ASK, "model": "private/glm-5-3", **odd})
+    assert r.status_code == 400 and r.json()["error"]["type"] == "invalid_request_error" and not fake.calls
+    assert r.json()["error"]["message"] == ("The request for private/glm-5-3 isn't one Anthropic's Messages API takes "
+                                            "(its messages, tools or settings aren't what they should be), so nothing "
+                                            "was sent.")
+    assert [e["status"] for e in log] == [400]
+    seen = []
+
+    def provider(request):
+        seen.append(json.loads(request.content))
+        return httpx.Response(400, json={"type": "error", "error": {"type": "invalid_request_error", "message": "no"}})
+    for model, chat in (("anthropic/claude-opus-5.5", lambda m: fake), ("its-own-model", None)):
+        g = Gateway(tmp_path / f"gw-{chat is None}", lambda: Upstream("https://up.example/api/v1", "bearer", lambda: "sk",
+                                                                      (model,), provider="Up", chat=chat),
+                    http=httpx.AsyncClient(transport=httpx.MockTransport(provider)))
+        await g.start()
+        try:
+            r = await _post(g, {**ASK, "stream": False, "model": model, **odd})
+        finally:
+            await g.stop()
+        assert r.status_code == 400 and r.json()["error"]["message"] == "no", model
+        assert all(seen[-1][k] == v for k, v in odd.items()), "as Claude Code wrote it"
+
+
 async def test_our_thinking_never_reaches_a_claude_model(tmp_path):
     """Another model's reasoning, signed as DA Vibe Manager's, would be refused by Anthropic's API (a chat
     begun on GLM, then on Claude Opus): taken out; Claude's own thinking goes as it is."""
