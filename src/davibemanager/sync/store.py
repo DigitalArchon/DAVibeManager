@@ -56,7 +56,9 @@ def state_dir() -> Path:
 def _write(path: Path, data) -> None:
     """Whole or not at all, 0600, flushed (config.write_private): a fixed ".tmp" shared by every write, never
     flushed, could leave a group's members or keys an empty file after a crash."""
-    config.write_private(path, json.dumps(data, indent=1, ensure_ascii=False))
+    # (escaped as ASCII: what another computer sent, half a character among it, is kept as it came, never a
+    # UnicodeEncodeError that ends the sync before it's written)
+    config.write_private(path, json.dumps(data, indent=1))
 
 
 def _read(path: Path, default):

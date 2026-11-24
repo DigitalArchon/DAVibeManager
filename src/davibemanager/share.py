@@ -327,18 +327,26 @@ def read(path: Path | bytes) -> dict:
         raise ShareError("That isn't a shared app.")
     if m.get("format") != FORMAT:
         raise ShareError("It was made by a newer DA Vibe Manager: update this one to import it.")
-    return {"app": _checked(m.get("app"), files), "files": files, "exported": m.get("exported") or 0}
+    exported = m.get("exported")
+    return {"app": _checked(m.get("app"), files), "files": files,
+            "exported": exported if isinstance(exported, (int, float)) and not isinstance(exported, bool) else 0}
+
+
+# What a name or title from a file never keeps: control characters, and half of a character (a lone surrogate, as
+# JSON's \ud83d may carry), which no file can be written with: until Nov 2026 such a file was read, then its import
+# ended in a UnicodeEncodeError, the new app's folder made and its record not
+UNSHOWN = r"[\x00-\x1f\x7f\ud800-\udfff]"
 
 
 def _checked(a, files: dict) -> dict:
     if not isinstance(a, dict):
         raise ShareError("Its manifest doesn't describe an app.")
-    name = re.sub(r"[\x00-\x1f\x7f]", "", str(a.get("name") or "")).strip()[:80]
+    name = re.sub(UNSHOWN, "", str(a.get("name") or "")).strip()[:80]
     if not name:
         raise ShareError("The app in it has no name.")
     upstream = str(a.get("upstream") or "").strip()
     try:
-        if len(upstream) > 300 or re.search(r"[\s\x00-\x1f\x7f]", upstream):
+        if len(upstream) > 300 or re.search(r"\s", upstream) or re.search(UNSHOWN, upstream):
             raise InsecureURL("that isn't an address")       # (urlsplit drops a line break in it, and goes on)
         check_url(upstream, "Its official source")
         if not upstream.startswith("https://"):
@@ -368,7 +376,7 @@ def _checked(a, files: dict) -> dict:
             raise ShareError(f"Its change {cid} has no patch.")
         # every commit names its change, as the app's own do (DVM-Change), whatever the file said
         files[f"changes/{cid}.patch"] = "".join(apps.with_trailer(chunk, cid) for _, chunk in commits)
-        title = re.sub(r"[\x00-\x1f\x7f]", "", str(c.get("title") or cid)).strip()[:200] or cid
+        title = re.sub(UNSHOWN, "", str(c.get("title") or cid)).strip()[:200] or cid
         out.append({"id": cid, "title": title, "rev": _rev_of(c.get("rev"))})
     for extra in [n for n in files if n.startswith("changes/") and n.split("/")[1].rsplit(".", 1)[0] not in seen]:
         files.pop(extra)                    # notes or patches of no change it lists
@@ -380,7 +388,7 @@ def _checked(a, files: dict) -> dict:
             raise ShareError(f"{n} in it is too long ({MAX_TEXT >> 10} KB at most).")
     sh = a.get("share") if isinstance(a.get("share"), dict) else {}
     share_id = str(sh.get("id") or "")
-    works = [{"system": re.sub(r"[\x00-\x1f\x7f]", "", str(w.get("system") or ""))[:80], "sig": str(w.get("sig") or ""),
+    works = [{"system": re.sub(UNSHOWN, "", str(w.get("system") or ""))[:80], "sig": str(w.get("sig") or ""),
               "at": w.get("at") if isinstance(w.get("at"), (int, float)) else 0}
              for w in (sh.get("works_on") if isinstance(sh.get("works_on"), list) else [])[:50] if isinstance(w, dict)]
     share = {"id": share_id if SHARE_ID.fullmatch(share_id) else secrets.token_hex(16), "build": _rev_of(sh.get("build")),
@@ -702,7 +710,7 @@ class Sharing:
         return out
 
     def _separate(self, a: dict, files: dict, imported: dict, name: str) -> dict:
-        name = re.sub(r"[\x00-\x1f\x7f]", "", name or a["name"]).strip()[:80]
+        name = re.sub(UNSHOWN, "", name or a["name"]).strip()[:80]
         if not name:
             raise ShareError("Give it a name.")
         if any(apps.same_name(x["name"], name) for x in apps.list_all()):

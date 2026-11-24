@@ -116,7 +116,7 @@ def checked_info(info) -> dict:
 
 
 def clean_name(name) -> str:
-    text = re.sub(r"[\x00-\x1f\x7f]", "", str(name or "")).strip()[:60]
+    text = re.sub(r"[\x00-\x1f\x7f\ud800-\udfff]", "", str(name or "")).strip()[:60]      # (share.UNSHOWN)
     return text or "Another computer"
 
 

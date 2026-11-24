@@ -165,6 +165,26 @@ async def test_imported_as_an_app_of_its_own_then_built_from_the_official_source
     assert told[-1][0] == "gThumb (Sam's) 3.12.6 is ready"
 
 
+async def test_half_a_character_in_a_file_is_left_out_not_an_import_that_fails_half_made(gthumb, tmp_path):
+    """A lone surrogate (JSON's "\\ud83d", half an emoji) in a name, a title or a system passed the strict
+    read; the import then ended in a UnicodeEncodeError, the new app's folder made and its record not."""
+    engine, _, _, _ = gthumb
+    faked_review(engine)
+
+    def halves(m):
+        m["app"]["name"] = "gThumb \ud83d"
+        m["app"]["changes"][0]["title"] = "Zoom \udc00in"
+        m["app"]["share"]["works_on"] = [{"system": "Arch\ud800", "sig": m["app"]["share"]["sig"], "at": 1}]
+        m["exported"] = "\ud800"
+    path = rezip(Path(exported(engine, tmp_path)["path"]), change=halves)
+    view = engine.sharing.peek(path)
+    await wait_for(lambda: engine.sharing.view(view["token"])["review"]["status"] == "done", "the review")
+    out = engine.sharing.accept(view["token"], name="gThumb \ud83d (shared)")
+    a = apps.load(out["app"])
+    assert a["name"] == "gThumb  (shared)" and a["changes"][0]["title"] == "Zoom in"
+    assert a["share"]["works_on"][0]["system"] == "Arch" and a["imported"]["exported"] == 0
+
+
 async def test_or_its_changes_join_the_users_own_copy(gthumb, tmp_path):
     engine, sb, _, _ = gthumb
     faked_review(engine)

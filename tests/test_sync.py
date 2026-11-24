@@ -334,6 +334,11 @@ def test_this_computers_identity_and_group_are_made_once_and_kept_private():
     store.save_members({laptop["id"]: laptop, "bad": {**laptop, "id": "bad"}, "later": {**laptop, "updated": time.time() + 2 * 86400}})
     assert list(store.members()) == [laptop["id"]]
     assert store.checked_member({**laptop, "updated": 10 ** 400}) is None       # not an OverflowError
+    # half a character in what another computer said (JSON's \\ud83d) is kept as it came, never a crash on saving it
+    store.save_members({laptop["id"]: {**laptop, "by": "\ud83d"}})
+    store.save_base(laptop["id"], {"s": {"name": "\ud83d", "changes": {"\udc00": "x"}}})
+    assert store.members()[laptop["id"]]["by"] == "\ud83d" and store.base_of(laptop["id"])["s"]["name"] == "\ud83d"
+    assert store.checked_member({**laptop, "name": "Lap\ud83dtop"})["name"] == "Laptop"
     store.save_base(laptop["id"], {"s": {"digest": "d"}})
     assert store.base_of(laptop["id"]) == {"s": {"digest": "d"}}
     store.leave_all()
