@@ -327,6 +327,27 @@ def test_an_addons_own_file_or_folder_never_lands_where_addons_cant_go(tmp_path)
     assert not (home / ".local/share/dbus-1").exists()
 
 
+def test_what_an_addons_folder_holds_never_lands_on_path_or_where_addons_cant_go(tmp_path, monkeypatch):
+    """Only an add-on's own top files and folders were checked: its folder node/ joined the user's (in
+    ~/.nvm/versions) and put node/v22.1.0/bin/git on PATH; one of its own, copied whole, put what it held anywhere."""
+    home = tmp_path / "home"
+    bindir = home / ".nvm/versions/node/v22.1.0/bin"
+    bindir.mkdir(parents=True)
+    monkeypatch.setenv("PATH", f"{bindir}:/usr/bin:/bin")
+    d, meta = _quarantined(tmp_path, "D1", "~/.nvm/versions", {"node/v22.1.0/bin/git": "#!/bin/sh\n"})
+    with pytest.raises(delivery.DeliveryError, match="PATH"):
+        delivery.install(d, meta, tmp_path / "apps", home=home)
+    assert not (bindir / "git").exists()
+    # a folder of its own, not there yet, copied whole: the same
+    monkeypatch.setenv("PATH", f"{bindir}:{home}/.nvm/versions/deno/bin:/usr/bin:/bin")
+    d, meta = _quarantined(tmp_path, "D2", "~/.nvm/versions", {"deno/bin/ls": "#!/bin/sh\n"})
+    with pytest.raises(delivery.DeliveryError, match="PATH"):
+        delivery.install(d, meta, tmp_path / "apps", home=home)
+    assert not (home / ".nvm/versions/deno").exists()
+    d, meta = _quarantined(tmp_path, "D3", "~/.nvm/versions", {"node/v22.1.0/lib/x.js": "//\n"})
+    assert delivery.install(d, meta, tmp_path / "apps", home=home)["installed_files"]
+
+
 def test_an_addon_never_takes_over_another_apps_addon_file(tmp_path):
     home = tmp_path / "home"
     scripts = home / ".config/mpv/scripts"

@@ -328,6 +328,12 @@ def install(dir_: Path, meta: dict, install_dir: Path, home: Path | None = None,
         ours = set((previous or {}).get("installed_files", []))
         # all checked before anything is changed
         items = [(item, addon_target(dest, item.name, home)) for item in sorted(src.iterdir())]
+        # and what lands below them, each a place of its own too: until Nov 2026 only the add-on's own top files
+        # and folders were checked, and a folder of it joining one of the user's (~/.nvm/versions, its node/) put
+        # node/v22/bin/git where this computer looks for programs to run
+        for item, _ in items:
+            for f in sorted(item.rglob("*")) if item.is_dir() else []:
+                addon_target(dest, f.relative_to(src).as_posix(), home)
         # a folder of the add-on's where the user has a folder of that name (their own scripts/): its files go
         # into it, beside theirs, never in place of the whole of it
         merged = {str(t) for item, t in items if item.is_dir() and t.is_dir() and not t.is_symlink() and str(t) not in ours}

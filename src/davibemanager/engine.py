@@ -3091,8 +3091,9 @@ class Engine:
                 (d / "addon").mkdir()
                 await podman.copy_out(SANDBOX, path, d / "addon" / delivery_mod.safe_name(Path(path).name, "addon"))
                 files = delivery_mod.check_addon_files(d / "addon")
-                for item in (d / "addon").iterdir():          # where it lands: said now, not at install
-                    delivery_mod.addon_target(delivery_mod.addon_dir(install_to, Path.home()), item.name, Path.home())
+                for item in (d / "addon").rglob("*"):         # where each of its files lands: said now, not at install
+                    delivery_mod.addon_target(delivery_mod.addon_dir(install_to, Path.home()),
+                                              item.relative_to(d / "addon").as_posix(), Path.home())
                 meta.update(size=sum(f.stat().st_size for f in files if f.is_file()),
                             files=[f.relative_to(d / "addon").as_posix() for f in files][:50],
                             sha256=await asyncio.to_thread(delivery_mod.tree_sha256, d / "addon"))
