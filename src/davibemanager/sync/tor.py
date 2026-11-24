@@ -354,6 +354,17 @@ class Tor:
 
     async def _start(self) -> None:
         self._stopping = False
+        # what a tor that died by itself left (one stopped went through _kill): until Nov 2026 the onions it had
+        # uploaded counted as uploaded by the next (wait_published answered at once, and a code's onion was said
+        # to be up before anyone could find it), and each start added another listener for its events
+        for task in self._tasks:
+            task.cancel()
+        self._tasks.clear()
+        self._events.clear()
+        self._uploaded.clear()
+        if self._writer is not None:
+            self._writer.close()
+            self._writer = None
         tor = self.binary or find_tor()
         if tor is None:
             raise TorError("Tor isn't here: this build of DA Vibe Manager can't sync. Install tor, or use the AppImage.")

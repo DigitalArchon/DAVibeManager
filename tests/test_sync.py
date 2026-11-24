@@ -727,6 +727,32 @@ async def test_the_apps_own_tor_is_started_logged_into_and_stopped_with_it(tmp_p
     assert oct(os.stat(t.paths.torrc).st_mode & 0o777) == "0o600"
 
 
+async def test_tor_that_died_and_is_started_again_has_no_onion_up_until_it_says_so(tmp_path, monkeypatch):
+    """Started again after it died by itself (not stopped), the new tor took the old one's word for which onions
+    had reached a directory, and listened to its events twice."""
+    import signal
+    from pathlib import Path
+    key = onion.OnionKey.new()
+    monkeypatch.setenv("FAKE_TOR_ADDRESS", key.address)
+    clean = tor.tor_environment
+    monkeypatch.setattr(tor, "tor_environment", lambda t, environ=None: {
+        **clean(t), **{k: v for k, v in os.environ.items() if k.startswith("FAKE_TOR_")}})
+    run = short_dir()
+    t = tor.Tor(tor.paths_for(tmp_path / "state", run), binary=Path(__file__).with_name("faketor.py"))
+    await t.start()
+    sid = await t.add_onion(key, 7300, run / "tor" / "pair.sock")
+    assert await t.wait_published(sid, 5)
+    os.kill(t._proc.pid, signal.SIGKILL)
+    for _ in range(100):
+        if t.state["step"] == "failed":
+            break
+        await asyncio.sleep(0.05)
+    await t.start()
+    assert t.running and len(t._events) == 1
+    assert not await t.wait_published(sid, 0.2)
+    await t.stop()
+
+
 async def test_something_else_at_tors_socket_naming_a_cookie_of_its_own_is_refused(tmp_path, monkeypatch):
     """PROTOCOLINFO's COOKIEFILE comes from whatever answers on the control socket: an impostor names its own
     cookie and proves it read that one. The cookie read is the one in the data folder the app gave its tor."""
