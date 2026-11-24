@@ -203,7 +203,9 @@ class LLMClient:
 
     async def list_models(self) -> list[str]:
         page = await self._client.models.list()
-        return sorted(m.id for m in page.data)
+        # an entry without an id, or that is no model at all, is left out: sorting None beside text raised
+        # Python's own error, and the whole list was lost to it (until Nov 2026)
+        return sorted({m.id for m in page.data if isinstance(getattr(m, "id", None), str) and m.id})
 
     async def stream(
         self, model: str, messages: list[dict], tools: list[dict] | None = None, params: dict | None = None,

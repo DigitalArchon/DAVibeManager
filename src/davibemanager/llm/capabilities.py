@@ -29,19 +29,35 @@ def norm_id(model_id: str) -> str:
 _norm = norm_id
 
 
+def _count(value) -> int | float | None:
+    """A token count as the listing gives it, or None for anything that isn't a number ("32k", a list)."""
+    return value if isinstance(value, (int, float)) and not isinstance(value, bool) else None
+
+
+def _dict(value) -> dict:
+    return value if isinstance(value, dict) else {}
+
+
 def parse(items: list[dict]) -> dict[str, dict]:
+    """What each listed model can do, by its id. An entry that isn't a model (no id, or not an object at all) is
+    left out, and a field that isn't what it should be reads as not said: until Nov 2026 one such entry took the
+    whole list down with Python's own error ("KeyError: 'id'"), and a context size given as text failed later,
+    where a request's max_tokens was held to it (DA Private Coder's parse skipped them already)."""
     out = {}
-    for m in items:
-        caps = m.get("capabilities") or {}
+    for m in items if isinstance(items, list) else []:
+        if not isinstance(m, dict) or not isinstance(m.get("id"), str) or not m["id"]:
+            continue
+        caps = _dict(m.get("capabilities"))
+        efforts = m.get("reasoning_efforts")
         out[m["id"]] = {
             "vision": bool(caps.get("vision")),
             "reasoning": bool(caps.get("reasoning")),
-            "efforts": [e for e in (m.get("reasoning_efforts") or []) if e in EFFORTS],
+            "efforts": [e for e in (efforts if isinstance(efforts, list) else []) if isinstance(e, str) and e in EFFORTS],
             "tools": bool(caps.get("tool_calling")),
-            "context": m.get("context_length"),
-            "max_output": m.get("max_output_tokens"),
+            "context": _count(m.get("context_length")),
+            "max_output": _count(m.get("max_output_tokens")),
             "pricing": _pricing(m.get("pricing")),
-            "included": bool((m.get("subscription") or {}).get("included")),
+            "included": bool(_dict(m.get("subscription")).get("included")),
         }
     return out
 
