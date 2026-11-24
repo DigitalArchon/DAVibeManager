@@ -353,31 +353,41 @@ def install(dir_: Path, meta: dict, install_dir: Path, home: Path | None = None,
                 raise DeliveryError(f"{target} and {backup} both exist; move one away first.")
             target.rename(backup)
             backups.append(str(backup))
-        for f, target in files:
-            for folder in reversed(target.relative_to(dest).parents[:-1]):
-                if not (dest / folder).exists():
-                    (dest / folder).mkdir()
-                    made.append(str(dest / folder))
-            if target.exists() or target.is_symlink():
-                if str(target) in ours:
-                    _remove(target)
+        try:
+            for f, target in files:
+                for folder in reversed(target.relative_to(dest).parents[:-1]):
+                    if not (dest / folder).exists():
+                        (dest / folder).mkdir()
+                        made.append(str(dest / folder))
+                if target.exists() or target.is_symlink():
+                    if str(target) in ours:
+                        _remove(target)
+                    else:
+                        set_aside(target)
+                installed.append(str(target))
+                shutil.copy2(f, target)
+            for item, target in items:
+                if str(target) in merged:
+                    continue
+                if target.exists() or target.is_symlink():
+                    if str(target) in ours:
+                        _remove(target)
+                    else:
+                        set_aside(target)
+                installed.append(str(target))
+                if item.is_dir():
+                    shutil.copytree(item, target)
                 else:
-                    set_aside(target)
-            shutil.copy2(f, target)
-            installed.append(str(target))
-        for item, target in items:
-            if str(target) in merged:
-                continue
-            if target.exists() or target.is_symlink():
-                if str(target) in ours:
-                    _remove(target)
-                else:
-                    set_aside(target)
-            if item.is_dir():
-                shutil.copytree(item, target)
-            else:
-                shutil.copy2(item, target)
-            installed.append(str(target))
+                    shutil.copy2(item, target)
+        except BaseException:
+            # what it had put there taken away, and the user's own files it set aside put back: until Nov 2026 a
+            # failure part way (a folder that can't be written, a disk full) left the user's file renamed with the
+            # add-on's copy in its place, nothing recorded to undo it, and every try after refused ("both exist")
+            for target in reversed(installed):
+                _remove(Path(target))
+            _put_back(backups)
+            _remove_empty(made)
+            raise
         # what the version before put there and this one doesn't (a file renamed, another folder) goes
         gone = {f for f in ours if f not in installed}
         for f in gone:

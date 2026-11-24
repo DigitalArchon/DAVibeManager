@@ -1,6 +1,7 @@
 """Deliveries: what is copied out of the workspace, what is recorded with it, and installing."""
 
 import asyncio
+import os
 from pathlib import Path
 
 import pytest
@@ -346,6 +347,27 @@ def test_what_an_addons_folder_holds_never_lands_on_path_or_where_addons_cant_go
     assert not (home / ".nvm/versions/deno").exists()
     d, meta = _quarantined(tmp_path, "D3", "~/.nvm/versions", {"node/v22.1.0/lib/x.js": "//\n"})
     assert delivery.install(d, meta, tmp_path / "apps", home=home)["installed_files"]
+
+
+def test_an_addon_that_cant_be_installed_all_leaves_the_users_files_as_they_were(tmp_path):
+    """A failure part way left the user's own file renamed (.before-D1) with the add-on's in its place, recorded
+    nowhere: uninstalling undid nothing, and every try after was refused, both names being there."""
+    home = tmp_path / "home"
+    scripts = home / ".config/mpv/scripts"
+    (scripts / "sub").mkdir(parents=True)
+    (scripts / "a.lua").write_text("-- the user's own a\n")
+    (scripts / "sub" / "z.lua").write_text("-- the user's own z\n")
+    d, meta = _quarantined(tmp_path, "D1", "~/.config/mpv", {"scripts/a.lua": "-- add-on a\n", "scripts/sub/z.lua": "-- add-on z\n"})
+    os.chmod(scripts / "sub", 0o500)                    # its second file can't be put there
+    try:
+        with pytest.raises(OSError):
+            delivery.install(d, meta, tmp_path / "apps", home=home)
+    finally:
+        os.chmod(scripts / "sub", 0o700)
+    assert sorted(p.name for p in scripts.iterdir()) == ["a.lua", "sub"]
+    assert (scripts / "a.lua").read_text() == "-- the user's own a\n"
+    out = delivery.install(d, meta, tmp_path / "apps", home=home)       # tried again: it goes
+    assert (scripts / "sub" / "z.lua").read_text() == "-- add-on z\n" and len(out["installed_files"]) == 2
 
 
 def test_an_addon_never_takes_over_another_apps_addon_file(tmp_path):
