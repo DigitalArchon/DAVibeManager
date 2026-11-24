@@ -48,8 +48,8 @@ UNSAFE = re.compile(r"[\\\s\x00-\x1f\x7f]")
 # Everything of a text up to its last "@" before a query or a fragment, the scheme and "//" aside: where an
 # address that can't be read may have a user name and password.
 _UP_TO_AT = re.compile(r"^((?:[^:/?#]+:)?//)?[^?#]*@")
-# A user name and password written into any address in a text (an error's words)
-_USERINFO = re.compile(r"(?i)\b([a-z][a-z0-9+.-]*://)[^\s/?#@\"'<>]*@")
+# An address in a text, as an error's words quote one
+_ADDRESS_IN_TEXT = re.compile(r"[a-z][a-z0-9+.-]*://[^\s'\"<>]+", re.I)
 
 
 def shown(url) -> str:
@@ -144,7 +144,9 @@ def check_key(key, name: str = "the provider"):
 def scrubbed(text) -> str:
     """An error's words with every address in them shown without a user name and password (httpx names
     the address whole in some: "... for url 'https://alice:secret@host/v1/models'")."""
-    return _USERINFO.sub(r"\1…@", str(text))
+    # each address as shown() has it, which cuts at the last "@": cut at the first, a password with an "@" in it
+    # kept its tail (DA Toolkit's and DA Private Coder's scrubbed)
+    return _ADDRESS_IN_TEXT.sub(lambda found: shown(found.group(0)), str(text))
 
 
 def _ip(host: str) -> ipaddress.IPv4Address | ipaddress.IPv6Address | None:
@@ -214,6 +216,7 @@ def is_secure(url: str) -> bool:
     try:
         parsed = urlparse(url)
         parsed.hostname
+        parsed.port                     # raises on a port no address can have
     except ValueError:
         return False
     if parsed.scheme == "https":
@@ -230,8 +233,13 @@ def check_url(url: str, what: str = "This address") -> str:
     try:
         parsed = urlparse(url)
         host = parsed.hostname
-    except ValueError as e:              # one urlparse can't take (http://[::1]@evil.example/)
-        raise InsecureURL(f"{what} isn't an address the app can use ({scrubbed(e)}): {shown(url)[:80]!r}") from None
+        # a port no address can have (":+443", ":4_43", ":99999"): Python can't read it and httpx can, so origin()
+        # had "" for it, nothing held its saved key to the address it was entered for, and the key went along
+        # (DA Toolkit's netguard.problem reads it; until Nov 2026 this didn't)
+        parsed.port
+    except ValueError:                   # one urlparse can't take (http://[::1]@evil.example/). Its own words
+        # aren't said: they quote the host part whole, a password written into it too
+        raise InsecureURL(f"{what} isn't an address the app can use: {shown(url)[:80]!r}") from None
     if parsed.scheme not in ("http", "https") or not host:
         raise InsecureURL(f"{what} must be a full https:// URL (got {shown(url)[:80]!r})")
     if not is_secure(url):

@@ -138,6 +138,12 @@ def key_problem_for(prov: Provider) -> str | None:
         return (f"{prov.name} is a Tinfoil endpoint at {shown(prov.base_url)}, and a Tinfoil API key goes only to "
                 f"Tinfoil's own API, {shown(config_mod.TINFOIL_BASE_URL)}: it isn't sent. Set its address to that "
                 "in Settings → AI providers.")
+    unread = [url for url in (prov.base_url, prov.builder_url) if url and not origin(url)]
+    if unread:
+        # an address origin() can't read (config.toml edited by hand; Settings refuses one) is held to nothing by
+        # the check below, so nothing says where its key would go: not sent
+        return (f"{prov.name}'s address {shown(unread[0])[:80]!r} isn't one the app can read, so its API key isn't "
+                "sent. Correct it in Settings → AI providers.")
     if prov.key_for is None:
         return None
     elsewhere = [o for o in prov.origins() if not config_mod.key_reaches(prov.key_for, o)]

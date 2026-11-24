@@ -143,6 +143,42 @@ def test_an_address_urlparse_cant_take_or_an_ip_with_a_dot_after_it_is_refused()
     assert check_url("http://192.168.1.50:8080/v1")
 
 
+@pytest.mark.parametrize("port", ["+443", "4_43", "４４３", "99999", "abc", "-1"])
+def test_a_port_no_address_can_have_is_refused(port):
+    """Python can't read such a port and httpx reads some ("+443" as 443), so origin() had "" for the address:
+    nothing held its saved key to where it was entered, and the key went to the new host (until Nov 2026)."""
+    url = f"https://evil.example:{port}/v1"
+    assert netpolicy.origin(url) == ""
+    with pytest.raises(InsecureURL, match="isn't an address the app can use"):
+        check_url(url)
+    assert not is_secure(url)
+    assert check_url("https://good.example:8443/v1") and check_url("https://good.example:/v1")
+
+
+def test_a_saved_key_is_held_back_from_an_address_that_cant_be_read():
+    """One written into config.toml by hand: Settings refuses it, and its key goes nowhere."""
+    from davibemanager.models import key_problem_for
+    prov = Provider(name="Mine", base_url="https://evil.example:+443/v1", key_for=["https://good.example:443"])
+    assert "isn't one the app can read" in key_problem_for(prov)
+    prov = Provider(name="Mine", base_url="https://good.example/v1", key_for=["https://good.example:443"])
+    assert key_problem_for(prov) is None
+
+
+def test_an_address_that_cant_be_read_is_refused_without_its_password():
+    """urlparse's own words quote the host part whole ("netloc 'alice:hunter2@ho℀st.example' contains invalid
+    characters under NFKC normalization"): they were said, password and all (until Nov 2026)."""
+    for url in ("https://alice:hunter2@ho℀st.example/v1", "https://alice:hunter2@host.example:+443/v1"):
+        with pytest.raises(InsecureURL) as refused:
+            check_url(url)
+        assert "hunter2" not in str(refused.value) and "alice" not in str(refused.value)
+
+
+def test_scrubbed_cuts_a_password_with_an_at_sign_in_it_whole():
+    said = netpolicy.scrubbed("Client error '404' for url 'https://alice:p@ss@host.example/v1/models'")
+    assert said == "Client error '404' for url 'https://…@host.example/v1/models'"
+    assert netpolicy.scrubbed("no address here, bob@example.com") == "no address here, bob@example.com"
+
+
 @pytest.mark.parametrize("host", ["evil\\.local", "a%2f.local", "a/b.local", "x y.local", "evil\\.localhost",
                                   "a%2e.localhost", "ev!l.local"])
 def test_a_local_name_is_local_only_as_a_plain_dns_name(host):
