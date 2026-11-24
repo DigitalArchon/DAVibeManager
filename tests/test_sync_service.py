@@ -597,6 +597,26 @@ async def test_a_pull_that_fails_in_a_way_nobody_foresaw_waits_before_its_tried_
     await stop_all(desktop, laptop)
 
 
+async def test_an_app_that_cant_be_taken_in_doesnt_keep_the_others_from_coming(tmp_path, monkeypatch):
+    """An app whose changes couldn't come together (too many) ended the whole pull: the apps after it in the list
+    never came from that computer."""
+    net = FakeNet()
+    desktop, laptop = Computer(tmp_path / "A", net, "Desktop"), Computer(tmp_path / "B", net, "Laptop")
+    for name in ("Aaa", "Bbb"):
+        desktop.make_app(name)
+    real = library.create
+    first = min(desktop.apps(), key=lambda a: a["share"]["id"])["name"]       # the one taken in first
+
+    def create(got, peer_id, peer_name):
+        if got["app"]["name"] == first:
+            raise share.ShareError("Together they'd have more than 20 changes.")
+        return real(got, peer_id, peer_name)
+    monkeypatch.setattr(library, "create", create)
+    await add(desktop, laptop)
+    await laptop.until(lambda v: len(laptop.apps()) == 1, "the other app")
+    await stop_all(desktop, laptop)
+
+
 async def test_a_computer_the_others_cant_reach_still_syncs_both_ways_on_its_own_connections(tmp_path, monkeypatch):
     """Tor may find one computer's onion long before the other's (one just added, or back on): each
     session syncs both ways, so one that can reach the other is enough."""

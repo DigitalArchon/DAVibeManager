@@ -1269,10 +1269,17 @@ class SyncService:
                     if b:
                         new_base[sid] = b       # next time
                     continue
-                if how in ("new", "back"):
-                    a = library.create(got[sid], e["id"], e["name"])
-                else:
-                    a, _ = library.combine(mine[0], got[sid], b, e["id"], e["name"])
+                try:
+                    if how in ("new", "back"):
+                        a = library.create(got[sid], e["id"], e["name"])
+                    else:
+                        a, _ = library.combine(mine[0], got[sid], b, e["id"], e["name"])
+                except share.ShareError as x:
+                    # this app only: next time (until Nov 2026 it ended the pull, and the apps after it never came)
+                    self._log("app_not_taken", member=e["id"], app=sid, error=str(x))
+                    if b:
+                        new_base[sid] = b
+                    continue
                 came.append(a["id"])
                 new_base[sid] = t
             if mine and t and ((mine[0].get("synced") or {}).get("removed_on") or {}).get("peer") == e["id"]:

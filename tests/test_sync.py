@@ -608,6 +608,30 @@ def test_a_revision_gone_back_to_is_older_whatever_the_two_last_agreed_on():
     assert library.decide(new, other, None) == "conflict"
 
 
+def test_two_computers_changes_too_many_together_change_nothing_here(tmp_path):
+    """That they'd be too many was found out after each change's files had been written: the app's changes held
+    the other computer's code, its record and series.patch this one's."""
+    desktop, laptop = tmp_path / "A", tmp_path / "B"
+    with computer(desktop):
+        make_app(changes=tuple((f"c{i}", f"Change {i}") for i in range(11)))
+    base, got = pull(desktop)
+    for there, prefix in ((laptop, "l"), (desktop, "d")):
+        with computer(there):
+            a = mine()[0] if there == desktop else library.create(got, "a" * 32, "Desktop")
+            a = edit(a, "c0", f"+c0, the {prefix} way")
+            more = [{"id": f"{prefix}{i}", "title": f"{prefix} {i}", "patch_ids": [], "added": 1, "rev": share.new_rev()} for i in range(5)]
+            for c in more:
+                apps.write_file(a["id"], f"changes/{c['id']}.patch", commit_patch("c" * 40, c["title"], "+x", c["id"]))
+            apps.save({**a, "changes": [*a["changes"], *more]})
+    _, theirs = pull(laptop)
+    with computer(desktop):
+        a = mine()[0]
+        files = {p: p.read_bytes() for p in apps.dir_of(a["id"]).rglob("*") if p.is_file() and p.name != "app.json"}
+        with pytest.raises(share.ShareError, match="more than 20"):
+            library.combine(a, theirs, base, "b" * 32, "Laptop")
+        assert {p: p.read_bytes() for p in apps.dir_of(a["id"]).rglob("*") if p.is_file() and p.name != "app.json"} == files
+
+
 def test_changes_added_on_each_computer_both_stay(tmp_path):
     with computer(tmp_path / "A"):
         make_app()

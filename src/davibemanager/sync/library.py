@@ -208,10 +208,16 @@ def combine(a: dict, got: dict, base: dict | None, peer_id: str, peer_name: str)
             apps.write_file(a["id"], _alt_name(item, peer_id, "md"), notes)
         conflicts.append({"id": item, "peer": peer_id, "from": peer_name, "title": title, "rev": rev, "at": now})
 
+    # how many it would have, said before anything is written: until Nov 2026 that was found out after each change's
+    # files had been written, and the app's record kept as it was (its changes' code another's, its series stale)
+    hows = {cid: decide((mine_c.get(cid) or {}).get("rev"), (theirs_c.get(cid) or {}).get("rev"), known.get(cid))
+            for cid in order}
+    if sum(how != "drop" for how in hows.values()) > apps.MAX_CHANGES:
+        raise share.ShareError(f"Together they'd have more than {apps.MAX_CHANGES} changes.")
     changes = []
     for cid in order:
         m, t = mine_c.get(cid), theirs_c.get(cid)
-        how = decide(m and m["rev"], t and t["rev"], known.get(cid))
+        how = hows[cid]
         if how == "theirs":
             apps.write_file(a["id"], f"changes/{cid}.patch", files[f"changes/{cid}.patch"])
             if files.get(f"changes/{cid}.md", "").strip():
@@ -234,8 +240,6 @@ def combine(a: dict, got: dict, base: dict | None, peer_id: str, peer_name: str)
         else:
             changes.append(m)
             drop_alternatives(cid, peer_id)         # that computer has this one's now, or one after it
-    if len(changes) > apps.MAX_CHANGES:
-        raise share.ShareError(f"Together they'd have more than {apps.MAX_CHANGES} changes.")
     sh = dict(a["share"])
     how = decide(sh["build"], theirs["share"]["build"], base.get("build"))
     if how == "theirs":
