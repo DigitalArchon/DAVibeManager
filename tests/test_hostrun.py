@@ -486,3 +486,18 @@ async def test_a_decision_that_couldnt_reach_the_assistant_isnt_kept(env, monkey
     engine.send_request(1)
     engine.answer_question(1, ["A"])
     assert r.status == "sent" and len(sent) == 2 and "earlier request #1" in sent[0]
+
+
+async def test_a_command_that_couldnt_be_started_is_told_to_the_assistant_waiting_for_it(env, monkeypatch):
+    """pkexec missing, say: the card reads "failed" and takes nothing more. Until Nov 2026 the assistant went on
+    waiting for it (up to half an hour)."""
+    engine, _, _ = env
+    engine.cfg.settings.second_opinion = "off"
+
+    async def run(command, **kw):
+        raise FileNotFoundError(2, "No such file or directory", "pkexec")
+    monkeypatch.setattr(hostrun, "run", run)
+    task, rid = await ask(engine, {"command": "dmesg", "purpose": "look", "risk": "read_only", "as_root": True})
+    engine.run_request(rid)
+    told = await asyncio.wait_for(task, 5)
+    assert engine.requests[rid].status == "failed" and "couldn't be run on the user's computer" in told and "pkexec" in told

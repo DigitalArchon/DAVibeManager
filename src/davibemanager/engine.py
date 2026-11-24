@@ -1491,7 +1491,13 @@ class Engine:
             res = await hostrun.run(r.command, as_root=r.as_root, timeout=r.timeout, cancel=cancel)
         except Exception as e:  # noqa: BLE001 - shown on the card
             r.status, r.output = "failed", f"Could not run it: {e}"
-            self._request_changed(r, conv)
+            if self._request_changed(r, conv):
+                # and the assistant told, if it waits for it: until Nov 2026 it waited on (up to WAIT_FOR_USER) for a
+                # card nothing more could be done with (pkexec missing, say)
+                fut = self._waiters.pop(("request", r.id), None)
+                if fut and not fut.done():
+                    fut.set_result(f"It couldn't be run on the user's computer: {e}. Don't ask for it again as it is; "
+                                   "say so to the user, and offer another way if there is one.")
             return
         finally:
             self._running.pop((conv.id, r.id), None)
