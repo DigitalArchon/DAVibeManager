@@ -260,6 +260,18 @@ def refusal_response(e: Refused):
                         headers={} if e.retry else {"x-should-retry": "false"})
 
 
+def broke_off(name: str, e: BaseException) -> str:
+    """Why a reply passed on as it came stopped coming (a reset, a timeout, an answer past what is read), for the log
+    and for Claude Code: the provider's words without a password in an address."""
+    return f"{name}'s reply broke off before it was finished: {scrubbed(str(e)) or type(e).__name__}"
+
+
+def stream_error(said: str) -> bytes:
+    """An error as Anthropic tells one mid-stream: Claude Code says so, and may ask again."""
+    return ("event: error\ndata: " + json.dumps({"type": "error", "error": {
+        "type": "api_error", "message": f"{said}. Asking again may work."}}) + "\n\n").encode()
+
+
 def _error_text(raw: bytes) -> str:
     try:
         data = loads(raw)
@@ -595,22 +607,32 @@ class Gateway:
                 n = 0
                 usage = UsageReader()
                 whole = b"" if "json" in resp.headers.get("content-type", "") else None
+                broken = ""
                 try:
-                    async for chunk in resp.aiter_bytes():     # decoded here: the CLI gets plain bytes
-                        n += len(chunk)
-                        if whole is None:
-                            usage.feed(chunk)
-                        elif len(whole) < 8 << 20:
-                            whole += chunk
-                        yield chunk
+                    try:
+                        async for chunk in resp.aiter_bytes():     # decoded here: the CLI gets plain bytes
+                            n += len(chunk)
+                            if whole is None:
+                                usage.feed(chunk)
+                            elif len(whole) < 8 << 20:
+                                whole += chunk
+                            yield chunk
+                    except (httpx.HTTPError, ProviderError) as e:
+                        # the provider's reply broke off (a reset, a timeout): until Nov 2026 its error went up
+                        # through the server, a traceback in its error output, Claude Code's connection dropped
+                        # without its end, and the request logged as answered
+                        broken = broke_off(up.provider, e)
+                        if "event-stream" in resp.headers.get("content-type", ""):
+                            yield stream_error(broken)
                 finally:
                     await resp.aclose()
-                    if whole:
+                    if whole and not broken:
                         try:
                             usage.usage = anthropic_usage(loads(whole).get("usage"))
                         except (ValueError, AttributeError):
                             pass
                     self.on_event({**rec, "bytes_in": n, "seconds": round(time.monotonic() - started, 2),
+                                   **({"status": 502, "error": broken[:300]} if broken else {}),
                                    **({"usage": usage.usage} if usage.usage else {})})
 
             out_headers = {k: v for k, v in resp.headers.items() if k.lower() in RETURN_HEADERS}

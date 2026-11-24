@@ -211,6 +211,50 @@ async def test_the_real_key_is_added_on_the_way_out_and_the_token_never_leaves(g
     assert events[-1]["kind"] == "model" and events[-1]["model"] == "big-model"
 
 
+class BreaksOff(httpx.AsyncByteStream):
+    """A provider's reply that begins, then breaks off (`error`: a reset, a timeout)."""
+
+    def __init__(self, first: bytes, error: Exception):
+        self.first, self.error = first, error
+
+    async def __aiter__(self):
+        yield self.first
+        raise self.error
+
+    async def aclose(self):
+        pass
+
+
+@pytest.mark.parametrize("error", [httpx.ReadError("connection reset by peer"), httpx.ReadTimeout("timed out")])
+async def test_a_reply_passed_on_that_breaks_off_is_said_and_logged_as_failed(error, tmp_path):
+    """A provider's reply passed on as it came, broken off mid-stream: its error went up through the gateway's server
+    (a traceback), Claude Code's connection was dropped without its end, and the request was logged as answered (200,
+    no error). It ends as Anthropic ends a stream with an error now, and is logged as failed."""
+    first = b'event: message_start\ndata: {"type":"message_start","message":{"usage":{"input_tokens":7}}}\n\n'
+    events, answers = [], [httpx.Response(200, stream=BreaksOff(first, error), headers={"content-type": "text/event-stream"}),
+                           httpx.Response(200, stream=BreaksOff(b'{"type": "message", "con', error),
+                                          headers={"content-type": "application/json"})]
+    g = Gateway(tmp_path / "gw", lambda: Upstream("https://upstream.example/api/v1", "bearer", lambda: "sk-real",
+                                                  ("big-model", "small-model"), provider="Up"),
+                on_event=events.append, http=httpx.AsyncClient(transport=httpx.MockTransport(lambda r: answers.pop(0))))
+    await g.start()
+    try:
+        async with _model_client(g) as c:
+            r = await c.post("/v1/messages", headers={"authorization": f"Bearer {g.token}"},
+                             json={"model": "big-model", "stream": True, "messages": []})
+            whole = await c.post("/v1/messages", headers={"authorization": f"Bearer {g.token}"},
+                                 json={"model": "big-model", "messages": []})
+    finally:
+        await g.stop()
+    assert r.content.startswith(first) and b"event: error" in r.content[len(first):]
+    said = json.loads(r.content[len(first):].split(b"data: ", 1)[1])["error"]
+    assert said["type"] == "api_error" and said["message"].startswith("Up's reply broke off before it was finished: ")
+    assert said["message"].endswith("Asking again may work.") and str(error) in said["message"]
+    assert whole.content == b'{"type": "message", "con'
+    logged = [e for e in events if e.get("kind") == "model"]
+    assert [e["status"] for e in logged] == [502, 502] and all(e["error"].startswith("Up's reply broke off") for e in logged)
+
+
 async def test_a_model_the_project_did_not_choose_is_replaced_by_the_small_one(gw):
     g, events, upstream_reqs, _ = gw
     async with _model_client(g) as c:
