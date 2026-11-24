@@ -261,3 +261,28 @@ async def test_apps_named_in_another_script_are_told_apart(env):
     await engine.new_chat("app", app_name="фото")
     assert engine.conv.app == foto["id"]
     assert apps.same_name("gThumb", "GThumb ") and not apps.same_name("Фото", "Видео")
+
+
+async def test_a_deleted_chat_takes_its_screenshots_kept_session_and_sandbox_files_with_it(builder_env, no_real_podman):
+    """Until Nov 2026 only its folder went: the screenshots the assistant showed in it stayed (served still, and in
+    every backup), and in the sandbox the files the user attached and the assistant's own memory of the chat."""
+    from davibemanager.config import data_dir
+    engine, _, _, _ = builder_env
+    engine._user_entry("hello")
+    engine.conv.session = "sess-9"
+    engine.conv.save()
+    gone, other = engine.conv.id, f"{engine.conv.id}-2"
+    shots = data_dir() / "screens"
+    shots.mkdir(parents=True, exist_ok=True)
+    for name in (f"{gone}-1795520000000.png", f"{other}-1795520000000.png"):
+        (shots / name).write_bytes(b"png")
+    kept = data_dir() / "restored-sessions" / "-work"
+    kept.mkdir(parents=True)
+    (kept / "sess-9.jsonl").write_text("{}")
+    del no_real_podman[:]
+    out = await engine.delete_chats([gone])
+    await wait_for(lambda: no_real_podman, "the sandbox's part")
+    assert out["deleted"] == [gone] and sorted(p.name for p in shots.iterdir()) == [f"{other}-1795520000000.png"]
+    assert not (kept / "sess-9.jsonl").exists()
+    argv = no_real_podman[-1]
+    assert "/work/from-you" in argv and gone in argv and "sess-9" in argv and "/home/agent/.claude/projects" in argv

@@ -890,16 +890,51 @@ class Engine:
             if self.busy:
                 raise UserError("Wait for the assistant to finish (or stop it) before deleting this chat.")
             await self._switch(Conversation.create())
+        sessions = []
         for cid in ids:
             self._held.pop(cid, None)
+            try:
+                session = Conversation.load(cid).session
+            except FileNotFoundError:
+                session = ""
             try:
                 Conversation.delete(cid)
                 deleted.append(cid)
             except (OSError, ValueError) as e:
                 errors.append(f"{cid}: {e}")
+                continue
+            sessions.append(session)
+            self._delete_leftovers(cid, session)
         if deleted:
             self.app_manager.changed()          # an app's link to its chat goes with it
+            if self.workspace.get("state") == "running":
+                self._spawn(self._delete_in_sandbox(deleted, sessions))
         return {"deleted": deleted, "errors": errors}
+
+    def _delete_leftovers(self, cid: str, session: str) -> None:
+        """What of a deleted chat is kept beside its folder: the screenshots the assistant showed in it, and its
+        session kept outside the sandbox (across a reset, or from a backup). Until Nov 2026 they stayed, the
+        screenshots served still and in every backup."""
+        for shot in data_dir().joinpath("screens").glob(f"{cid}-*"):
+            if re.fullmatch(rf"{re.escape(cid)}-\d+\.(png|jpg)", shot.name) and not shot.is_symlink():
+                shot.unlink(missing_ok=True)
+        if re.fullmatch(r"[\w-]+", session or ""):
+            for kept in data_dir().joinpath("restored-sessions").glob(f"*/{session}.jsonl"):
+                kept.unlink(missing_ok=True)
+
+    async def _delete_in_sandbox(self, cids: list[str], sessions: list[str]) -> None:
+        """A deleted chat's files in the sandbox (best effort): those the user attached in it, and the assistant's
+        own memory of it (its Claude Code session)."""
+        sessions = [s for s in sessions if re.fullmatch(r"[\w-]+", s or "")]
+        # each chat's folder by its exact name, found in the folder (never a path made of a name that could be empty)
+        script = ('d="$1"; shift; n="$1"; shift; for c in $(seq "$n"); do '
+                  'find "$d" -mindepth 1 -maxdepth 1 -name "$1" -exec rm -rf -- {} +; shift; done; '
+                  'for s in "$@"; do find "$0" -maxdepth 2 -name "$s.jsonl" -type f -delete; done')
+        try:
+            await podman.exec_root(SANDBOX, ["sh", "-c", script, backup_mod.SESSIONS, FROM_USER, str(len(cids)),
+                                             *cids, *sessions], timeout=120)
+        except podman.PodmanError:
+            pass                                # the sandbox isn't up: its files go with it when it is reset
 
     # ---------------------------------------------------------------- talking to the assistant
 
