@@ -182,7 +182,7 @@ def checked_member(e) -> dict | None:
                "client": str(e.get("client") or ""), "updated": float(e.get("updated") or 0),
                "added": float(e.get("added") or 0), "removed": float(e.get("removed") or 0),
                "by": str(e.get("by") or "")[:32]}
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):      # (a number of 400 digits, as JSON may carry, is no float)
         return None
     soon = time.time() + 86400                  # a clock a day fast is wrong, not later
     if not DEVICE_ID.fullmatch(out["id"]) or not onion.valid_address(out["onion"]) \

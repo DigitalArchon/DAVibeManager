@@ -396,8 +396,15 @@ class SyncService:
     async def _pull_slot(self, e: dict) -> None:
         mid = e["id"]
         try:
-            async with self._slots:
-                ok = await self._tell_removed(e) if e["removed"] else not (await self.pull(mid))["error"]
+            try:
+                async with self._slots:
+                    ok = await self._tell_removed(e) if e["removed"] else not (await self.pull(mid))["error"]
+            except Exception as x:  # noqa: BLE001 - tried again after a while, as any other failure
+                # until Nov 2026 an error pull() doesn't expect (from what the other computer sent) went up from
+                # here before when to pull next was set: the runner started the pull again at once, without end
+                self._log("pull_failed", member=mid, error=repr(x)[:300])
+                self._seen(mid, error="It sent something this computer couldn't take in.")
+                ok = False
             if ok:
                 self._next[mid], self._delay[mid] = time.time() + PULL_EVERY, RETRY_FIRST
             else:

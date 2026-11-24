@@ -578,6 +578,25 @@ async def test_a_computer_not_found_at_first_is_tried_again_soon_not_minutes_lat
     await stop_all(desktop, laptop)
 
 
+async def test_a_pull_that_fails_in_a_way_nobody_foresaw_waits_before_its_tried_again(tmp_path):
+    """An error pull() doesn't expect went up before when to pull next was set: the pull was started again at
+    once, over and over (some sixty times a second through Tor)."""
+    net = FakeNet()
+    desktop, laptop = Computer(tmp_path / "A", net, "Desktop"), Computer(tmp_path / "B", net, "Laptop")
+    await add(desktop, laptop)
+    await all_know([desktop, laptop])
+    tries = []
+
+    async def pull(member_id):
+        tries.append(time.monotonic())
+        raise RuntimeError("something nobody foresaw")
+    desktop.sync.pull = pull
+    desktop.run(desktop.sync.sync_now)
+    await asyncio.sleep(0.5)
+    assert 1 <= len(tries) <= 5                 # RETRY_FIRST is 0.05 s here, doubling
+    await stop_all(desktop, laptop)
+
+
 async def test_a_computer_the_others_cant_reach_still_syncs_both_ways_on_its_own_connections(tmp_path, monkeypatch):
     """Tor may find one computer's onion long before the other's (one just added, or back on): each
     session syncs both ways, so one that can reach the other is enough."""

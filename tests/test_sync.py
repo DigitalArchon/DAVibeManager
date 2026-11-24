@@ -333,6 +333,7 @@ def test_this_computers_identity_and_group_are_made_once_and_kept_private():
     laptop = member("Laptop")
     store.save_members({laptop["id"]: laptop, "bad": {**laptop, "id": "bad"}, "later": {**laptop, "updated": time.time() + 2 * 86400}})
     assert list(store.members()) == [laptop["id"]]
+    assert store.checked_member({**laptop, "updated": 10 ** 400}) is None       # not an OverflowError
     store.save_base(laptop["id"], {"s": {"digest": "d"}})
     assert store.base_of(laptop["id"]) == {"s": {"digest": "d"}}
     store.leave_all()
