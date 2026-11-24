@@ -295,12 +295,26 @@ class Models:
                     creds.set_secret("provider", name, key)
             except creds.KeyringUnavailable as e:
                 raise UserError(f"{e}. Unlock your keyring (GNOME Keyring or KWallet) and try again.") from None
-            creds.delete_secret("provider", original_name)
+            try:
+                creds.delete_secret("provider", original_name)
+            except creds.KeyringUnavailable as e:
+                # the key stays under the old name, with the provider: the copy made above is taken back, so the
+                # keyring doesn't hold it twice (until Nov 2026 the keyring's own error went up from here, the
+                # copy left behind)
+                if key and not api_key:
+                    try:
+                        creds.delete_secret("provider", name)
+                    except creds.KeyringUnavailable:
+                        pass
+                raise UserError(f"{e}. Unlock your keyring (GNOME Keyring or KWallet) and try again.") from None
             s = self.cfg.settings
             if s.builder_provider == original_name:
                 s.builder_provider = name
-            if s.review_model.startswith(original_name + "|"):
-                s.review_model = name + s.review_model[len(original_name):]
+            # the settings that name a provider beside a model ("provider|model") follow it
+            for setting in ("review_model", "builder_vision_model"):
+                value = getattr(s, setting)
+                if value.startswith(original_name + "|"):
+                    setattr(s, setting, name + value[len(original_name):])
         if api_key:
             try:
                 creds.set_secret("provider", name, api_key)
@@ -310,6 +324,8 @@ class Models:
             # its TEE models' attestations were made with the key and at the address it had: their clients look
             # up each reply's signature with that key, there. Attested again at the next request instead
             self._forget_tee(old.name)
+        if old and (renamed or old.base_url != prov.base_url):
+            self._forget_learned(old.name)      # what its models can do was read at the address it had
         if old:
             self.cfg.providers[self.cfg.providers.index(old)] = prov
         else:
@@ -321,9 +337,16 @@ class Models:
         self._changed()
 
     def delete_provider(self, name: str) -> None:
+        # the keyring first: one that can't be asked (locked, its prompt dismissed) changes nothing, and says so.
+        # Until Nov 2026 its own exception went up after the provider had left memory, the settings unsaved and
+        # the key still kept (DA Toolkit's Engine.delete_provider)
+        try:
+            creds.delete_secret("provider", name)
+        except creds.KeyringUnavailable as e:
+            raise UserError(f"{e}. Unlock your keyring (GNOME Keyring or KWallet) and try again.") from None
         self._forget_tee(name)
+        self._forget_learned(name)
         self.cfg.providers = [p for p in self.cfg.providers if p.name != name]
-        creds.delete_secret("provider", name)
         for attr in ("base_url", "builder_url"):
             try:
                 config_mod.forget_password(f"provider:{name}:{attr}")
@@ -332,10 +355,24 @@ class Models:
         s = self.cfg.settings
         if s.builder_provider == name:
             s.builder_provider = next((p.name for p in self.cfg.providers if p.builder_url or p.base_url), "")
-        if s.review_model.startswith(name + "|"):
-            s.review_model = ""
+        # a setting that named it beside a model is cleared: a provider added under the name later isn't the
+        # reviewer's or the vision helper's for having it
+        for setting in ("review_model", "builder_vision_model"):
+            if getattr(s, setting).startswith(name + "|"):
+                setattr(s, setting, "")
         self._save_config(self.cfg)
         self._changed()
+
+    def _forget_learned(self, name: str) -> None:
+        """Drop what was learned of provider `name`'s models at the address it had: what each can do (its
+        listing), the generation settings its routes refused and its model list. Read again where it is now: a
+        provider moved to another server, or another added under a deleted one's name, kept the old one's."""
+        self._models.pop(name, None)
+        self._caps.pop(name, None)
+        self._caps_failed.pop(name, None)
+        self._enclaves.pop(name, None)
+        for key in [k for k in self._unsupported if k[0] == name]:
+            del self._unsupported[key]
 
     def _forget_tee(self, name: str) -> None:
         """Drop, and close, the attested TEE clients kept for provider `name`: they were made with its key and

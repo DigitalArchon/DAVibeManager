@@ -86,10 +86,28 @@ def get_secret(kind: str, name: str) -> str | None:
 
 
 def delete_secret(kind: str, name: str) -> None:
+    """Remove a secret; one that isn't there is no error, and neither is having no secure keyring at all (nothing
+    is kept in none). Raises KeyringUnavailable when the keyring couldn't be asked: it is locked, its unlock
+    prompt was dismissed, the Secret Service didn't answer. Until Nov 2026 only "no such password" was caught:
+    anything else went up as the keyring's own exception from whatever was deleting or renaming a provider, half
+    done, and KWallet's cancelled prompt read as "deleted" (DA Toolkit's creds.delete_secret)."""
+    user = _user(kind, name)
     try:
-        _backend().delete_password(SERVICE, _user(kind, name))
-    except (PasswordDeleteError, KeyringUnavailable):
-        pass                                 # nothing there, or nothing secure to have it in
+        backend = _backend()
+    except KeyringUnavailable:
+        _known[(kind, name)] = None          # nothing secure to have it in
+        return
+    try:
+        try:
+            backend.delete_password(SERVICE, user)
+        except PasswordDeleteError:
+            # "no such password" from the Secret Service, and from KWallet; but KWallet says the same when its
+            # unlock prompt was cancelled, so the secret is looked for: still there, and it wasn't deleted
+            if backend.get_password(SERVICE, user) is not None:
+                raise
+    except Exception as e:  # noqa: BLE001 - locked, dismissed, no answer: said as it is
+        raise KeyringUnavailable(f"Your keyring couldn't remove it ({e or type(e).__name__}), so nothing was "
+                                 "changed") from e
     _known[(kind, name)] = None
 
 

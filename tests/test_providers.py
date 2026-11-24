@@ -341,3 +341,91 @@ def test_the_first_provider_of_any_kind_is_the_assistants_and_so_is_the_next_whe
     m.save_provider({"name": "Anthropic", "builder_url": "https://api.anthropic.com"}, "sk-ant-test-1", is_new=True)
     m.delete_provider("Chat only")
     assert cfg.settings.builder_provider == "Anthropic"
+
+
+# --- a keyring that fails changes nothing; what names a provider follows it -------------------------------------
+
+def _locked(*a, **k):
+    from keyring.errors import KeyringLocked
+    raise KeyringLocked("Failed to unlock the collection!")
+
+
+def test_a_provider_isnt_deleted_while_the_keyring_cant_remove_its_key(memory_keyring, monkeypatch):
+    """The keyring's own exception went up after the provider had left memory: an HTTP 500 in the window, the
+    settings file unsaved and the key still kept (until Nov 2026; DA Toolkit's e93b3e0)."""
+    cfg, saved = Config(), []
+    m = Models(cfg, save_config=saved.append, emit=lambda *a, **k: None, log=lambda *a, **k: None)
+    m.save_provider({"name": "Mine", "base_url": "https://llm.example/v1"}, "sk-live-1", is_new=True)
+    saved.clear()
+    monkeypatch.setattr(memory_keyring, "delete_password", _locked)
+    with pytest.raises(UserError, match="Unlock your keyring"):
+        m.delete_provider("Mine")
+    assert cfg.provider("Mine") is not None and not saved
+    assert creds.get_secret("provider", "Mine") == "sk-live-1"
+    monkeypatch.undo()
+    m.delete_provider("Mine")
+    assert cfg.provider("Mine") is None and saved and creds.get_secret("provider", "Mine") is None
+
+
+def test_a_rename_the_keyring_refuses_leaves_one_key_under_the_old_name(memory_keyring, monkeypatch):
+    cfg = Config()
+    m = _models(cfg)
+    m.save_provider({"name": "Mine", "base_url": "https://llm.example/v1"}, "sk-live-1", is_new=True)
+    real = memory_keyring.delete_password
+    monkeypatch.setattr(memory_keyring, "delete_password",
+                        lambda service, user: _locked() if user == "provider:Mine" else real(service, user))
+    with pytest.raises(UserError, match="Unlock your keyring"):
+        m.save_provider({"name": "Ours", "base_url": "https://llm.example/v1"}, None, original_name="Mine")
+    assert cfg.provider("Mine") is not None and cfg.provider("Ours") is None
+    assert memory_keyring.store.get((creds.SERVICE, "provider:Mine")) == "sk-live-1"
+    assert (creds.SERVICE, "provider:Ours") not in memory_keyring.store
+
+
+def test_a_delete_the_keyring_only_said_no_such_password_to_is_looked_for(memory_keyring, monkeypatch):
+    """KWallet answers a cancelled unlock prompt as it answers "no such password": the key was believed gone."""
+    from keyring.errors import PasswordDeleteError
+    creds.set_secret("provider", "Mine", "sk-live-1")
+
+    def cancelled(service, user):
+        raise PasswordDeleteError("Password not found")
+    monkeypatch.setattr(memory_keyring, "delete_password", cancelled)
+    with pytest.raises(creds.KeyringUnavailable, match="couldn't remove it"):
+        creds.delete_secret("provider", "Mine")
+    assert creds.get_secret("provider", "Mine") == "sk-live-1"
+    creds.delete_secret("provider", "Never there")                  # truly not there: no error
+
+
+def test_the_vision_helper_follows_its_provider_renamed_and_goes_with_it_deleted():
+    cfg = Config()
+    m = _models(cfg)
+    m.save_provider({"name": "Main", "base_url": "https://llm.example/v1"}, "sk-live-1", is_new=True)
+    m.save_provider({"name": "Other", "base_url": "https://other.example/v1"}, "sk-live-2", is_new=True)
+    cfg.settings.builder_vision_model, cfg.settings.review_model = "Other|vision-model", "Other|reviewer"
+    m.save_provider({"name": "Renamed", "base_url": "https://other.example/v1"}, None, original_name="Other")
+    assert cfg.settings.builder_vision_model == "Renamed|vision-model" and cfg.settings.review_model == "Renamed|reviewer"
+    assert m.vision_target() == (cfg.provider("Renamed"), "vision-model")
+    m.delete_provider("Renamed")
+    assert cfg.settings.builder_vision_model == "" and cfg.settings.review_model == ""
+    # another provider under the name later isn't the vision helper's for having it
+    m.save_provider({"name": "Renamed", "base_url": "https://elsewhere.example/v1"}, "sk-live-3", is_new=True)
+    assert m.vision_target() == (None, "")
+
+
+def test_what_was_learned_of_a_providers_models_goes_when_its_address_changes_or_it_is_deleted():
+    cfg = Config()
+    m = _models(cfg)
+    m.save_provider({"name": "Mine", "base_url": "https://llm.example/v1"}, "sk-live-1", is_new=True)
+
+    def learn():
+        m._caps["Mine"] = {"big": {"vision": True}}
+        m._unsupported[("Mine", "big")] = {"temperature"}
+        m._models["Mine"] = ["big"]
+    learn()
+    m.save_provider({"name": "Mine", "base_url": "https://llm.example/v1", "default_model": "big"}, None,
+                    original_name="Mine")                           # the same address: kept
+    assert m._caps.get("Mine") and m._unsupported.get(("Mine", "big"))
+    m.save_provider({"name": "Mine", "base_url": "http://localhost:11434/v1"}, None, original_name="Mine")
+    assert "Mine" not in m._caps and ("Mine", "big") not in m._unsupported
+    learn()
+    m.delete_provider("Mine")
+    assert "Mine" not in m._caps and ("Mine", "big") not in m._unsupported and "Mine" not in m._models

@@ -419,7 +419,10 @@ class Backups:
                 raise BackupError(f"{e}. The backups' password is kept only there: unlock your keyring "
                                   "(GNOME Keyring or KWallet) and try again.") from None
         else:
-            creds.delete_secret("backup", "password")
+            try:
+                creds.delete_secret("backup", "password")
+            except creds.KeyringUnavailable as e:
+                raise BackupError(f"{e}. Unlock your keyring (GNOME Keyring or KWallet) and try again.") from None
         self.changed()
 
     def found(self) -> list[dict]:
