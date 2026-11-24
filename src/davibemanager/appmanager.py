@@ -289,10 +289,13 @@ class AppManager:
         for sha, chunk in apps.split_patch(series):
             last = owner.get(pids.get(sha, ""), last)
             groups.setdefault(last, []).append(apps.with_trailer(chunk, last))
+        now = apps.load(a["id"])
+        if now is None or now.get("changes") != a["changes"]:
+            return now or a                     # removed, or changed, while its patch ids were read: split next time
         for c in a["changes"]:
             apps.write_file(a["id"], f"changes/{c['id']}.patch", "".join(groups.get(c["id"], [])))
         apps.write_file(a["id"], "series.patch", "".join("".join(groups.get(c["id"], [])) for c in a["changes"]))
-        return apps.save({**a, "split": True})
+        return apps.save({**now, "split": True})      # on the record as it is now (the patch ids took a while)
 
     def change_pairs(self, a: dict) -> list[str]:
         """The arguments scripts.CARRY takes for an app's changes: each change's id and patch, in order."""
@@ -710,7 +713,7 @@ class AppManager:
         fresh = info.get("status") == "available" and info.get("latest") != known and not info.get("error")
         if fresh and a.get("skip") != info["latest"]:
             await self._on_new_release(a, quiet)
-        return apps.load(app_id)["update"]
+        return (apps.load(app_id) or a)["update"]            # (removed meanwhile: what it found)
 
     async def _on_new_release(self, a: dict, quiet: bool) -> None:
         s = self.e.cfg.settings
@@ -721,7 +724,9 @@ class AppManager:
                 await self.summarize(a["id"])
         except Exception as e:  # noqa: BLE001 - the user can ask again from the card
             self.e.log("changelog_failed", app=a["id"], error=str(e))
-        u = (apps.load(a["id"]) or a).get("update", {})
+        if apps.load(a["id"]) is None:
+            return                              # removed while its change log was read: nothing to tell of it
+        u = apps.load(a["id"]).get("update", {})
         security = bool(u.get("security_lines") or (u.get("summary") or {}).get("security"))
         when = self.build_when(a) if a.get("kind") == "appimage" else "ask"
         rebuilding = when == "auto" and a["id"] not in self.building     # one build of it at a time
@@ -763,6 +768,15 @@ class AppManager:
         page = str(log.get("url") or "")
         log.update(tag=tag, since=a["base_ref"], page=page if page.startswith("https://") else release_page(a["upstream"], tag),
                    at=time.time())
+        # saved onto the app as it is now: reading it took a while (the official source fetched first), and until Nov
+        # 2026 the record from before was saved, undoing what the user did meanwhile (an install, a skip, the app's
+        # schedule), and bringing back an app removed meanwhile, its builds gone
+        a = apps.load(app_id)
+        if a is None:
+            raise UserError("The app was removed while its change log was read.")
+        u = a.get("update") or {}
+        if u.get("latest") != tag:
+            return log                          # another release is known by now: this one's log is nobody's
         apps.write_file(app_id, f"changelog-{tag}.json", json.dumps(log, ensure_ascii=False))
         lines = security_lines(log.get("notes", ""), *log.get("news", {}).values(), "\n".join(log.get("commits", [])))
         a = apps.save({**a, "update": {**u, "changelog": True, "security_lines": lines, "page": log["page"],

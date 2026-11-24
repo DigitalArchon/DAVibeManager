@@ -157,6 +157,53 @@ async def test_a_release_page_its_host_names_is_taken_only_at_an_https_address(g
     assert '/^https:\\/\\//i.test(log.page || "") ? h("p"' in app_js           # and the window holds it so too
 
 
+async def _change_log_held_up(engine, monkeypatch):
+    """The official source's copy fetched slowly, as the change log of a new release is read: (let it go on, it has
+    begun)."""
+    go_on, begun = asyncio.Event(), asyncio.Event()
+    real = engine.app_manager.mirror
+
+    async def mirror(upstream):
+        begun.set()
+        await go_on.wait()
+        return await real(upstream)
+    monkeypatch.setattr(engine.app_manager, "mirror", mirror)
+    return go_on, begun
+
+
+async def test_what_the_user_does_while_a_change_log_is_read_stays_done(gthumb, monkeypatch):
+    """Until Nov 2026 the app's record from before the read was saved after it: an install, a skip and the app's own
+    schedule made meanwhile were undone."""
+    engine, sb, fake, told = gthumb
+    engine.cfg.settings.changelog_summary = "manual"
+    engine.cfg.settings.rebuild = "ask"
+    go_on, begun = await _change_log_held_up(engine, monkeypatch)
+    look = asyncio.ensure_future(engine.app_manager.check("gthumb", quiet=True))
+    await begun.wait()
+    await engine.install_delivery_async("D1")
+    engine.app_manager.set_schedule("gthumb", check_every="month", build_when="ask")
+    engine.app_manager.skip("gthumb")
+    go_on.set()
+    await look
+    a = apps.load("gthumb")
+    assert a["installed"]["build"] == "D1" and a["check_every"] == "month" and a["skip"] == "3.12.7"
+    assert a["update"]["changelog"] and a["update"]["security_lines"]
+
+
+async def test_an_app_removed_while_its_change_log_is_read_stays_removed(gthumb, monkeypatch):
+    engine, sb, fake, told = gthumb
+    engine.cfg.settings.changelog_summary = "manual"
+    engine.cfg.settings.rebuild = "ask"
+    go_on, begun = await _change_log_held_up(engine, monkeypatch)
+    look = asyncio.ensure_future(engine.app_manager.check("gthumb", quiet=True))
+    await begun.wait()
+    await engine.new_chat("computer")
+    await engine.app_manager.remove_async("gthumb")
+    go_on.set()
+    await look
+    assert apps.list_all() == [] and not (apps.root_dir() / "gthumb").exists()
+
+
 async def test_a_new_release_brings_its_change_log_security_fixes_and_a_summary(gthumb):
     engine, sb, fake, told = gthumb
     fake.completions.append("A security fix for TIFF files, and faster thumbnails.\n"
