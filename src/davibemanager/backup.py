@@ -307,10 +307,13 @@ def read_backup(path: Path, password: str, into: Path | None = None) -> dict:
                 if into is None:
                     continue
                 target = into / where
+                # each folder this user's alone, those made on the way to it too: mkdir's mode is for the last one
+                # it makes, and until Nov 2026 the data folder and its deliveries/ (which have no entry of their
+                # own in a backup) took the umask's, 0755, after every restore
                 if m.isdir():
-                    target.mkdir(parents=True, exist_ok=True, mode=0o700)
+                    config.private_folder(target)
                     continue
-                target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+                config.private_folder(target.parent)
                 with open(target, "wb") as out:
                     shutil.copyfileobj(tar.extractfile(m), out)
                 os.chmod(target, (m.mode & 0o755) | 0o600)

@@ -173,6 +173,20 @@ async def test_a_restore_forgets_what_sync_last_agreed_on_with_the_other_compute
     assert store.base_of("b" * 32) == {}
 
 
+async def test_what_a_restore_unpacks_is_in_folders_only_this_user_can_open(env, tmp_path):
+    """The data folder and its deliveries/ have no entry of their own in a backup: made on the way to what's in
+    them, they took the umask's mode (0755) after a restore."""
+    an_app()
+    dest, _ = make(tmp_path)
+    old = os.umask(0o022)
+    try:
+        await env[0].backups.restore(dest, PASSWORD)
+    finally:
+        os.umask(old)
+    for d in (config.data_dir(), config.data_dir() / "deliveries", config.data_dir() / "deliveries" / "D1", config.data_dir() / "apps"):
+        assert oct(os.stat(d).st_mode & 0o777) == "0o700", d
+
+
 async def test_a_chat_whose_session_didnt_come_along_starts_a_new_one(env, tmp_path):
     engine, _, _ = env
     engine.conv.chat.append({"kind": "user", "text": "hi", "at": 1})
