@@ -328,3 +328,24 @@ test("the list shows an address without a password written into it; its form kee
   button(section, "Edit").click();
   assert.equal(field(top(page), "Chat address").value, typed);
 }));
+
+test("removing the assistant's provider says where the assistant goes, before and after", { skip }, () => withPage(async (page) => {
+  const one = (name, base_url) => ({ name, base_url, builder_url: "", builder_auth: "bearer", has_key: true, key_for: [], service: "" });
+  const section = await openSettings(page, stateWith([one("NanoGPT", NANO), one("Local", "http://127.0.0.1:8000/v1")],
+    { builder_provider: "NanoGPT", builder_model: "z-ai/glm-5.3", review_model: "NanoGPT|z-ai/glm-5.3", builder_vision_model: "Local|eyes" }));
+  const row = [...section.querySelectorAll(".list-item")].find((r) => r.querySelector("b").textContent === "NanoGPT");
+  button(row, "Remove").click();
+  const box = top(page);
+  assert.match(box.textContent, /The assistant runs on Local then, still asking for z-ai\/glm-5\.3: choose one of Local's models/);
+  assert.match(box.textContent, /Second opinions have no reviewer then/);
+  assert.doesNotMatch(box.textContent, /describes pictures/);       // that one is Local's: it stays
+  button(box, "Remove").click();
+  await settle(page);
+  const toasts = [...page.d.querySelectorAll("#toasts .toast")].map((t) => t.textContent);
+  assert.equal(toasts.length, 1);
+  assert.match(toasts[0], /^NanoGPT removed\. The assistant runs on Local then/);
+  // the last one: nothing to run on
+  const last = await openSettings(page, stateWith([one("Local", "http://127.0.0.1:8000/v1")], { builder_provider: "Local" }));
+  button(last.querySelector(".list-item"), "Remove").click();
+  assert.match(top(page).textContent, /The assistant then has no provider, and can't start until you add one\./);
+}));

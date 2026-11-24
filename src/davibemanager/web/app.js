@@ -2743,15 +2743,33 @@ function providersSettings(st) {
     h("span", { class: "small " + (p.has_key && !p.key_held ? "" : "muted") }, p.key_held ? "key held back" : p.has_key ? "key in keyring" : "no key"),
     h("button", { class: "small", onclick: () => providerDialog(p) }, "Edit"),
     h("button", { class: "small danger", onclick: () => guarded(async () => {
-      if (!(await confirmModal("Remove this provider?", `${p.name} and its API key are removed from this app (and from your keyring).`, "Remove", "danger"))) return;
+      const after = removalWords(st, p);
+      if (!(await confirmModal("Remove this provider?", h("div", {}, h("p", {}, `${p.name} and its API key are removed from this app (and from your keyring).`),
+        ...after.map((t) => h("p", { class: "small" }, t))), "Remove", "danger"))) return;
       await api("DELETE", `/api/providers/${encodeURIComponent(p.name)}`);
-      toast(`${p.name} removed.`, "ok", 2500);
+      toast([`${p.name} removed.`, ...after].join(" "), after.length ? "info" : "ok", after.length ? 12000 : 2500);
     }) }, "Remove"))) : h("div", { class: "muted small" }, "None yet."));
   return h("div", { class: "section", id: "settings-providers" }, h("h3", {}, "AI providers"),
     h("div", { class: "small muted" }, "Where the assistant and the reviewer run. Add as many as you like: each key stays in your keyring, and goes only to the address it was entered for."),
     list,
     h("div", { class: "row" }, presets.map((x) => h("button", { class: x.primary ? "small primary" : "small", title: x.note,
       onclick: () => providerDialog({ ...x, name: x.name ? fresh(x.name) : "", _new: true, _preset: x }) }, x.label))));
+}
+
+// What removing provider `p` changes beyond it, as models.delete_provider does it: the assistant's provider goes to
+// the next one with an address, its models as they are; a reviewer or vision helper named on it is cleared. Said
+// before and after (until Nov 2026 nothing said it: the assistant went on on another provider, with a model chosen
+// for this one).
+function removalWords(st, p) {
+  const s = st.config.settings, out = [];
+  if (s.builder_provider === p.name) {
+    const next = st.config.providers.find((x) => x.name !== p.name && (x.builder_url || x.base_url));
+    out.push(next ? `The assistant runs on ${next.name} then, still asking for ${s.builder_model || "its model"}: choose one of ${next.name}'s models in Settings → The assistant.`
+      : "The assistant then has no provider, and can't start until you add one.");
+  }
+  if ((s.review_model || "").startsWith(`${p.name}|`)) out.push("Second opinions have no reviewer then, until you choose one.");
+  if ((s.builder_vision_model || "").startsWith(`${p.name}|`)) out.push("Nothing describes pictures to the assistant then, until you choose a model for it.");
+  return out;
 }
 
 function providerDialog(p) {
