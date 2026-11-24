@@ -429,3 +429,24 @@ async def test_a_second_opinion_that_comes_while_another_chat_is_open_is_its_own
     await asked
     assert [e for e in events if e["type"] == "request"] == [] and b.review == {}
     assert Conversation.load(chat_a).requests[0]["review"]["status"] == "done"
+
+
+async def test_a_second_opinion_that_cant_be_had_says_so_on_its_card(env):
+    """Asked from the card, with no reviewer to ask: until Nov 2026 the card read "Getting a second opinion…" for
+    good (the click got the reason, the card none), saved so. One cut off by the app closing is asked again."""
+    from davibemanager.engine import UserError
+    engine, _, _ = env
+    engine.cfg.settings.second_opinion = "off"
+    r = await _a_card_whose_turn_has_ended(engine, "rm -rf ~/.cache/thumbnails")
+    engine.cfg.settings.review_model = ""
+    with pytest.raises(UserError, match="No reviewer is set up yet"):
+        await engine.review_request(1)
+    assert r.review["status"] == "error" and "No reviewer is set up yet" in r.review["error"]
+    assert engine.conv.requests[0]["review"]["status"] == "error"
+    # the app closed while one was being asked: the card it comes back with has its button
+    r.review = {"status": "checking", "auto": True}
+    engine._persist()
+    chat = engine.conv.id
+    await engine.new_chat("computer")
+    await engine.open_chat(chat)
+    assert engine.requests[1].review == {}

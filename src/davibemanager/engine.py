@@ -757,6 +757,8 @@ class Engine:
                 self.requests[live[0].id] = live[0]
                 continue
             r = HostRequest.from_dict(d)
+            if r.review.get("status") == "checking":
+                r.review = {}                   # what was asking has gone with the app: the card's button asks again
             if r.status in hostrun.OPEN:
                 # the assistant that asked has gone (the app was closed): an answer goes as a message
                 r.detached = True
@@ -1695,7 +1697,16 @@ class Engine:
         if not auto:
             r.review = {"status": "checking"}
             self._request_changed(r)
-        out = {**await self._review(prompts.REVIEW_PROMPT, "\n".join(context), "second_opinion", id=r.id), "auto": auto}
+        try:
+            out = {**await self._review(prompts.REVIEW_PROMPT, "\n".join(context), "second_opinion", id=r.id), "auto": auto}
+        except Exception as e:
+            # the card says why, as for one asked by itself (_review_slot). Until Nov 2026 one the user asked for
+            # that couldn't be had (no reviewer set, its provider gone, the network) left the card reading "Getting a
+            # second opinion…" for good, saved so, and its button gone with it
+            if r.review.get("status") == "checking":
+                r.review = {"status": "error", "error": str(e)}
+                self._request_changed(r, conv)
+            raise
         self._log_in(conv, "second_opinion", id=r.id, **out)
         if r.command == command:
             r.review = {"status": "done", **out, "at": time.time()}
