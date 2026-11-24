@@ -498,8 +498,8 @@ class Engine:
     # ---------------------------------------------------------------- setup, providers, settings
 
     async def quick_setup(self, api_key: str) -> None:
-        """First run: one NanoGPT key sets up the assistant (Claude Opus 5.5 through NanoGPT's
-        Anthropic-compatible endpoint) and the reviewer (a private, end-to-end encrypted model)."""
+        """First run: one NanoGPT key sets up the assistant (GLM 5.3, config.DEFAULT_MODEL, through NanoGPT) and,
+        when none is set, the reviewer (GLM 5.3 too: an ordinary model, not a private one)."""
         api_key = (api_key or "").strip()
         if len(api_key) < 8:
             raise UserError("Paste your NanoGPT API key.")

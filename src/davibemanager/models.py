@@ -1,10 +1,11 @@
 """Providers and models: the assistant's (Claude Code in the sandbox, through the gateway) and
 the reviewer's (outside it, for second opinions).
 
-The reviewer reads the commands proposed for this computer and the patches of delivered apps,
-so by default it is a NanoGPT Private Mode model: end-to-end encrypted to an attested enclave
-(llm/private_mode.py). TEE models are attested before anything is sent to them, and a failed
-attestation means nothing is sent.
+The reviewer reads the commands proposed for this computer and the patches of delivered apps. It is
+the one the user chooses (Settings → Second opinions, or a model preset that names one); the first
+run's NanoGPT key sets GLM 5.3 (Engine.quick_setup), and a private assistant's must be private too
+(Engine._privacy_settings_check). TEE models are attested before anything is sent to them, and a
+failed attestation means nothing is sent.
 """
 
 from __future__ import annotations
@@ -40,7 +41,7 @@ from .netpolicy import InsecureURL, UnusableKey, check_url, in_the_clear, key_pr
 TEE_REATTEST_SECONDS = 900
 # a provider's model list that couldn't be read is asked for again after this long, no sooner
 CAPS_RETRY_SECONDS = 30
-# the reviewer chosen automatically: the first private model matching one of these, in order
+# choose_reviewer's choice: the first private model matching one of these, in order
 REVIEWER_PREFERENCE = (r"glm", r"deepseek", r"kimi", r"qwen", r"gpt-oss", r"llama", r".")
 
 
@@ -615,7 +616,8 @@ class Models:
 
     async def choose_reviewer(self) -> str:
         """Pick a private (end-to-end encrypted) NanoGPT model as the reviewer when none is set.
-        Returns the setting ("provider|model"), or "" when there is no such model."""
+        Returns the setting ("provider|model"), or "" when there is no such model. Nothing in the app calls it
+        now: the reviewer is the user's choice, GLM 5.3 after the first run (Engine.quick_setup)."""
         s = self.cfg.settings
         if s.review_model:
             return s.review_model

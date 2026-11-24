@@ -318,7 +318,8 @@ class Settings:
     # automatic second opinions on commands for this computer: "changes" (anything not plainly
     # read-only), "all", or "off"
     second_opinion: str = "changes"
-    # "provider|model" of the reviewer; empty = chosen automatically (a private NanoGPT model)
+    # "provider|model" of the reviewer; empty = none (no second opinions). The first run sets NanoGPT's GLM 5.3
+    # (Engine.quick_setup); a private assistant's must be private too (Engine._privacy_settings_check)
     review_model: str = ""
     # seconds a command on this computer may run before it is stopped
     command_timeout: int = 120
