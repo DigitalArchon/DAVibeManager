@@ -131,7 +131,7 @@ async function clipWrite(text) {
   try { await navigator.clipboard.writeText(text); return; } catch { /* not allowed here, or an older browser: the old way */ }
   const had = document.activeElement;
   const ta = h("textarea", { value: text, tabindex: -1, "aria-hidden": "true", style: "position:fixed;left:-9999px;top:0" });
-  ($("#modal-root").lastElementChild?.querySelector(".modal") || document.body).append(ta);   // inside an open dialog
+  (MODALS.at(-1)?.box || document.body).append(ta);       // inside an open dialog, which holds the focus
   ta.focus();
   ta.select();
   let ok = false;
@@ -344,10 +344,72 @@ function authImg(url, cls = "") {
   return img;
 }
 
-function modal({ title, body, buttons = [], onClose }) {
-  const box = h("div", { class: "modal" });
+// Dialogs stack, the newest on top (DA Toolkit's 5334904). The top one is a dialog to a screen reader (role,
+// aria-modal, its title as its name) and holds the keyboard: Tab goes round inside it, focus that lands elsewhere
+// comes back, Escape reaches it wherever the focus is, and when it closes the focus returns to what had it before (the
+// button that opened it, or the dialog under it). A dialog takes the focus itself as it opens: its first field, or,
+// with none, the dialog (never its OK button: Enter must not confirm a removal).
+// guard: the dialog is a form. Once something in it was typed or changed (but for fields marked data-no-guard),
+// Escape and a click outside it ask before closing, since that would discard it; its own buttons close as before.
+// (Until Nov 2026 a dialog took no focus: it stayed on the button that opened it, so Enter opened the same dialog
+// again over it, three "Remove this provider?" for two presses, each removing it once more; Tab walked into the page
+// behind; and a click on the backdrop closed a half-filled provider form unasked.)
+const MODALS = [];              // the open dialogs, the top one last
+
+function focusables(box) {
+  return [...box.querySelectorAll("a[href], button, input, select, textarea, summary, [tabindex]")].filter((el) =>
+    !el.disabled && el.getAttribute("tabindex") !== "-1" && el.type !== "hidden" && !el.closest(".hidden") && el.offsetParent !== null);
+}
+
+function dialogKeys(e) {
+  const top = MODALS.at(-1);
+  if (!top) return;
+  if (e.key === "Escape") {
+    e.preventDefault();
+    top.dismiss();
+  } else if (e.key === "Tab") {
+    const all = focusables(top.box), at = document.activeElement;
+    const to = !all.length ? top.box : !top.box.contains(at) ? (e.shiftKey ? all.at(-1) : all[0])
+      : e.shiftKey && (at === all[0] || at === top.box) ? all.at(-1) : !e.shiftKey && at === all.at(-1) ? all[0] : null;
+    if (to) { e.preventDefault(); to.focus(); }
+  }
+}
+document.addEventListener("keydown", dialogKeys, true);
+document.addEventListener("focusin", (e) => {
+  const top = MODALS.at(-1);
+  if (top && e.target instanceof Element && !top.box.contains(e.target) && !$("#toasts").contains(e.target)) top.box.focus();
+});
+
+function modal({ title, body, buttons = [], onClose, guard = false }) {
+  const opener = document.activeElement;
+  const box = h("div", { class: "modal", tabindex: -1, role: "dialog", "aria-modal": "true", "aria-label": title || null });
   const overlay = h("div", { class: "overlay" }, box);
-  const close = () => { overlay.remove(); onClose?.(); };
+  const m = { box, edited: false, closed: false, asking: false };
+  const close = () => {
+    if (m.closed) return;
+    m.closed = true;
+    overlay.remove();
+    MODALS.splice(MODALS.indexOf(m), 1);
+    const back = opener?.isConnected && opener !== document.body ? opener : MODALS.at(-1)?.box;
+    back?.focus?.();
+    onClose?.();
+  };
+  const mayDiscard = async () => {
+    if (!guard || !m.edited) return true;
+    if (m.asking) return false;
+    m.asking = true;
+    try {
+      return await confirmModal("Close without saving?", "What you typed or changed here hasn't been saved. Closing discards it.", "Discard it", "danger");
+    } finally {
+      m.asking = false;
+    }
+  };
+  m.dismiss = async () => { if (await mayDiscard()) close(); };
+  if (guard) {
+    const edit = (e) => { if (!e.target.closest?.("[data-no-guard]")) m.edited = true; };
+    box.addEventListener("input", edit);
+    box.addEventListener("change", edit);
+  }
   if (title) box.append(h("h2", {}, title));
   box.append(h("div", { class: "content" }, body));
   const bar = h("div", { class: "buttons" });
@@ -360,10 +422,15 @@ function modal({ title, body, buttons = [], onClose }) {
     bar.append(btn);
   }
   if (buttons.length) box.append(bar);
-  overlay.addEventListener("mousedown", (e) => { if (e.target === overlay) close(); });
-  overlay._close = close;                       // Escape, from anywhere on the page (init)
+  overlay.addEventListener("mousedown", (e) => { if (e.target === overlay) m.dismiss(); });
+  overlay._close = close;                       // closed by what opens another in its place (pickProviderModel)
+  MODALS.push(m);
   $("#modal-root").append(overlay);
-  return { close, box };
+  setTimeout(() => {
+    if (m.closed || MODALS.at(-1) !== m || box.contains(document.activeElement)) return;
+    (box.querySelector("input:not([type=checkbox]):not([type=radio]):not([type=file]), textarea, select") || box).focus();
+  }, 30);
+  return { close, box, saved: () => { m.edited = false; } };
 }
 
 function confirmModal(title, message, okLabel = "OK", kind = "primary") {
@@ -1299,7 +1366,7 @@ async function exportApp(a) {
     notes: h("textarea", { class: "notes", rows: 6, spellcheck: "true", value: c.notes }) }));
   const flagged = (list) => list?.length ? h("div", { class: "warnbox small" },
     `Came from your computer, so check it before you share: ${list.map((x) => `“${x}”`).join(", ")}.`) : null;
-  modal({ title: `Share ${a.name}?`, body: h("div", {},
+  modal({ guard: true, title: `Share ${a.name}?`, body: h("div", {},
     h("p", { class: "small" }, `The file holds where ${a.name} comes from (${sourceText(p.upstream)}, ${p.base_ref}), how it's built, `
       + "and each of your changes: its code, and its title and notes as below. Not your chats, your key, your builds or "
       + "anything else about this computer. Whoever you give it to sees all of it, so correct anything here first."),
@@ -2291,7 +2358,7 @@ async function backupNow() {
   if (b.has_password) return guarded(() => run({}));
   const fields = passwordFields(true);
   const keep = h("input", { type: "checkbox", checked: true });
-  modal({ title: "Choose a password for your backups", body: h("div", {},
+  modal({ guard: true, title: "Choose a password for your backups", body: h("div", {},
     h("p", { class: "small" }, "Your backup holds your apps, your chats and your API key, so it's locked with a password. You need it to restore the backup, on this computer or another one."),
     h("div", { class: "warnbox" }, h("b", {}, "Keep it somewhere safe. "), "Nobody can open a backup without its password, not even us."),
     fields.el,
@@ -2302,7 +2369,7 @@ async function backupNow() {
 
 function changePassword() {
   const fields = passwordFields(true);
-  modal({ title: "A new password for your backups", body: h("div", {},
+  modal({ guard: true, title: "A new password for your backups", body: h("div", {},
     h("p", { class: "small" }, "New backups use it. Backups you made before still open with the password they were made with."), fields.el),
     buttons: [{ label: "Cancel" }, { label: "Save it", kind: "primary", onClick: async () => { await api("POST", "/api/backups/password", { password: fields.value() }); toast("Saved in your keyring.", "ok", 3000); } }] });
   setTimeout(fields.focus, 0);
@@ -2335,7 +2402,7 @@ function restoreBackup() {
     }
     return { file: chosen.token };
   };
-  modal({ title: "Restore a backup", body: h("div", {}, list, h("div", { class: "field" }, h("span", {}, "Its password"), pw)),
+  modal({ guard: true, title: "Restore a backup", body: h("div", {}, list, h("div", { class: "field" }, h("span", {}, "Its password"), pw)),
     buttons: [{ label: "Cancel" }, { label: "Next", kind: "primary", onClick: async () => {
       const body = { ...(await which()), password: pw.value };
       const m = await api("POST", "/api/restore/peek", body);
@@ -2493,7 +2560,7 @@ function joinWithCode() {
   const go = async () => {
     try { await api("POST", "/api/sync/join", { code: input.value, check: check.checked }); return false; } catch (e) { toast(e.message, "error"); return true; }
   };
-  const m = modal({ title: "Add this computer to your others",
+  const m = modal({ guard: true, title: "Add this computer to your others",
     body: h("div", {}, h("p", {}, "On one of your other computers: Settings → Your other computers → Add a computer. Type the code it shows:"), input,
       h("p", { class: "small muted" }, "The other computer can be off just now: this one keeps looking for it until it's on."),
       h("label", { class: "radio" }, check, h("div", {}, h("div", { class: "small" }, "I can see the other computer's screen too: check the numbers on both"),
@@ -2742,13 +2809,14 @@ function providerDialog(p) {
       key_over_http: !!provider.key_over_http || agreed, key_held: "" };
     key.value = "";
     showHeld();
+    form?.saved();                    // saved: closing it now discards nothing
     return provider.name;
   };
   showKnown();
   showHeld();
   const note = preset.note || "";
   const link = preset.key_link ? h("a", { href: preset.key_link, target: "_blank", rel: "noopener noreferrer" }, "Get a key") : null;
-  modal({ title: p._new ? (preset.label || "Add a provider") : `Edit ${p.name}`,
+  const form = modal({ guard: true, title: p._new ? (preset.label || "Add a provider") : `Edit ${p.name}`,
     body: h("div", {},
       note ? h("p", { class: "small muted" }, note) : null,
       h("div", { class: "field" }, h("span", {}, "Name"), name),
@@ -3212,10 +3280,9 @@ function init() {
   });
   $("#panel-back").addEventListener("click", closePanel);
   document.addEventListener("keydown", (e) => {
-    if (e.key !== "Escape") return;
-    const overlays = [...$("#modal-root").children].filter((o) => o._close);
-    if (overlays.length) overlays[overlays.length - 1]._close?.();      // the topmost modal, wherever the focus is
-    else if (S.panel) closePanel();
+    // a dialog's Escape is its own (dialogKeys): it closes that dialog, never the panel under it too
+    if (e.key !== "Escape" || e.defaultPrevented || MODALS.length) return;
+    if (S.panel) closePanel();
   });
   if (DESKTOP) document.body.classList.add("desktop");
   if (!LAUNCH) return TOKEN ? connect() : noAccess(NO_TOKEN);

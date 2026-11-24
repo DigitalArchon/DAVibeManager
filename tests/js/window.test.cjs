@@ -65,3 +65,93 @@ test("a copy that fails says so, never Copied.", { skip }, () => withPage(async 
   assert.equal(toasts.length, 1);
   assert.match(toasts[0], /error: Nothing was copied/);
 }));
+
+// ---- dialogs and the keyboard
+
+function withProviders(names) {
+  const state = structuredClone(STATE);
+  state.ready = true;
+  state.config.providers = names.map((name) => ({ name, base_url: "https://example.org/v1", builder_url: "", builder_auth: "bearer",
+    has_key: true, key_for: ["https://example.org:443"], service: "" }));
+  return state;
+}
+const dialogs = (page) => [...page.d.querySelectorAll("#modal-root .modal")];
+const key = (page, el, k, extra = {}) => el.dispatchEvent(new page.w.KeyboardEvent("keydown", { key: k, bubbles: true, cancelable: true, ...extra }));
+const rowButton = (page, name, label) => [...[...page.d.querySelectorAll("#settings-providers .list-item")]
+  .find((r) => r.querySelector("b")?.textContent === name).querySelectorAll("button")].find((b) => b.textContent === label);
+
+test("a dialog takes the focus as it opens, so Enter can't open it again over itself", { skip }, () => withPage(async (page) => {
+  await page.event({ type: "state", state: withProviders(["One", "Two"]) });
+  page.run('openPanel("settings")');
+  const remove = rowButton(page, "Two", "Remove");
+  remove.focus();
+  remove.click();
+  await page.tick(60);
+  const box = dialogs(page)[0];
+  assert.equal(dialogs(page).length, 1);
+  assert.ok(box.contains(page.d.activeElement), "the focus is in the dialog");
+  assert.equal(box.getAttribute("role"), "dialog");
+  assert.equal(box.getAttribute("aria-label"), "Remove this provider?");
+  key(page, page.d.activeElement, "Enter");
+  await page.tick(60);
+  assert.equal(dialogs(page).length, 1);                    // until Nov 2026: a second one, then a third
+  assert.equal(plain(page.calls().filter((c) => c.method === "DELETE")).length, 0);
+  page.d.querySelector("#panel-back").focus();              // the focus wandering out comes back
+  assert.ok(box.contains(page.d.activeElement));
+  key(page, page.d.body, "Tab");
+  assert.ok(box.contains(page.d.activeElement));
+  key(page, page.d.body, "Escape");
+  await page.tick();
+  assert.equal(dialogs(page).length, 0);
+  assert.equal(page.d.activeElement, remove);               // back where it was
+  assert.ok(!page.d.querySelector("#panel").classList.contains("hidden"));   // Escape closed the dialog, not Settings
+}));
+
+test("Escape closes the top dialog of two, and the focus goes back to the one under it", { skip }, () => withPage(async (page) => {
+  await page.event({ type: "state", state: withProviders(["One"]) });
+  page.run('modal({ title: "Under", body: "", buttons: [{ label: "Close" }] })');
+  await page.tick(60);
+  page.run('confirmModal("Over", "?")');
+  await page.tick(60);
+  key(page, page.d.body, "Escape");
+  await page.tick();
+  assert.deepEqual(dialogs(page).map((d) => d.getAttribute("aria-label")), ["Under"]);
+  assert.ok(dialogs(page)[0].contains(page.d.activeElement));
+}));
+
+test("a half-filled provider form asks before Escape or a click outside discards it", { skip }, () => withPage(async (page) => {
+  await page.event({ type: "state", state: withProviders(["One"]) });
+  page.run('openPanel("settings")');
+  rowButton(page, "One", "Edit").click();
+  await page.tick(60);
+  const form = dialogs(page)[0];
+  assert.equal(page.d.activeElement, form.querySelector("input"));          // its first field
+  const name = form.querySelector("input");
+  name.value = "A name typed with care";
+  name.dispatchEvent(new page.w.Event("input", { bubbles: true }));
+  const overlay = form.parentElement;
+  overlay.dispatchEvent(new page.w.MouseEvent("mousedown", { bubbles: true }));
+  await page.tick();
+  assert.deepEqual(dialogs(page).map((d) => d.getAttribute("aria-label")), ["Edit One", "Close without saving?"]);
+  [...dialogs(page)[1].querySelectorAll("button")].find((b) => b.textContent === "Cancel").click();
+  await page.tick();
+  assert.deepEqual(dialogs(page).map((d) => d.getAttribute("aria-label")), ["Edit One"]);
+  assert.equal(name.value, "A name typed with care");
+  key(page, page.d.body, "Escape");
+  await page.tick();
+  assert.equal(dialogs(page).length, 2);
+  [...dialogs(page)[1].querySelectorAll("button")].find((b) => b.textContent === "Discard it").click();
+  await page.tick();
+  assert.equal(dialogs(page).length, 0);
+  assert.equal(plain(page.calls().filter((c) => c.path === "/api/providers")).length, 0);
+}));
+
+test("a dialog with nothing typed in it closes on Escape or a click outside without asking", { skip }, () => withPage(async (page) => {
+  await page.event({ type: "state", state: withProviders(["One"]) });
+  page.run('openPanel("settings")');
+  rowButton(page, "One", "Edit").click();
+  await page.tick(60);
+  dialogs(page)[0].parentElement.dispatchEvent(new page.w.MouseEvent("mousedown", { bubbles: true }));
+  await page.tick();
+  assert.equal(dialogs(page).length, 0);
+}));
