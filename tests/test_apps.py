@@ -1196,3 +1196,25 @@ async def test_an_app_installed_under_its_old_file_name_is_found_and_replaced(gt
     assert entry.is_file() and str(home / "Applications" / "gthumb-dvm.AppImage") in entry.read_text()
     await engine.app_manager.remove_async("gthumb")
     assert not (home / "Applications" / "gthumb-dvm.AppImage").exists() and not entry.exists()
+
+
+async def test_a_delivery_cancelled_midway_leaves_nothing_behind(gthumb, monkeypatch):
+    """Stopped (or the app quit) while its AppImage was copied out: until Nov 2026 the half-made deliveries/D2, the
+    AppImage in it, stayed for good, listed nowhere."""
+    engine, sb, _, _ = gthumb
+    sb.repo("/work/apps/gthumb", head="bbbb333", patch=ZOOM_KEPT + COPY)
+    real, copying = podman_mod.copy_out, asyncio.Event()
+
+    async def slow_copy(name, src, dest):
+        await real(name, src, dest)
+        if str(src).endswith(".AppImage"):
+            copying.set()
+            await asyncio.sleep(30)
+    monkeypatch.setattr(podman_mod, "copy_out", slow_copy)
+    task = asyncio.ensure_future(engine.builder_deliver({**ARGS, "change_title": "Copy the file path", "app": "gthumb",
+                                                         "version": "3.12.6-dvm2"}))
+    await copying.wait()
+    task.cancel()
+    await asyncio.gather(task, return_exceptions=True)
+    assert sorted(p.name for p in delivery.root_dir().iterdir() if p.name.startswith("D")) == ["D1"]
+    assert apps.load("gthumb")["builds"] == ["D1"]

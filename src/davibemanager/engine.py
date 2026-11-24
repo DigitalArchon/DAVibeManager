@@ -3114,7 +3114,9 @@ class Engine:
             if entry is not None and self.conv and self.conv.mode == "app" and not self.conv.app:
                 self.conv.app, self.conv.app_name = app["id"], app["name"]     # the chat's app from now on
                 self.conv.save()
-        except Exception:
+        except BaseException:
+            # cancelled too (Stop or quitting during its build or its copy out: the SDK cancels the tool's call). Until
+            # Nov 2026 only an error took it away, and a cancelled delivery's folder, its AppImage in it, stayed for good
             shutil.rmtree(d, ignore_errors=True)
             raise
         if entry is not None:
