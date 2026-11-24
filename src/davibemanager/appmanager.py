@@ -576,7 +576,9 @@ class AppManager:
         if any(named.get(sha, "new") == "new" for sha, _ in chunks):
             cid = apps.slug(title or args.get("name") or "change", "change")
             n, base_cid = 2, cid
-            while cid in old or cid == "new":
+            # "build" is sync's name for the build script, where a change edited on two computers is chosen
+            # between: until Nov 2026 a change titled "Build" took it, and its other version was dropped unasked
+            while cid in old or cid in ("new", "build"):
                 cid, n = f"{base_cid}-{n}", n + 1
         # as they were, for the versions of a shared app (share.revise): what a chat changed gets a new revision
         texts_before = {i: apps.read_file(app["id"], f"changes/{i}.patch") for i in old}

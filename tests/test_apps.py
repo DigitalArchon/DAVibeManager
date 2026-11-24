@@ -86,6 +86,15 @@ async def test_another_change_makes_one_app_with_both_never_a_second_gthumb(gthu
     assert apps.read_file("gthumb", "series.patch") == ZOOM_KEPT + COPY.replace("DVM-Change: new", "DVM-Change: copy-the-file-path")
 
 
+async def test_a_change_is_never_named_as_sync_names_the_build_script(gthumb):
+    """A change titled "Build" was given the id "build", which is the build script's where sync puts the other
+    computer's version aside: the change's other version was dropped from the choice without a word."""
+    engine, sb, _, _ = gthumb
+    sb.repo("/work/apps/gthumb", head="bbbb333", patch=ZOOM_KEPT + COPY)
+    await engine.builder_deliver({**ARGS, "change_title": "Build", "app": "gthumb", "version": "3.12.6-dvm2"})
+    assert [c["id"] for c in apps.load("gthumb")["changes"]] == ["drag-a-box-to-zoom", "build-2"]
+
+
 async def test_an_app_chat_delivers_for_its_own_app_only(gthumb):
     engine, sb, _, _ = gthumb
     assert (engine.conv.app, engine.conv.app_name) == ("gthumb", "gThumb")   # its first delivery made the chat's app
