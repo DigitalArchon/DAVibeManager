@@ -1148,3 +1148,51 @@ async def test_an_app_keeps_every_change_or_a_new_one_is_refused(gthumb):
     a = apps.load("gthumb")
     assert len(a["changes"]) == apps.MAX_CHANGES and a["changes"][0]["id"] == "drag-a-box-to-zoom"
     assert len(engine.app_manager.change_pairs(a)) == 2 * apps.MAX_CHANGES
+
+
+async def test_two_apps_of_one_name_are_installed_as_files_of_their_own(gthumb, tmp_path):
+    """Until Nov 2026 the installed file was named by the app's name alone: a second gThumb (another project's) was
+    installed over the first one's file, and removing it took that file away from the first's menu entry."""
+    import hashlib
+    engine, sb, _, _ = gthumb
+    home = tmp_path / "home"
+    first = await engine.install_delivery_async("D1")
+    assert first["installed_to"] == str(home / "Applications" / "gThumb-dvm.AppImage")     # as before
+    builder = engine.builder
+    await engine.new_chat("app", app_name="gThumb NG")
+    engine.builder = builder
+    fork = "https://github.com/someone/gthumb-ng.git"
+    offered(engine, upstream=fork, app="gThumb")
+    sb.appimage = make_appimage(b"another project's gThumb")
+    sb.repo("/work/apps/gthumb-ng", head="eeee555", patch=commit_patch("eeee555", "Dark mode", "-light\n+dark"), remote=fork)
+    sb.files["/work/apps/gthumb-ng/build.sh"] = b"make\n"
+    await engine.builder_deliver({**ARGS, "repo": "/work/apps/gthumb-ng", "build_script": "/work/apps/gthumb-ng/build.sh",
+                                  "change_title": "Dark mode"})
+    assert apps.load("gthumb-2")["name"] == "gThumb"
+    second = await engine.install_delivery_async("D2")
+    assert second["installed_to"] == str(home / "Applications" / "gthumb-2-dvm.AppImage")
+    first_file = Path(first["installed_to"])
+    assert hashlib.sha256(first_file.read_bytes()).hexdigest() == first["sha256"]
+    await engine.app_manager.remove_async("gthumb-2")
+    assert first_file.is_file() and not Path(second["installed_to"]).exists()
+
+
+async def test_an_app_installed_under_its_old_file_name_is_found_and_replaced(gthumb, tmp_path):
+    """One installed before its file was named by its id: what its install recorded finds it, and installing again
+    leaves no second copy."""
+    engine, sb, _, _ = gthumb
+    home = tmp_path / "home"
+    a = apps.load("gthumb")
+    apps.save({**a, "name": "Photos"})                    # its id isn't its name's now: "gthumb-dvm.AppImage" from here on
+    old = home / "Applications" / "Photos-dvm.AppImage"
+    old.parent.mkdir(parents=True)
+    d, meta = engine._delivery("D1")
+    old.write_bytes((d / meta["file"]).read_bytes())
+    entry = home / ".local/share/applications/dvm-gthumb.desktop"
+    apps.save({**apps.load("gthumb"), "installed": {"via": "menu", "path": str(old), "desktop_id": "dvm-gthumb.desktop",
+                                                     "build": "D1", "version": meta["version"], "at": 0}})
+    again = await engine.install_delivery_async("D1")
+    assert again["installed_to"] == str(home / "Applications" / "gthumb-dvm.AppImage") and not old.exists()
+    assert entry.is_file() and str(home / "Applications" / "gthumb-dvm.AppImage") in entry.read_text()
+    await engine.app_manager.remove_async("gthumb")
+    assert not (home / "Applications" / "gthumb-dvm.AppImage").exists() and not entry.exists()

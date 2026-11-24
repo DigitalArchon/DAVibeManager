@@ -85,8 +85,15 @@ TAG = "dvm"
 
 
 def stable_name(app: dict) -> str:
-    """The AppImage's file name for an app, the same for every version."""
+    """The AppImage's file name for an app, the same for every version: by its name, or by its id for an app whose id
+    isn't its name's (another app of the user's has that name: "gthumb-2"). Until Nov 2026 it was by the name alone,
+    so two apps of one name (from two projects) were installed as one file: the second took the first's place, and
+    removing it took away the file the first's menu entry starts. An app installed before under another name is
+    found by what its install recorded (its path), and that file goes when it is installed again (_drop_replaced)."""
+    from .apps import slug
     name = "".join(c if c.isalnum() or c in "._+-" else "-" for c in app["name"]).strip("-.") or app["id"]
+    if app.get("id") and app["id"] != slug(app["name"]):
+        name = app["id"]
     return f"{name}-{TAG}.AppImage"
 
 
