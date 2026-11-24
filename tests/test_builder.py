@@ -621,6 +621,32 @@ async def test_stopping_a_turn_while_it_is_prepared_ends_it_before_the_assistant
     assert not clients                          # nothing was asked of the assistant: it cost nothing
 
 
+async def test_a_message_written_after_stop_while_the_turn_is_prepared_reaches_the_assistant(builder_env, monkeypatch):
+    """Stop while the source is prepared ends the turn once it is (above); a message written after that, while it was,
+    showed in the chat and was dropped until Nov 2026. It goes in a turn of its own once the stopped one has ended."""
+    engine, _, _, clients = builder_env
+    gate, got = asyncio.Event(), []
+
+    async def app_note():
+        await gate.wait()
+        return "[The app's note about its app]"
+    monkeypatch.setattr(engine, "_app_note", app_note)
+
+    async def script(c, text):
+        got.append(text)
+        await c.queue.put(AssistantMessage([TextBlock("On 3.12.8, then.")], "m"))
+        await c.queue.put(result())
+    engine._script = script
+    engine.send("Make it zoom")
+    engine.stop_turn()
+    engine.send("Build it on 3.12.8 instead")
+    gate.set()
+    await wait_for(lambda: got, "the message after Stop")
+    await wait_for(lambda: not engine.busy, "its answer")
+    assert engine.conv.chat[1]["error"] == "stopped" and "Build it on 3.12.8 instead" in got[0]
+    assert "Make it zoom" not in got[0]
+
+
 async def test_going_to_the_open_chat_while_the_assistant_works_in_it_shows_it(builder_env):
     """"Go to its chat" on an update the assistant is making: that chat is the one open (My apps was
     only in front of it), so it's shown as it is, not refused because the assistant is busy, and

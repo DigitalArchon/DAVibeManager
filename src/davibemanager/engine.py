@@ -1278,16 +1278,21 @@ class Engine:
                 if builder.entry is entry:
                     builder.entry = None
                 entry["error"] = str(e)
+                self._queued += start["early"]  # what the user wrote meanwhile: sent once it has ended (_turn_end)
                 self._turn_end(entry)
                 return
             finally:
                 started()                       # the app closing (cancelled) included
+            # what the user wrote meanwhile, on a turn that ends without the assistant hearing it, is sent once it has
+            # ended (_turn_end sends what's queued): until Nov 2026 it showed in the chat and was dropped
             if not sent:
                 entry["error"] = "stopped"      # before the assistant had it: nothing was asked of it
+                self._queued += start["early"]
                 self._turn_end(entry)
                 return
             if start["stop"]:
                 if builder.entry is entry:
+                    self._queued += start["early"]
                     await builder.interrupt()   # stopped while it connected: it ends as any stopped turn
                 return
             for message in start["early"]:
@@ -1350,6 +1355,7 @@ class Engine:
             # the assistant hasn't the turn yet: it ends once what's being prepared is done (a
             # preparation cut short would leave the app's source half made)
             self._starting["stop"] = True
+            self._starting["early"].clear()     # what was written before Stop is stopped with it; what comes after isn't
             self.log("stopped_while_starting")
             return
         if self.busy:
