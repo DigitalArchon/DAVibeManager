@@ -595,6 +595,18 @@ def test_a_change_removed_on_one_computer_goes_unless_the_other_edited_it(tmp_pa
     assert library.decide(None, {"id": "r2", "history": ["r1"]}, "r1") == "theirs"
 
 
+def test_a_revision_gone_back_to_is_older_whatever_the_two_last_agreed_on():
+    """A computer that went back to an earlier revision (a backup restored on it) read as the one that changed
+    since they agreed: the others took the old one in place of their newer one, with nothing said."""
+    old = share.new_rev()
+    new = share.new_rev(old)
+    assert library.decide(new, old, new["id"]) == "mine" and library.decide(old, new, new["id"]) == "theirs"
+    # what the two agreed on still says which side changed when neither comes from the other
+    other = share.new_rev()
+    assert library.decide(new, other, new["id"]) == "theirs" and library.decide(new, other, other["id"]) == "mine"
+    assert library.decide(new, other, None) == "conflict"
+
+
 def test_changes_added_on_each_computer_both_stay(tmp_path):
     with computer(tmp_path / "A"):
         make_app()

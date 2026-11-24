@@ -1268,6 +1268,8 @@ class SyncService:
                     a, _ = library.combine(mine[0], got[sid], b, e["id"], e["name"])
                 came.append(a["id"])
                 new_base[sid] = t
+            if mine and t and ((mine[0].get("synced") or {}).get("removed_on") or {}).get("peer") == e["id"]:
+                self._there_again(mine[0]["id"])
         store.save_base(e["id"], new_base)
         return came
 
@@ -1291,6 +1293,14 @@ class SyncService:
         synced["removed_on"] = {"peer": member["id"], "name": member["name"], "at": time.time()}
         apps.save({**a, "synced": synced})
         self.e.app_manager.changed()
+
+    def _there_again(self, app_id: str) -> None:
+        """An app the other computer had removed is on it again (it took it back from another, or a backup
+        restored there had lacked it for a moment): whether to remove it here too isn't asked any more."""
+        a = apps.load(app_id)
+        if a and (a.get("synced") or {}).get("removed_on"):
+            apps.save({**a, "synced": {k: v for k, v in a["synced"].items() if k != "removed_on"}})
+            self.e.app_manager.changed()
 
     def keep_here(self, app_id: str) -> None:
         """The user keeps an app another computer removed: it isn't asked about again for that one."""

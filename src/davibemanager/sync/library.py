@@ -97,15 +97,24 @@ def plan(mine: dict | None, theirs: dict | None, base: dict | None) -> str:
 
 def decide(mine: dict | None, theirs: dict | None, base: str | None) -> str:
     """One change (or the build script), from its revisions here and there (dicts: id, history) and
-    its revision's id when the two last agreed: "mine", "theirs", "drop" or "conflict"."""
+    its revision's id when the two last agreed: "mine", "theirs", "drop" or "conflict".
+
+    A revision that comes from the other is the newer, whatever the two last agreed on; only for two that
+    don't come from each other (a history too long to hold both, a change put in from a shared file) does
+    what they agreed on say which side changed. Until Nov 2026 that was asked first, and a computer gone
+    back to an earlier revision (a backup restored on it) read as the one that had changed since: every
+    other computer took the old revision in place of its newer one, with nothing said."""
     if mine and theirs:
         if mine["id"] == theirs["id"]:
             return "mine"
+        how = {"theirs_newer": "theirs", "mine_newer": "mine"}.get(share._how(mine, theirs))
+        if how:
+            return how
         if base == mine["id"]:
             return "theirs"
         if base == theirs["id"]:
             return "mine"
-        return {"theirs_newer": "theirs", "mine_newer": "mine"}.get(share._how(mine, theirs), "conflict")
+        return "conflict"
     if mine:
         return "drop" if base == mine["id"] else "mine"     # removed there as it was here; else here's own
     if theirs:

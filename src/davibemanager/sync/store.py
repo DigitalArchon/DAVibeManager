@@ -305,6 +305,14 @@ def forget_base(member: str) -> None:
         (folder() / "bases" / f"{member}.json").unlink(missing_ok=True)
 
 
+def forget_bases() -> None:
+    """What this computer and each other member last agreed on, forgotten: its apps aren't what they were then
+    any more (a backup was restored over them), so each is next merged by its revisions alone, and one the
+    others have that isn't here arrives as new, rather than being taken for removed here."""
+    for f in (folder() / "bases").glob("*.json") if (folder() / "bases").is_dir() else []:
+        f.unlink(missing_ok=True)
+
+
 def leave_all() -> None:
     """No group any more (this computer left, or was removed): its members, their bases, its status."""
     save_group(None)

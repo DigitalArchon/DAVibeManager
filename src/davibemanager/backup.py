@@ -48,6 +48,7 @@ from .conversation import Conversation
 from .hostenv import host_env
 from .llm.secure_http import loads
 from .models import UserError
+from .sync import store as sync_store
 from .workspace import podman
 
 if TYPE_CHECKING:
@@ -637,6 +638,10 @@ class Backups:
                     raise
                 # from here on the apps and chats are the backup's: what goes wrong is said, never left half done
                 try:
+                    # What sync remembers of each other computer (never in a backup) is of the apps that were
+                    # here. Kept, the backup's older apps read as changed here since, and those made since the
+                    # backup as removed here: the other computers took the old ones, and asked to remove the rest
+                    sync_store.forget_bases()
                     if aside and (config.config_dir() / "config.toml").is_file():
                         shutil.copy2(config.config_dir() / "config.toml", Path(aside) / "config.toml")
                     if removed:

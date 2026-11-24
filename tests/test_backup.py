@@ -164,6 +164,15 @@ async def test_restored_on_another_computer_the_apps_chats_and_key_are_back(env,
     assert creds.get_secret("provider", "NanoGPT") == "sk-old-computer"
 
 
+async def test_a_restore_forgets_what_sync_last_agreed_on_with_the_other_computers(env, tmp_path):
+    from davibemanager.sync import store
+    an_app()
+    dest, _ = make(tmp_path)
+    store.save_base("b" * 32, {"s": {"digest": "d"}})
+    await env[0].backups.restore(dest, PASSWORD)
+    assert store.base_of("b" * 32) == {}
+
+
 async def test_a_chat_whose_session_didnt_come_along_starts_a_new_one(env, tmp_path):
     engine, _, _ = env
     engine.conv.chat.append({"kind": "user", "text": "hi", "at": 1})

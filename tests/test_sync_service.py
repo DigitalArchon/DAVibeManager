@@ -493,6 +493,54 @@ async def test_a_computer_removed_and_added_again_is_back_on_every_computer(tmp_
     await stop_all(desktop, laptop, server)
 
 
+async def test_a_backup_restored_on_one_computer_takes_nothing_back_on_the_others(tmp_path, monkeypatch):
+    """Sync's own records (what each two last agreed on) are never in a backup. Kept after a restore, the
+    backup's older apps read as changed on the computer it was restored on since, and the apps made after the
+    backup as removed there: the others took the old changes in place of their newer ones, and asked whether to
+    remove the rest."""
+    import shutil
+    from davibemanager import backup
+    monkeypatch.setattr(backup, "SCRYPT", {"n": 1 << 10, "r": 8, "p": 1})
+    net = FakeNet()
+    desktop, laptop = Computer(tmp_path / "A", net, "Desktop"), Computer(tmp_path / "B", net, "Laptop")
+    desktop.make_app()
+    await add(desktop, laptop)
+    await laptop.until(lambda v: laptop.apps(), "the app")
+    dest = tmp_path / "monday.dvmbackup"
+    desktop.run(lambda: backup.write_backup(dest, "correct horse battery", config.Config(), None))
+
+    def improve():
+        a = apps.list_all()[0]
+        apps.write_file(a["id"], "changes/zoom.patch", commit_patch("b" * 40, "zoom", "+tuesday's better zoom", "zoom"))
+        apps.save({**a, "changes": [{**c, "rev": share.new_rev(c["rev"])} for c in a["changes"]]})
+        desktop.changed()
+    desktop.run(improve)
+    desktop.make_app("mpv")
+    zoom = lambda c: c.run(lambda: apps.read_file(next(x for x in apps.list_all() if x["name"] == "gThumb")["id"],
+                                                  "changes/zoom.patch"))
+    await laptop.until(lambda v: "tuesday" in zoom(laptop) and len(laptop.apps()) == 2, "tuesday's work on the laptop")
+    await asyncio.sleep(0.3)
+
+    def restore():                              # as Backups.restore does it, sync's part with it
+        data = config.data_dir()
+        work = data.with_name("restoring")
+        backup.read_backup(dest, "correct horse battery", work)
+        backup.settle(work, config.Config())
+        data.rename(data.with_name("before-restore"))
+        (work / "data").rename(data)
+        shutil.rmtree(work)
+        store.forget_bases()
+        desktop.changed()
+    desktop.run(restore)
+    assert [a["name"] for a in desktop.apps()] == ["gThumb"] and "tuesday" not in zoom(desktop)
+    # the desktop gets tuesday's work back from the laptop, and the laptop keeps it
+    await desktop.until(lambda v: "tuesday" in zoom(desktop) and len(desktop.apps()) == 2, "tuesday's work back")
+    await asyncio.sleep(1.6)                    # a pull more each way
+    assert "tuesday" in zoom(laptop) and len(laptop.apps()) == 2
+    assert not any((a.get("synced") or {}).get("removed_on") for a in laptop.apps())
+    await stop_all(desktop, laptop)
+
+
 async def test_two_groups_become_one_when_a_computer_of_one_joins_the_other(tmp_path):
     net = FakeNet()
     desktop, laptop, work, server = (Computer(tmp_path / d, net, n) for d, n in (
