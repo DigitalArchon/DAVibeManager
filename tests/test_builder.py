@@ -1157,6 +1157,33 @@ async def test_a_chat_moves_only_to_a_model_at_its_level_or_higher(builder_env):
         engine.send("In the clear?")
 
 
+async def test_a_partial_chat_goes_on_at_its_level_wherever_it_ran(builder_env):
+    """A chat on a Chutes -TEE model (partial privacy) moved to a NanoGPT TEE/ model (partial too), which it may. Until
+    Nov 2026 it ran there once and was then held to the highest privacy: its record said "tee", but its sealed flag
+    (set as it ran sealed on Chutes) was read as NanoGPT's Private Mode."""
+    from davibemanager import config, creds
+    from davibemanager.config import Provider
+    from davibemanager.engine import UserError
+    engine, _, _, _ = builder_env
+    engine.cfg.providers.append(Provider("Chutes", config.CHUTES_BASE_URL, builder_url=config.CHUTES_ANTHROPIC_URL,
+                                         key_for=["https://llm.chutes.ai:443"]))
+    creds.set_secret("provider", "Chutes", "sk-test-12345678")
+    s = engine.cfg.settings
+    s.builder_provider, s.builder_model, s.builder_small_model, s.builder_vision_model = \
+        "Chutes", "moonshotai/Kimi-K3-TEE", "", ""
+    s.review_model = "Chutes|moonshotai/Kimi-K3-TEE"
+    engine._script = said("Sealed by Chutes.")
+    for n, (provider, model) in enumerate((("Chutes", "moonshotai/Kimi-K3-TEE"), ("Fake", "TEE/glm-5.3"),
+                                           ("Fake", "TEE/glm-5.3"), ("Chutes", "moonshotai/Kimi-K3-TEE")), 1):
+        s.builder_provider, s.builder_model = provider, model
+        engine.send(f"Message {n}")
+        await wait_for(lambda: len(engine.conv.chat) == 2 * n and not engine.busy, f"answer {n}")
+        assert engine._chat_privacy().level == "partial"
+    s.builder_provider, s.builder_model = "Fake", "z-ai/glm-5.3"
+    with pytest.raises(UserError, match="this chat is kept to partial privacy"):     # never lower
+        engine.send("In the clear?")
+
+
 async def _a_tinfoil_chat_with_the_real_gateway(engine):
     """A chat sealed on Tinfoil, and the gateway its Claude Code's requests pass (the real one, asking the engine
     where each goes): (the gateway, what Claude Code would ask it next: the model it was started with, and

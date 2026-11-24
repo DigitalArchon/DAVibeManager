@@ -1190,7 +1190,10 @@ class Engine:
         if self.conv is None:
             return privacy_mod.NONE
         held = privacy_mod.held(self.conv.privacy)
-        if self.conv.sealed and not held.sealed:
+        # only for a chat with no record: until Nov 2026 a chat that had run sealed on a Chutes -TEE model (partial
+        # privacy) and moved, as it may, to a NanoGPT TEE/ model (partial too) was read as private from its next turn,
+        # its record "tee" and its sealed flag set, and refused there and on the model it began on alike
+        if self.conv.sealed and not held.sealed and self.conv.privacy is None:
             return privacy_mod.more_private(held, privacy_mod.Privacy("sealed", privacy_mod.NANOGPT_PRIVATE))
         return held
 
