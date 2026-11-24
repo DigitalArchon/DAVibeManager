@@ -2841,7 +2841,9 @@ function providerDialog(p) {
         status.textContent = "Testing…";
         try {
           const got = (await api("GET", `/api/models?provider=${encodeURIComponent(n)}&refresh=true`)).models || [];
-          status.textContent = `✓ Connected: ${got.length} models available.`;
+          // a list with nothing in it: no model can be chosen there (until Nov 2026 it read "✓ Connected: 0 models")
+          status.textContent = got.length ? `✓ Connected: ${got.length} models available.`
+            : "⚠ Connected, but it lists no models, so none can be chosen from it: check the address and the key.";
         } catch (e) { status.textContent = `✗ ${e.message}`; }
         return true;                    // left open, to read what the test found
       } },

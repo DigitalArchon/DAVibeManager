@@ -12,10 +12,11 @@ from typing import AsyncIterator
 from urllib.parse import urlparse
 
 import httpx
-from openai import APIError, AsyncOpenAI, DefaultAsyncHttpxClient, Timeout
+from openai import APIError, APIStatusError, AsyncOpenAI, DefaultAsyncHttpxClient, Timeout
 from openai.types.chat import ChatCompletionChunk
 
 from ..netpolicy import check_key, check_url, is_local_host, shown
+from .errors import shown_error
 from .secure_http import (ACCEPT_ENCODING, MAX_BODY_BYTES, MAX_ERROR_BYTES, ProviderError, encoded, loads,
                           local_http_options, too_much)
 
@@ -202,10 +203,31 @@ class LLMClient:
                                    follow_redirects=False, **reading_options(base_url)))
 
     async def list_models(self) -> list[str]:
-        page = await self._client.models.list()
+        """The provider's models. Its answer is read here, not by the SDK, and one that isn't a list of models is said
+        in words: a web page where the list was expected (a network's sign-in page, an address that isn't the API's)
+        failed with Python's own ("'str' object has no attribute '_set_private_attributes'"), and a redirect, never
+        followed, said only "Error code: 302" (until Nov 2026)."""
+        try:
+            raw = await self._client.models.with_raw_response.list()
+        except APIStatusError as e:
+            if 300 <= e.status_code < 400:
+                where = shown(e.response.headers.get("location", ""))[:200] or "another address"
+                raise RuntimeError(f"it answered with a redirect to {where}, which isn't followed: check the "
+                                   "address") from None
+            raise RuntimeError(shown_error(e)) from None
+        try:
+            body = loads(raw.http_response.content)
+        except ValueError:
+            body = None
+        data = body.get("data") if isinstance(body, dict) else None
+        if not isinstance(data, list):
+            page = "html" in raw.http_response.headers.get("content-type", "").lower()
+            raise RuntimeError(f"its answer isn't a list of models{' but a web page' if page else ''}: check that the "
+                               "address is the API's (it usually ends in /v1), and that no network's sign-in page is "
+                               "in the way")
         # an entry without an id, or that is no model at all, is left out: sorting None beside text raised
         # Python's own error, and the whole list was lost to it (until Nov 2026)
-        return sorted({m.id for m in page.data if isinstance(getattr(m, "id", None), str) and m.id})
+        return sorted({m["id"] for m in data if isinstance(m, dict) and isinstance(m.get("id"), str) and m["id"]})
 
     async def stream(
         self, model: str, messages: list[dict], tools: list[dict] | None = None, params: dict | None = None,

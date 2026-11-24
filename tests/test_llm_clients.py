@@ -52,8 +52,9 @@ class Stub:
             if found is None:
                 writer.write(b"HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
             else:
-                kind, content = found
-                writer.write(f"HTTP/1.1 200 OK\r\nContent-Type: {kind}\r\nContent-Length: {len(content)}\r\n"
+                kind, content, *more = found          # (type, body[, status line[, more headers]])
+                status, extra = (more + ["200 OK"])[0], "".join(f"{k}: {v}\r\n" for k, v in (more[1:] or [{}])[0].items())
+                writer.write(f"HTTP/1.1 {status}\r\nContent-Type: {kind}\r\nContent-Length: {len(content)}\r\n{extra}"
                              "Connection: close\r\n\r\n".encode() + content)
             await writer.drain()
         except (asyncio.IncompleteReadError, ConnectionError):
@@ -426,3 +427,29 @@ async def test_an_entry_that_is_no_model_doesnt_take_the_model_list_down():
     answer = json.dumps({"object": "list", "data": listed}).encode()
     async with Stub({"/v1/models": ("application/json", answer)}) as provider:
         assert await LLMClient(f"http://127.0.0.1:{provider.port}/v1", "sk-local-1").list_models() == ["good"]
+
+
+async def test_an_answer_that_isnt_a_model_list_is_said_in_words():
+    """Save & test showed Python's own words for a web page where the list was expected ("'str' object has no
+    attribute '_set_private_attributes'", a network's sign-in page) and only "Error code: 302" for a redirect, which
+    is never followed (until Nov 2026)."""
+    portal = b"<html><body><h1>Welcome to the captive portal</h1></body></html>"
+    async with Stub({"/v1/models": ("text/html", portal)}) as provider:
+        with pytest.raises(RuntimeError) as e:
+            await LLMClient(f"http://127.0.0.1:{provider.port}/v1", "sk-local-1").list_models()
+    assert str(e.value).startswith("its answer isn't a list of models but a web page: check that the address is the API's")
+    async with Stub({"/v1/models": ("application/json", b'{"object": "list", "models": []}')}) as provider:
+        with pytest.raises(RuntimeError, match=r"^its answer isn't a list of models: "):
+            await LLMClient(f"http://127.0.0.1:{provider.port}/v1", "sk-local-1").list_models()
+    async with Stub({"/v1/models": ("text/plain", b"", "302 Found", {"Location": "https://user:pw@example.org/v1/models"})}) as provider:
+        with pytest.raises(RuntimeError) as e:
+            await LLMClient(f"http://127.0.0.1:{provider.port}/v1", "sk-local-1").list_models()
+    assert str(e.value) == "it answered with a redirect to https://…@example.org/v1/models, which isn't followed: check the address"
+    assert provider.paths() == ["/v1/models"]              # asked once, and not followed
+    failed = json.dumps({"error": {"message": "The server had an error.", "type": "api_error"}}).encode()
+    async with Stub({"/v1/models": ("application/json", failed, "500 Internal Server Error")}) as provider:
+        with pytest.raises(RuntimeError) as e:
+            await LLMClient(f"http://127.0.0.1:{provider.port}/v1", "sk-local-1").list_models()
+    assert str(e.value).startswith("Error code: 500 - The server had an error.") and "{'" not in str(e.value)
+    async with Stub({"/v1/models": ("application/json", b'{"object": "list", "data": [{"id": "b"}, {"id": "a"}]}')}) as provider:
+        assert await LLMClient(f"http://127.0.0.1:{provider.port}/v1", "sk-local-1").list_models() == ["a", "b"]

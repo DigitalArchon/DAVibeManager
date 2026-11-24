@@ -306,3 +306,15 @@ test("the helpers' pickers grey every model less private than the assistant's ch
 }, { "GET /api/models": { models: [
   { id: "glm-5-3", tier: "e2ee", privacy: { kind: "sealed", service: "tinfoil", level: "highest", level_words: "Highest privacy", note: "" } },
   { id: "plain-model", tier: "standard", privacy: { kind: "", service: "", level: "none", level_words: "Not private", note: "" } }] } }));
+
+test("Save & test says a list with no models in it, never \"✓ Connected: 0 models\"", { skip }, () => withPage(async (page) => {
+  const section = await openSettings(page, stateWith([]));
+  button(section, "Add other (OpenAI-compatible)").click();
+  const box = top(page);
+  type(page, field(box, "Name"), "Local");
+  type(page, field(box, "Chat address"), "http://127.0.0.1:8000/v1");
+  button(box, "Save & test").click();
+  await settle(page, 8);
+  assert.match(box.textContent, /⚠ Connected, but it lists no models, so none can be chosen from it/);
+  assert.doesNotMatch(box.textContent, /✓ Connected/);
+}, { "GET /api/models": { models: [] } }));
