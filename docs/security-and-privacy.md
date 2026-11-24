@@ -491,8 +491,9 @@ changes.
 The assistant (Claude Code) works in a container of its own, run by rootless Podman, as an ordinary
 user of the container with no capabilities at all and no way to gain any. Nothing of your home
 folder is in it: the only folder of this computer's it can reach holds the app's two gateway
-sockets. A file you attach to a message is copied in. It has no network of its own; everything it
-sends goes through the app:
+sockets. A file you attach to a message is copied in. Nothing of your environment is handed to it,
+your system's proxy settings (and a password written into them) included. It has no network of its
+own; everything it sends goes through the app:
 
 - **The proxy** passes on only HTTPS (a `CONNECT` to port 443, and only TLS through it), and only to
   public internet addresses: never this computer, your network, or this network's public address on

@@ -32,6 +32,15 @@ def test_the_container_has_no_network_no_capabilities_and_no_host_paths():
     assert not any(a.split("=")[0] in forbidden for a in argv)
 
 
+def test_the_container_gets_none_of_this_sessions_proxy_settings():
+    """Podman passes the host's proxy variables into a container by default, over the image's own: the sandbox
+    had a company proxy's address (and the password in it) for HTTPS_PROXY, where the app's own proxy belongs."""
+    for argv in (podman.run_argv("dvm-x", "localhost/img:1", Path("/g"), project_id="x"),
+                 podman.run_argv("dvm-x-check", "localhost/img:1", Path("/g"), project_id="check", mounts=[])):
+        assert "--http-proxy=false" in argv[:argv.index("localhost/img:1")]
+        assert "--env-host" not in argv and not any(a in ("-e", "--env") for a in argv)
+
+
 async def test_the_clean_container_reads_the_sandbox_but_cant_change_it(no_real_podman):
     """What the app checks and builds is copied out of /sandbox first: it may only read it."""
     await podman.start_check("dvm-sandbox", "localhost/img:1", Path("/run/gw"), memory="2g", cpus="2", pids=1024)

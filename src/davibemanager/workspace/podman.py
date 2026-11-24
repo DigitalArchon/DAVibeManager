@@ -528,6 +528,12 @@ def run_argv(name: str, image: str, gateway_dir: Path, *, project_id: str, memor
         "--label", f"{LABEL}={project_id}",
         "--init",                                   # reap the builds' orphans
         "--network=none",
+        # Podman hands a container this session's proxy variables (http_proxy, https_proxy, ftp_proxy, no_proxy,
+        # in either case) unless told not to, and they come before the image's own. Until Nov 2026 a user behind
+        # a proxy had its address in the sandbox, a password written into it too, in place of the app's own
+        # way out (HTTPS_PROXY=http://127.0.0.1:3128, NO_PROXY=127.0.0.1,localhost): nothing there could
+        # reach anything, the proxy had no network to be reached on.
+        "--http-proxy=false",
         "--cap-drop=ALL",
         "--security-opt=no-new-privileges",
         "--pids-limit", str(int(pids)),
