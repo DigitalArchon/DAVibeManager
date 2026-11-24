@@ -17,6 +17,7 @@ import secrets
 import stat
 import tempfile
 import threading
+import time
 import tomllib
 from contextvars import ContextVar
 from dataclasses import asdict, dataclass, field, fields
@@ -487,6 +488,24 @@ def load(path: Path | None = None) -> Config:
         return Config()
     with path.open("rb") as f:
         return from_dict(tomllib.load(f))
+
+
+def load_or_set_aside(path: Path | None = None) -> tuple[Config, str]:
+    """The config, or, when it can't be read, the defaults and why: the file is kept beside itself
+    (config.toml.broken-<time>) and never overwritten, and the app still starts, with a banner (Engine.ui_notice).
+    Until Nov 2026 a file that couldn't be read (a hand edit's stray quote, a provider without its address) ended
+    the app in a traceback before any window: started from its menu, nothing came up at all. (DA Toolkit's.)"""
+    path = path or config_dir() / "config.toml"
+    try:
+        return load(path), ""
+    except Exception as e:  # noqa: BLE001 - a hand-edited file can be wrong in any way at all
+        kept = path.with_name(f"{path.name}.broken-{time.strftime('%Y%m%d-%H%M%S')}")
+        try:
+            path.replace(kept)
+        except OSError:
+            return Config(), f"{path} couldn't be read ({e}). DA Vibe Manager started with default settings."
+        return Config(), (f"{path.name} couldn't be read ({e}), so DA Vibe Manager started with default settings. The "
+                          f"file is kept as {kept}: fix it, quit, and put it back as {path.name}.")
 
 
 # ---- passwords written into addresses: in the keyring, never in config.toml

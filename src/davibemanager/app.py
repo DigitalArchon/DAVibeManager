@@ -361,7 +361,9 @@ def main(argv: list[str] | None = None) -> None:
     token = secrets.token_urlsafe(32)
     port = args.port or _free_port()
     config.private_folders()            # settings, data and state: this user's alone, whatever they were
-    cfg = config.load()
+    cfg, broken = config.load_or_set_aside()
+    if broken:
+        print(broken, file=sys.stderr)
     # a password written into an address: back from the keyring, or moved there out of config.toml; and a key saved
     # before keys were held to their address, given the addresses beside it (config.settle_key_origins), kept so at
     # once: an address edited afterwards can't take it along
@@ -372,14 +374,15 @@ def main(argv: list[str] | None = None) -> None:
         except OSError:
             pass
     use_browser = args.browser or args.no_open or (cfg.settings.ui_mode == "browser" and not args.window)
-    notice = ""
+    notice = broken
     if not use_browser:
         own_dialogs()                           # before GTK starts
         problem = window_problem()
         if problem:
             put_back("GTK_USE_PORTAL")          # the browser that opens instead uses what the desktop asks
-            use_browser, notice = True, f"{problem}. Running in your web browser until then."
-            print(notice, file=sys.stderr)
+            use_browser, why = True, f"{problem}. Running in your web browser until then."
+            notice = f"{notice} {why}".strip()
+            print(why, file=sys.stderr)
     desktop = None if use_browser else Desktop()
     desktop_ref["desktop"] = desktop
 

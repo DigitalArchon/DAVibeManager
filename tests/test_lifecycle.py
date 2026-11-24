@@ -292,3 +292,36 @@ def test_the_test_run_stays_dumpable():
     import ctypes
 
     assert ctypes.CDLL(None).prctl(3, 0, 0, 0, 0) == 1
+
+
+@pytest.mark.parametrize("text", ['[settings]\ntheme = "dark\n', '[[providers]]\nname = "X"\n', 'settings = "x"\n'])
+def test_settings_that_cant_be_read_are_set_aside_and_the_app_starts_saying_so(monkeypatch, text):
+    """A hand edit's stray quote, a provider without its address: until Nov 2026 app.main ended in a traceback before
+    any window (started from the menu, nothing came up), the file left as it was. It is kept beside itself, the app
+    starts with the defaults, and the window's banner says so (DA Toolkit's config.load_or_set_aside)."""
+    from davibemanager import app, config, omarchy, tray
+
+    class Made(Exception):
+        pass
+    path = config.config_dir() / "config.toml"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text)
+    seen = {}
+
+    class Engine:
+        def __init__(self, cfg, emit, runtime, notify=None):
+            seen["cfg"] = cfg
+
+    def create_app(token, make_engine, desktop, **kw):
+        seen["notice"] = make_engine(lambda ev: None).ui_notice
+        raise Made
+    monkeypatch.setattr(tray, "claim_single_instance", lambda on_show: True)     # never this user's running copy
+    monkeypatch.setattr(tray, "refresh_autostart", lambda command: None)
+    monkeypatch.setattr(omarchy, "refresh_self_entry", lambda argv, icon: None)
+    monkeypatch.setattr(app, "Engine", Engine)
+    monkeypatch.setattr(app, "create_app", create_app)
+    with pytest.raises(Made):
+        app.main(["--browser"])
+    kept = list(path.parent.glob("config.toml.broken-*"))
+    assert len(kept) == 1 and kept[0].read_text() == text and not path.exists()
+    assert seen["cfg"].providers == [] and "couldn't be read" in seen["notice"] and kept[0].name in seen["notice"]

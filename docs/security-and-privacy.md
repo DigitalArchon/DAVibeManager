@@ -621,7 +621,8 @@ links open in your browser.
 ## What is kept on this computer
 
 - **Settings**: `~/.config/davibemanager/config.toml`, readable only by you. No key or password is
-  in it.
+  in it. One the app can't read (an edit by hand gone wrong) is kept beside it as
+  `config.toml.broken-<time>`, and the app starts with its defaults, saying so at the top of the window.
 - **Your chats, apps and builds**: `~/.local/share/davibemanager`, in folders only you can open: each
   chat's messages, the commands the assistant asked to run with what they printed (whether or not
   you sent it) and what you sent, the files you attached, and a log of what the app did (requests to
