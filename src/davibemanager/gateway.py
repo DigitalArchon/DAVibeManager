@@ -785,7 +785,9 @@ class Gateway:
                 except Exception as e:
                     if begun or attempt == 2:
                         raise
-                    if "reasoning_content" in str(e).lower() and bridge.handed_back(msgs):
+                    # the body too: openai 3.38 and later leave it out of str(e), so a provider that named the field
+                    # beside its message, or in a body that isn't JSON, wasn't asked again (as _learned reads it)
+                    if "reasoning_content" in error_words(e).lower() and bridge.handed_back(msgs):
                         self._no_reasoning_back.add(where)
                         msgs = bridge.without_reasoning(msgs)
                         rec["reasoning_back"] = False          # in the log: the provider wouldn't take it

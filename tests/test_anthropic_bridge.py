@@ -767,6 +767,12 @@ class Reasons(FakePrivate):
         refuse = self.refuse_field and any("reasoning_content" in m for m in messages)
 
         async def go():
+            if refuse and self.refuse_field == "in its body":
+                # as openai 3.38 and later word a refusal: the body's message alone in the text, the rest in .body
+                import openai
+                answer = httpx.Response(400, request=httpx.Request("POST", f"{BASE}/chat/completions"))
+                raise openai.BadRequestError("Error code: 400 - Invalid request", response=answer, body={
+                    "message": "Invalid request", "param": "messages[1].reasoning_content"})
             if refuse:
                 raise PrivateModeError("Unrecognized request argument: messages[1].reasoning_content", 400)
             yield "open", None
@@ -812,6 +818,19 @@ async def test_a_provider_that_wont_take_reasoning_handed_back_is_asked_again_wi
     assert len(fake.calls) == 3                                   # refused once; then never sent again
     assert not any("reasoning_content" in m for m in fake.calls[-1][1])
     assert [r.get("reasoning_back") for r in log] == [False, False]   # the log says so
+
+
+async def test_a_refusal_of_reasoning_handed_back_is_read_in_the_errors_body_too(tmp_path):
+    """openai 3.38 and later write only the body's message into an error's text (llm/errors.py): a provider that names
+    the field beside it ("param"), or in a body that isn't JSON, was not asked again without the reasoning, and every
+    request of a chat with thinking in it failed. Read as _learned reads a refused effort (DA Private Coder's proxy)."""
+    fake = Reasons(refuse_field="in its body")
+    body = {**ASK, "model": "private/glm-5-3",
+            "messages": [{"role": "user", "content": "first"}, THOUGHT, {"role": "user", "content": "next"}]}
+    async with translating(tmp_path, fake) as (g, log):
+        assert (await _post(g, body)).status_code == 200
+    assert len(fake.calls) == 2 and not any("reasoning_content" in m for m in fake.calls[-1][1])
+    assert [r.get("reasoning_back") for r in log] == [False]
 
 
 async def test_our_thinking_never_reaches_a_claude_model(tmp_path):
