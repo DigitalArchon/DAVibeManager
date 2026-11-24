@@ -313,14 +313,29 @@ def browser_opener(port: int, launches: Launches):
     return open_in_browser
 
 
+def stop_on_signals(server) -> None:
+    """In the browser, the signals that end DA Vibe Manager (Ctrl+C, SIGTERM, a logout's SIGHUP) ask the server to stop,
+    as Quit does, so the engine stops the sandbox, Claude Code and the gateway; a second one stops without waiting for open requests. Until Nov 2026 Ctrl+C was a
+    KeyboardInterrupt in the main thread's join of the server's thread, which Python 3.12 then takes for ended: the
+    process left with that thread killed and none of this done, and SIGTERM and SIGHUP had no handler at all (DA
+    Toolkit's stop_on_signals). The app window has its own (on_started)."""
+    def stop(signum, frame) -> None:
+        if server.should_exit:
+            server.force_exit = True
+        server.should_exit = True
+    for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
+        signal.signal(sig, stop)
+
+
 def server_config(app, port: int) -> uvicorn.Config:
     """The app's own server, on asyncio's loop, never uvloop (which uvicorn would pick when it's
     installed): uvloop's fork handler takes the GIL in a forked child, and GTK's image loader on
     Ubuntu 26.04 (glycin) forks from a thread of its own. A fork that fell while uvloop started a
     process (podman, as the app starts) left that child waiting for the GIL forever, and GTK waiting
-    for the child: the window never opened (1 start in 6 there, Nov 2026)."""
+    for the child: the window never opened (1 start in 6 there, Nov 2026). Requests still open when it stops are
+    given three seconds (timeout_graceful_shutdown): one waiting on the user didn't let Quit end the app."""
     return uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning", ws_max_size=16 * 1024 * 1024,
-                          loop="asyncio")
+                          loop="asyncio", timeout_graceful_shutdown=3)
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -432,6 +447,7 @@ def main(argv: list[str] | None = None) -> None:
 
     try:
         if use_browser:
+            stop_on_signals(server)
             # for the user's own terminal, to open by hand: the token in the fragment, which a browser never sends, so
             # it is in no request's first line, nor in a proxy's or a history's record of one (until Nov 2026 it was
             # ?t=; DA Toolkit's). The window keeps ?t=: it is given its address in this process, on no command line.

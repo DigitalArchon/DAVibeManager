@@ -35,3 +35,26 @@ def test_whether_an_app_is_a_terminal_program_is_read_from_its_own_menu_entry(tm
     assert launch.is_terminal_app(tmp_path)
     (tmp_path / "app.desktop").write_text("[Desktop Entry]\nType=Application\nName=gThumb (DVM)\nExec=gthumb\nTerminal=false\n")
     assert not launch.is_terminal_app(tmp_path)
+
+
+def test_in_the_browser_the_signals_that_end_the_app_stop_its_server_first():
+    """Ctrl+C was a KeyboardInterrupt in the main thread's join of the server's thread, which Python 3.12 then
+    takes for ended: the process left with that thread killed and the server's shutdown never run; SIGTERM and
+    SIGHUP had no handler at all (until Nov 2026; DA Toolkit's stop_on_signals). A second signal stops at once."""
+    import os
+    import signal as signals
+    from types import SimpleNamespace
+
+    from davibemanager import app as app_mod
+    before = {sig: signals.getsignal(sig) for sig in (signals.SIGINT, signals.SIGTERM, signals.SIGHUP)}
+    try:
+        for sig in before:
+            server = SimpleNamespace(should_exit=False, force_exit=False)
+            app_mod.stop_on_signals(server)
+            os.kill(os.getpid(), sig)
+            assert server.should_exit and not server.force_exit
+            os.kill(os.getpid(), sig)
+            assert server.force_exit
+    finally:
+        for sig, handler in before.items():
+            signals.signal(sig, handler)
