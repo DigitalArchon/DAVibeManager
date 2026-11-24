@@ -2669,6 +2669,8 @@ function keyReaches(keyFor, where, chutes = []) {
   if (keyFor == null) return true;
   return keyFor.includes(where) || (chutes.includes(where) && keyFor.some((o) => chutes.includes(o)));
 }
+// an address as it may be shown (netpolicy.shown): all it has up to the last "@" before its path is "…@"
+const shownAddress = (u) => String(u ?? "").replace(/^([a-z][a-z0-9+.-]*:\/\/)[^/?#]*@/i, "$1…@");
 const shownOrigin = (o) => String(o || "").replace(/^(https:\/\/.*):443$|^(http:\/\/.*):80$/, "$1$2");
 // this computer itself (netpolicy.is_loopback_host): what goes there over plain http never leaves it
 function isLoopbackHost(host) {
@@ -2735,7 +2737,8 @@ function providersSettings(st) {
   const list = h("div", { class: "list" }, provs.length ? provs.map((p) => h("div", { class: "list-item" },
     h("div", { class: "grow" }, h("b", {}, p.name), " ", p.name === providerKind(p) ? null : h("span", { class: "chip" }, providerKind(p)),
       p.name === assistant ? h("span", { class: "small muted" }, " · the assistant's") : null,
-      h("div", { class: "small muted mono" }, [p.base_url, p.builder_url].filter((u, i, all) => u && all.indexOf(u) === i).join("  ·  ")),
+      // shown without a password written into it, as everywhere an address is shown (until Nov 2026 the list showed it)
+      h("div", { class: "small muted mono" }, [p.base_url, p.builder_url].filter((u, i, all) => u && all.indexOf(u) === i).map(shownAddress).join("  ·  ")),
       p.key_held ? h("div", { class: "warnbox small" }, p.key_held) : null),
     h("span", { class: "small " + (p.has_key && !p.key_held ? "" : "muted") }, p.key_held ? "key held back" : p.has_key ? "key in keyring" : "no key"),
     h("button", { class: "small", onclick: () => providerDialog(p) }, "Edit"),

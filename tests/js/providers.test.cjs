@@ -318,3 +318,13 @@ test("Save & test says a list with no models in it, never \"✓ Connected: 0 mod
   assert.match(box.textContent, /⚠ Connected, but it lists no models, so none can be chosen from it/);
   assert.doesNotMatch(box.textContent, /✓ Connected/);
 }, { "GET /api/models": { models: [] } }));
+
+test("the list shows an address without a password written into it; its form keeps it as typed", { skip }, () => withPage(async (page) => {
+  const typed = "https://user:secret@pw@example.org/v1";
+  const section = await openSettings(page, stateWith([{ name: "Mine", base_url: typed, builder_url: "", builder_auth: "bearer",
+    has_key: true, key_for: ["https://example.org:443"], service: "" }]));
+  assert.doesNotMatch(section.textContent, /secret|user:/);
+  assert.match(section.querySelector(".list-item .mono").textContent, /^https:\/\/…@example\.org\/v1$/);
+  button(section, "Edit").click();
+  assert.equal(field(top(page), "Chat address").value, typed);
+}));
