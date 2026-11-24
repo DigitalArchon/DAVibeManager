@@ -294,9 +294,39 @@ async def to_openai(body: dict, images: ImageDescriber, native: bool = False) ->
     return messages, tools or None, params
 
 
+# what an image counts for in a count made here: about what a screenshot costs a model that sees (Anthropic counts
+# width × height / 750, some 1,600 at most), and more than its description costs one that doesn't
+IMAGE_TOKENS = 1500
+
+
+def _inline_data(content) -> tuple[int, int]:
+    """(the characters of base64, the images) in a message's content, a tool's result included."""
+    chars = images = 0
+    for b in content if isinstance(content, list) else []:
+        if not isinstance(b, dict):
+            continue
+        if b.get("type") == "tool_result":
+            more, seen = _inline_data(b.get("content"))
+            chars, images = chars + more, images + seen
+        elif b.get("type") in ("image", "document"):
+            data = b["source"].get("data") if isinstance(b.get("source"), dict) else None
+            if isinstance(data, str):
+                chars += len(data)
+                images += b["type"] == "image"
+    return chars, images
+
+
 def estimate_tokens(body: dict) -> int:
-    """A rough count for /v1/messages/count_tokens (about four characters a token)."""
-    return max(1, len(json.dumps(body, ensure_ascii=False)) // 4)
+    """A rough count for /v1/messages/count_tokens, and for a reply whose provider counts nothing (about four
+    characters a token). An image counts as IMAGE_TOKENS and a document as its note, never as their base64: until
+    Nov 2026 that was counted as text, so one 600 KB screenshot, described in a sentence for a model that can't see,
+    was 200,000 tokens: the whole of the context Claude Code compacts at by default."""
+    chars, images = len(json.dumps(body, ensure_ascii=False)), 0
+    messages = body.get("messages")
+    for m in messages if isinstance(messages, list) else []:
+        inline, seen = _inline_data(m.get("content") if isinstance(m, dict) else None)
+        chars, images = chars - inline, images + seen
+    return max(1, chars // 4 + images * IMAGE_TOKENS)
 
 
 def anthropic_usage(usage: dict | None, input_estimate: int) -> dict:

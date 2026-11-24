@@ -251,6 +251,27 @@ async def test_the_gateway_sends_images_to_a_model_that_sees_and_describes_them_
         await g.stop()
 
 
+def test_the_count_made_here_takes_an_image_for_an_image_not_for_its_base64():
+    """count_tokens, message_start and the usage of a reply whose provider counts nothing: one 600 KB screenshot was
+    counted as 200,000 tokens of text (its base64, four characters a token), though a model that can't see gets a
+    sentence in its place. An image is IMAGE_TOKENS wherever it is, a document's base64 nothing."""
+    import base64
+    import os
+    shot = bridge.b64_image(os.urandom(600_000))
+    pdf = {"type": "document", "source": {"type": "base64", "media_type": "application/pdf",
+                                          "data": base64.b64encode(os.urandom(300_000)).decode()}}
+    said = {"model": "m", "messages": [{"role": "user", "content": [{"type": "text", "text": "what is this?"}]},
+                                       {"role": "user", "content": "and this?"}]}
+    plain = bridge.estimate_tokens(said)
+    shown = {"model": "m", "messages": [
+        {"role": "user", "content": [shot, pdf, {"type": "text", "text": "what is this?"}]},
+        {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t1", "content": [shot]}]}]}
+    assert plain < 100 and 2 * bridge.IMAGE_TOKENS < bridge.estimate_tokens(shown) < 2 * bridge.IMAGE_TOKENS + 200
+    # and a body that isn't what it should be is counted as it is, never an error
+    for odd in ({"messages": "hi"}, {"messages": [1, "x", {"content": [3, {"type": "image", "source": "x"}]}]}, {}):
+        assert bridge.estimate_tokens(odd) >= 1
+
+
 async def test_a_reply_cut_off_at_its_length_says_so_and_hands_over_no_call_it_cut_short():
     """finish_reason "length" in the middle of a Write: not a tool call with no input (run with nothing it
     fails, and the model, never told why, writes it all again, paid each time), but max_tokens."""
