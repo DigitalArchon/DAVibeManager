@@ -137,7 +137,9 @@ def _alt_name(item: str, peer: str, kind: str) -> str:
 
 
 def _clash(name: str, share_id: str) -> bool:
-    return any(apps.slug(x["name"]) == apps.slug(name) and (x.get("share") or {}).get("id") != share_id
+    # names compared as names (apps.same_name, as Sharing does): until Nov 2026 by apps.slug, which is "app" for
+    # every name without a Latin letter in it, so a second app called "Музыка" arrived as "Музыка (Desktop)"
+    return any(apps.same_name(x["name"], name) and (x.get("share") or {}).get("id") != share_id
                for x in apps.list_all())
 
 

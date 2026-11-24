@@ -677,6 +677,19 @@ def test_an_app_of_the_same_name_from_another_computer_isnt_mistaken_for_this_on
         assert b["name"] == "gThumb (Desktop)" and len(library.local()) == 2
 
 
+def test_apps_named_in_another_script_keep_their_own_names(tmp_path):
+    desktop = tmp_path / "A"
+    with computer(desktop):
+        bundles = [library.bundle(make_app(name=name)) for name in ("Фото", "Музыка")]
+    for data in bundles:
+        library.create(share.read(data), "a" * 32, "Desktop")
+    assert [a["name"] for a in apps.list_all()] == ["Фото", "Музыка"]
+    got = share.read(bundles[0])
+    other = {**got, "app": {**got["app"], "share": {**got["app"]["share"], "id": "f" * 32}}}
+    again = library.create(other, "a" * 32, "Desktop")
+    assert again["name"] == "Фото (Desktop)"            # another app of the same name: told apart, as before
+
+
 def test_apps_sync_leaves_out_say_why():
     assert "add-ons" in library.syncable({"kind": "addon"})
     a = make_app()
