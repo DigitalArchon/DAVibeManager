@@ -155,3 +155,30 @@ test("a dialog with nothing typed in it closes on Escape or a click outside with
   await page.tick();
   assert.equal(dialogs(page).length, 0);
 }));
+
+// ---- the chat around a turn
+
+function chatWith(entries) {
+  const state = structuredClone(STATE);
+  state.ready = true;
+  state.workspace = { state: "running" };
+  state.chat = entries;
+  return state;
+}
+const chatText = (page) => page.d.querySelector("#chat").textContent;
+
+test("a turn that has ended says nothing is still running unless something is", { skip }, () => withPage(async (page) => {
+  await page.event({ type: "state", state: chatWith([{ kind: "user", text: "hi", at: 1 },
+    { kind: "assistant", parts: [{ t: "text", text: "Hello." }], at: 2 }]) });
+  // the sandbox's last look, which outlives the turn by up to a look: nothing in it runs
+  await page.event({ type: "activity", activity: { cpu: null, mem: 1 << 27, procs: [], cpu_share: null, tasks: [], check: null, quiet: 0 } });
+  await page.tick(30);
+  assert.doesNotMatch(chatText(page), /Still running in its sandbox/);
+  await page.event({ type: "activity", activity: { cpu: 40, mem: 1 << 27, procs: [], cpu_share: 10, quiet: 0, check: null,
+    tasks: [{ id: "b1", description: "make -j4", since: Date.now() / 1000, background: true, last: [] }] } });
+  await page.tick(30);
+  assert.match(chatText(page), /Still running in its sandbox/);
+  await page.event({ type: "activity", activity: null });
+  await page.tick(30);
+  assert.doesNotMatch(chatText(page), /Still running in its sandbox/);
+}));

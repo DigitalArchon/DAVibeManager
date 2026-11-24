@@ -733,8 +733,10 @@ function renderChat(scroll) {
   $("#composer").classList.remove("hidden");
   const items = st.chat.map((e, i) => entryEl(e, false, i));
   if (S.live) items.push(entryEl(S.live, true, "live"));
-  // its turn has ended, but what it started (a build) goes on: the user can talk with it meanwhile
-  else if (S.activity) items.push(h("div", { class: "msg assistant" }, h("div", { class: "muted small" },
+  // its turn has ended, but what it started (a build) goes on: the user can talk with it meanwhile. Only then: the
+  // last look at the sandbox outlives the turn by up to one look (Engine._watch_loop), and until Nov 2026 every
+  // turn's end showed "Still running in its sandbox" for those seconds, with nothing running
+  else if (S.activity?.tasks?.length || S.activity?.check) items.push(h("div", { class: "msg assistant" }, h("div", { class: "muted small" },
     "Still running in its sandbox. You can keep talking: it's told when this finishes."), activityEl(S.activity, {})));
   const trouble = sandboxBox(st.workspace || {});
   keepOpen(box, () => box.replaceChildren(...(st.podman ? [podmanBox(st.podman)] : []), ...(trouble ? [trouble] : []),
