@@ -936,6 +936,7 @@ async def test_a_stream_that_ends_without_saying_it_is_done_is_an_error(body, ex
     with pytest.raises(ProviderError, match="the reply stopped before it was finished") as info:
         await _streamed(client, exact)
     assert "https://example.test/v1/chat/completions never said the reply was complete" in str(info.value)
+    assert info.value.status_code is None, "no status of the answer it was cut from: that one says not to ask again"
     assert len(seen) == 1
 
 
@@ -963,6 +964,9 @@ async def test_the_assistant_gets_no_half_written_call_from_a_stream_cut_off(tmp
     said = [d for n, d in evs if n == "error"][0]["error"]["message"]
     assert "the reply stopped before it was finished" in said
     assert whole.status_code >= 500 and "the reply stopped before it was finished" in whole.json()["error"]["message"]
+    # "asking again may work", and Claude Code may: until Nov 2026 a request that isn't streamed was told not to in
+    # the same answer, by the status of the reply it was cut from
+    assert "asking again may work" in whole.json()["error"]["message"] and "x-should-retry" not in whole.headers
 
 
 async def test_events_that_end_without_their_result_are_no_reply():

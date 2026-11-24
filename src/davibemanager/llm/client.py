@@ -327,12 +327,15 @@ def _cut_off(response) -> ProviderError:
     as the error to raise: the connection closed mid-answer, at a proxy's time limit or a server that crashed.
     What had arrived was taken for the whole reply: a command cut short in the middle, a tool call with half
     its arguments (DA Toolkit's 87f270f). A reply the provider ended itself ("length", "content_filter") is
-    not this: it is whole as far as it goes, and says why it stopped."""
+    not this: it is whole as far as it goes, and says why it stopped.
+    It carries no status, as a connection that failed carries none: asking again may work, and the status of
+    the answer it was cut from (200) said it wouldn't. Until Nov 2026 it carried that one, so Claude Code was
+    told not to ask again (x-should-retry: false) for a request that isn't streamed, in words that said asking
+    again may work."""
     return ProviderError(
         "the reply stopped before it was finished: the connection closed mid-answer, and "
         f"{shown(str(response.http_request.url))} never said the reply was complete. What arrived of it is not a "
         "whole reply, so nothing in it was taken; asking again may work.",
-        status_code=response.status_code,
     )
 
 
