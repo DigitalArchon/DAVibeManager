@@ -1184,11 +1184,10 @@ class Engine:
             return privacy_mod.more_private(held, privacy_mod.Privacy("sealed", privacy_mod.NANOGPT_PRIVATE))
         return held
 
-    def _sealed_check(self) -> bool:
-        """Whether the assistant's models are private (sealed end to end); raises if this chat ran on a more private
-        model than they are now (llm/privacy.py move_refusal: a chat moves only to a model at its own level or
-        higher, on any service): all of it would go along (its session, resumed) with less privacy."""
-        prov, model, _, tier = self.models.builder_target()
+    def _level_check(self, prov, model: str) -> None:
+        """Raises if this chat ran on a more private model than `model` on `prov`, the assistant's now (llm/privacy.py
+        move_refusal: a chat moves only to a model at its own level or higher, on any service): all of it would go
+        along (its session, resumed) with less privacy."""
         now, kept = self.models.privacy(prov, model), self._chat_privacy()
         refusal = privacy_mod.move_refusal(kept, now, model, what="this chat",
                                            way_out="in Settings (The assistant), or start a new chat")
@@ -1196,6 +1195,12 @@ class Engine:
             said = ("This chat was with a private model, so it's only ever sent sealed" if kept.sealed
                     else f"This chat ran with {privacy_mod.level_phrase(kept)}, so it's only ever sent at that level")
             raise UserError(f"{said}, at its level or higher: {refusal}")
+
+    def _sealed_check(self) -> bool:
+        """Whether the assistant's models are private (sealed end to end); raises if this chat ran on a more private
+        model than they are now (_level_check)."""
+        prov, model, _, tier = self.models.builder_target()
+        self._level_check(prov, model)
         return tier == "e2ee"
 
     def _start_turn(self, content: str, note: bool = True, prepare: Callable[[], Awaitable[str]] | None = None) -> None:
@@ -2138,7 +2143,15 @@ class Engine:
         return note
 
     def _builder_upstream(self) -> Upstream:
+        """Where the assistant's requests go, asked by the gateway for each one. A chat that ran on a more private
+        model than the assistant's is now gets none (_level_check), whatever started the request: until Nov 2026
+        that was asked only as a turn began (_sealed_check), and the gateway judges the model Claude Code names by
+        its id on the provider as it is now. So with the assistant moved from Tinfoil (or a Chutes -TEE model) to
+        another provider while the chat's Claude Code lived (in the middle of its turn, or before something it had
+        left running woke it), "glm-5-3" read as an ordinary model there, and the whole chat went on to the new
+        model in the clear. The gateway says these words to Claude Code, which shows them in the chat."""
         prov, model, small, tier = self.models.builder_target()
+        self._level_check(prov, model)
         # translated (gateway.py) wherever there is a chat address, and always for a model sealed by its own client
         sealed = any(self.models.privacy(prov, m).sealed for m in (model, small))
         chat = (lambda m: self.models.client(prov, m)) if prov.base_url or sealed else None
@@ -2147,7 +2160,7 @@ class Engine:
         if vision and privacy_mod.rank(self.models.privacy(vprov, vision)) < privacy_mod.rank(floor):
             vision = ""                         # what it's shown would go to it with less privacy: none at all
         return Upstream(base_url=prov.builder_url, auth=prov.builder_auth, key=lambda: self.models.key(prov),
-                        models=(model, small), provider=prov.name, tier=tier, chat=chat,
+                        models=(model, small), provider=prov.name, tier=tier, chat=chat, floor=self._chat_privacy(),
                         guard=lambda m: self.models.tee_guard(prov, m), reply_check=lambda m: self.models.reply_check(prov, m),
                         describe=self._describe_image if vision and vprov and vprov.base_url else None, vision_model=vision,
                         sees=lambda m: self.models.sees(prov, m), efforts=lambda m: self.models.efforts(prov, m),

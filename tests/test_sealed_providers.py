@@ -247,6 +247,23 @@ async def test_the_quick_tasks_model_is_held_to_the_assistants_level(sealed_env,
     assert r.status_code == 403 and "plain-small (no privacy)" in r.text and "the highest privacy" in r.text and sent == []
 
 
+async def test_the_gateway_holds_every_request_to_the_chats_level_too(tmp_path):
+    """Upstream.floor: how private the chat was made, when that is more than the assistant's model is now. A model
+    Claude Code names that reads as ordinary on this provider (Tinfoil's "glm-5-3", after the assistant moved to
+    another) isn't sent on to the assistant's ordinary models."""
+    from davibemanager.gateway import Upstream
+    sent = []
+    up = Upstream("https://plain.example/v1", "bearer", lambda: "sk-test-12345678", ("plain-model", "plain-small"),
+                  provider="Plain", privacy=lambda m: privacy.NONE, floor=privacy.Privacy("sealed", privacy.TINFOIL))
+    g = _gateway(tmp_path, up, sent)
+    await g.start()
+    try:
+        r = await _post(g, "glm-5-3")
+    finally:
+        await g.stop()
+    assert r.status_code == 403 and "the highest privacy" in r.text and sent == []
+
+
 async def test_the_picture_helper_is_held_to_the_assistants_and_the_chats_level(sealed_env):
     engine = sealed_env
     _on_tinfoil(engine)
@@ -259,7 +276,8 @@ async def test_the_picture_helper_is_held_to_the_assistants_and_the_chats_level(
     engine.conv.privacy = TINFOIL_CHAT
     s = engine.cfg.settings
     s.builder_provider, s.builder_model, s.builder_vision_model, s.review_model = "Fake", "plain-model", "fake-vision", ""
-    assert engine._builder_upstream().describe is None
+    with pytest.raises(UserError, match="only ever sent sealed"):       # none of the assistant's requests go at all
+        engine._builder_upstream()
     with pytest.raises(UserError, match=r"fake-vision, isn't private enough: it has no privacy, and this chat has the "
                                         r"highest privacy"):
         await engine._describe_image("data:image/png;base64,AAAA", "")

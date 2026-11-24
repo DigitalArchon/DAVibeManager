@@ -1157,6 +1157,89 @@ async def test_a_chat_moves_only_to_a_model_at_its_level_or_higher(builder_env):
         engine.send("In the clear?")
 
 
+async def _a_tinfoil_chat_with_the_real_gateway(engine):
+    """A chat sealed on Tinfoil, and the gateway its Claude Code's requests pass (the real one, asking the engine
+    where each goes): (the gateway, what Claude Code would ask it next: the model it was started with, and
+    everything said so far)."""
+    import httpx
+
+    from conftest import short_dir
+    from davibemanager import config, creds
+    from davibemanager.config import Provider
+    from davibemanager.gateway import Gateway
+    engine.cfg.providers.append(Provider("Tinfoil", config.TINFOIL_BASE_URL, key_for=[config.TINFOIL_KEY_ORIGIN]))
+    creds.set_secret("provider", "Tinfoil", "sk-test-12345678")
+    s = engine.cfg.settings
+    s.builder_provider, s.builder_model, s.builder_small_model, s.builder_vision_model = "Tinfoil", "glm-5-3", "", ""
+    s.review_model = "Tinfoil|glm-5-3"
+    g = engine.gateway = Gateway(short_dir() / "gw", engine._builder_upstream, on_event=engine._network_event)
+    await g.start()
+
+    async def asks():
+        async with httpx.AsyncClient(transport=httpx.AsyncHTTPTransport(uds=str(g.model_socket)), base_url="http://gw") as c:
+            return await c.post("/v1/messages", headers={"authorization": f"Bearer {g.token}"},
+                                json={"model": "glm-5-3", "max_tokens": 100, "stream": True,
+                                      "messages": [{"role": "user", "content": "the launch code is 0000"}]})
+    return g, asks
+
+
+TO_AN_ORDINARY_MODEL = {"builder_provider": "Fake", "builder_model": "plain-model", "builder_small_model": "",
+                        "builder_vision_model": "", "review_model": "Fake|reviewer-model"}
+
+
+async def test_a_sealed_chat_isnt_carried_on_in_the_clear_when_the_models_change_in_the_middle_of_its_turn(builder_env):
+    """Until Nov 2026 the chat's level was asked only as a turn began. The assistant moved from Tinfoil to another
+    provider while its turn ran: its Claude Code went on asking for "glm-5-3", which the gateway read as an ordinary
+    model on the new provider, and sent the whole chat on to the new model in the clear."""
+    from helpers import text_stream
+    engine, fake, _, _ = builder_env
+    g, asks = await _a_tinfoil_chat_with_the_real_gateway(engine)
+    go_on = asyncio.Event()
+
+    async def script(c, text):
+        await c.queue.put(AssistantMessage([TextBlock("Working on it.")], "glm-5-3"))
+        await go_on.wait()
+        await c.queue.put(AssistantMessage([TextBlock("Done.")], "glm-5-3"))
+        await c.queue.put(result())
+    engine._script = script
+    engine.send("My notes: the launch code is 0000")
+    await wait_for(lambda: engine.builder and engine.builder.entry and engine.builder.entry["parts"], "the turn under way")
+    assert engine.conv.sealed and engine.busy
+    engine.save_settings(TO_AN_ORDINARY_MODEL)                 # in Settings, while it works
+    fake.responses.append(text_stream("ok"))
+    r = await asks()
+    assert r.status_code == 403 and fake.requests == []         # nothing of it reached the ordinary provider
+    assert "This chat was with a private model, so it's only ever sent sealed" in r.text and "plain-model" in r.text
+    assert "only ever sent sealed" in engine.network[-1]["error"]     # and Sandbox activity says why
+    go_on.set()
+    await wait_for(lambda: not engine.busy, "the turn's end")
+
+
+async def test_a_sealed_chat_isnt_carried_on_in_the_clear_by_something_it_left_running(builder_env):
+    """... nor when the models changed between its turns, and a build it had left running woke its Claude Code (a
+    turn the app doesn't start, so nothing asked): the same request, refused the same way."""
+    from helpers import text_stream
+    engine, fake, _, _ = builder_env
+    g, asks = await _a_tinfoil_chat_with_the_real_gateway(engine)
+    engine._script = said("Building it in the background.")
+    engine.send("My notes: the launch code is 0000")
+    await wait_for(lambda: len(engine.conv.chat) == 2 and not engine.busy, "the answer")
+    engine.save_settings(TO_AN_ORDINARY_MODEL)
+    client = engine.builder._client
+    await client.queue.put(state("running"))                   # the build has finished: it goes on by itself
+    await wait_for(lambda: engine.builder.entry is not None, "the woken turn")
+    fake.responses.append(text_stream("ok"))
+    r = await asks()
+    assert r.status_code == 403 and fake.requests == [] and "only ever sent sealed" in r.text
+    # back on a model at its level, it goes on
+    engine.save_settings({"builder_provider": "Tinfoil", "builder_model": "glm-5-3", "review_model": "Tinfoil|glm-5-3"})
+    assert engine._builder_upstream().models[0] == "glm-5-3"
+    await client.queue.put(AssistantMessage([TextBlock("The build finished.")], "glm-5-3"))
+    await client.queue.put(result())
+    await client.queue.put(state("idle"))
+    await wait_for(lambda: not engine.busy, "the turn's end")
+
+
 def said(text):
     async def script(c, sent):
         await c.queue.put(AssistantMessage([TextBlock(text)], "m"))

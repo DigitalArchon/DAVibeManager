@@ -319,6 +319,10 @@ class Upstream:
     # how private a model is on this provider (llm/privacy.py Privacy: kind, service, level); by its id alone when not
     # given (tests)
     privacy: Callable[[str], object] | None = None
+    # how private the chat these requests are of was made (Engine._chat_privacy), when it ran on a more private model
+    # than the assistant's is now: nothing of it goes to a model less private than that either (None: no more than
+    # the assistant's model is)
+    floor: object | None = None
 
     def privacy_of(self, model: str):
         return self.privacy(model) if self.privacy is not None else privacy.privacy_at(model)
@@ -498,6 +502,8 @@ class Gateway:
             body = await request.body()
             model, sent_model, data = "", "", {}
             kept = up.privacy_of(up.models[0]) if up.models else privacy.NONE    # how private the assistant's model is
+            if up.floor is not None:
+                kept = privacy.more_private(kept, up.floor)      # ... or its chat was made, whichever is higher
             if body and request.method == "POST":
                 try:
                     data = loads(body)            # nested no deeper than 200 levels (secure_http.loads)
