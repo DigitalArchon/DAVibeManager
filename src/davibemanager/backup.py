@@ -80,6 +80,10 @@ class BackupError(UserError):
     pass
 
 
+class _NotOpened(BackupError):
+    """A chunk the password doesn't open (or that was changed)."""
+
+
 # ---------------------------------------------------------------- the encrypted file
 
 
@@ -166,7 +170,9 @@ class Opened(io.RawIOBase):
         self.next = self._read_chunk()
         try:
             self._fill()
-        except BackupError:
+        except _NotOpened:
+            # the first chunk is what the password is known by; until Nov 2026 a backup cut short within its
+            # second (one over 1 MB, copied off a drive pulled out too soon) said the password was wrong too
             raise BackupError("That password doesn't open this backup.") from None
 
     def _read_chunk(self) -> bytes | None:
@@ -186,14 +192,23 @@ class Opened(io.RawIOBase):
             return
         if self.next is None:
             raise BackupError("That backup is cut short.")
-        ct, self.next = self.next, self._read_chunk()
+        ct = self.next
+        try:
+            self.next = self._read_chunk()
+        except BackupError:
+            # cut short, or damaged, after this chunk: what this one says of the password is said first
+            try:
+                self.aes.decrypt(self.prefix + self.n.to_bytes(8, "big"), ct, _aad(self.header, self.n, False))
+            except InvalidTag:
+                raise _NotOpened("That backup is damaged, or was changed.") from None
+            raise
         last = self.next is None
         try:
             self.buf = self.buf[self.pos:] + self.aes.decrypt(self.prefix + self.n.to_bytes(8, "big"), ct,
                                                               _aad(self.header, self.n, last))
             self.pos = 0
         except InvalidTag:
-            raise BackupError("That backup is damaged, or was changed.") from None
+            raise _NotOpened("That backup is damaged, or was changed.") from None
         self.n += 1
         self.ended = last
 

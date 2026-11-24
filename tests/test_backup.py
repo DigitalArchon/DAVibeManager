@@ -92,6 +92,20 @@ def test_a_backup_changed_cut_short_or_reordered_is_refused(tmp_path, damage):
         backup.read_backup(dest, PASSWORD, tmp_path / "out")
 
 
+def test_a_backup_cut_short_says_so_not_that_the_password_is_wrong(tmp_path):
+    """One cut within its second chunk (a big backup copied off a drive pulled out too soon) said the right
+    password didn't open it."""
+    an_app(size=3 << 20)
+    dest, _ = make(tmp_path)
+    raw = dest.read_bytes()
+    head, parts = chunks(raw)
+    dest.write_bytes(raw[:len(head) + len(parts[0]) + 1000])
+    with pytest.raises(backup.BackupError, match="cut short"):
+        backup.read_backup(dest, PASSWORD)
+    with pytest.raises(backup.BackupError, match="password doesn't open"):
+        backup.read_backup(dest, "not the password")
+
+
 @pytest.mark.parametrize("kdf", [{"r": 1 << 20}, {"p": 1 << 12}, {"n": 1 << 22}, {"n": 1000}, {"r": "8"}, {"nonce": "AAAAAAAA"}])
 def test_a_backup_whose_header_asks_too_much_of_this_computer_is_refused(tmp_path, kdf):
     """The key's cost comes from the file: a made-up one must not take all the memory or hours."""
